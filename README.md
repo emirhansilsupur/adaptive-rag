@@ -240,6 +240,39 @@ Measured locally on **all 66 queries** in [`data/eval/golden_set.jsonl`](data/ev
 - **Why Multi-Hop Analytical Queries Need Live Agentic Decomposition:** In `$0` offline mode (where LLM `decompose_queries` is disabled), single-query `adaptive_dynamic_k` drops `analytical` Recall from `92.6%` to `70.4%` and trips $\tau_{\min}$ on 2/7 compound Turkish cross-document queries, because no individual chunk covers two distinct subsystems at once. This directly motivates AdaptiveRAG's full LangGraph path (`--mode live`), which decomposes analytical queries into 2–4 atomic sub-queries before hybrid retrieval and reranking.
 - **CPU vs. GPU Latency Trade-Off:** Qdrant Hybrid RRF retrieval runs in `10.9 ms` p50, while local CPU-only ONNX cross-encoder inference over 20 candidates takes `6.2 s` p50 on Apple Silicon CPU; deploying ONNX Runtime with GPU/CoreML execution or tightening `fusion_limit` brings reranking into the sub-200 ms range.
 
+### Measured Live 4-Way Agentic & RAGAS Ablation Results
+
+Measured live end-to-end across **all 4 LangGraph ablation presets** on a deterministic **20-query proportional stratified slice** (`--limit 20 --stratified` from [`data/eval/golden_set.jsonl`](data/eval/golden_set.jsonl): `8` factual + `5` analytical + `2` conversational + `3` web-fallback + `2` unanswerable; `12 EN + 8 TR` spanning all `10/10` corpus docs and both TR→EN / EN→TR cross-lingual directions; `62` indexed chunks in-memory Qdrant). Executed completely **cold (`LLM_CACHE_ENABLED=false`)** to eliminate cache-order bias across presets (run `live_980103d1`, `0` errors, budget cap not triggered):
+
+- **Models:** Fast/Router/CRAG layer = `qwen/qwen3-30b-a3b-instruct-2507`; Synthesis/Tier-2 Entailment = `deepseek/deepseek-v3.2` (OpenRouter); Embeddings & Cross-Encoder = local `$0` FastEmbed ONNX (`paraphrase-multilingual-mpnet-base-v2`, `Qdrant/bm25`, `bge-reranker-v2-m3-int8`).
+- **RAGAS Judge (`v0.4.4`, cross-family judge to avoid self-preference bias):** `qwen/qwen3-30b-a3b-instruct-2507` + local `$0` FastEmbed embeddings over the `13` corpus-grounded retrieval queries per preset (`52` scored samples total).
+- **Total Real OpenRouter Spend:** **`$0.04850`** across all 80 live workflow executions (`$0.00049`–`$0.00080` per query) + **`$0.10756`** for the 52-sample RAGAS LLM-as-a-Judge pass (**`$0.15606`** grand total).
+
+#### End-to-End Agentic & FinOps Scorecard (20 Stratified Queries, Cold Uncached)
+
+| Config | Recall@k | Precision@k | MRR | NDCG@k | Citation Prec | Avg `k` | Avg Ctx Tok | Out-of-Corpus Caught | Workflow Cost (Total / Query) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `naive_dense` | 92.3% | 62.8% | 0.885 | 0.895 | 100.0% | 5.00 | 766 | 0/5 (0.0%) | `$0.00983` (`$0.00049`/q) |
+| `hybrid_rerank` | **97.4%** | 52.7% | **1.000** | **0.961** | 99.7% | 5.00 | 1,143 | 0/5 (0.0%) | `$0.01243` (`$0.00062`/q) |
+| `adaptive_routing` | 93.6% | 82.1% | **1.000** | 0.947 | **100.0%** | **2.10** | **462** | 4/5 (80.0%) | `$0.01033` (`$0.00052`/q) |
+| `full` | 89.7% | **84.0%** | **1.000** | 0.908 | **100.0%** | 2.20 | 489 | **5/5 (100.0%)** | `$0.01591` (`$0.00080`/q) |
+
+#### RAGAS LLM-as-a-Judge Quality Scores (`13` Corpus-Grounded Queries / Config)
+
+| Config | Faithfulness | Answer Relevancy | Context Precision | Context Recall | Tier-2 Entailment (`full`) / Tier-1 Citation Ratio |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `naive_dense` | 0.876 | 0.783 | 0.612 | 0.731 | 65.3% *(Tier-1 line ratio)* |
+| `hybrid_rerank` | 0.969 | 0.899 | 0.963 | 0.897 | 69.4% *(Tier-1 line ratio)* |
+| `adaptive_routing` | **0.994** | **0.902** | **0.993** | **0.974** | 73.3% *(Tier-1 line ratio)* |
+| `full` | **0.988** | 0.866 | **0.991** | **0.949** | **100.0%** *(Tier-2 semantic entailment, 13/13 passed)* |
+
+#### Live Ablation Engineering Takeaways
+
+- **Higher RAGAS Quality *and* Lower USD Cost via Adaptive Routing:** Compared to static `hybrid_rerank` (`k=5`), `adaptive_routing` improves RAGAS **Faithfulness** (`0.969` → **`0.994`**), **Context Precision** (`0.963` → **`0.993`**), and **Context Recall** (`0.897` → **`0.974`**, `+0.243` over `naive_dense`!) while simultaneously cutting average context tokens by **`-59.6%`** (`1,143` → **`462`**) and reducing end-to-end LLM spend by **`-16.9%`** (`$0.01243` → **`$0.01033`**)—even with the extra router and multi-query decomposition calls.
+- **100% Factual Precision at `-62.6%` Context Tokens & 100% Conversational Skip:** On all `8` factual queries (EN, TR, TR→EN, and EN→TR), both `adaptive_routing` and `full` achieve **100.0% Recall, 1.000 MRR, and 1.000 NDCG** at **`Avg k = 1.75`** (`468` tokens vs. `1,252` in `hybrid_rerank`), while skipping `2/2` conversational turns at **`k = 0.00`** (`0` wasted context tokens vs. `1,382–1,398` in static baselines).
+- **Live Corrective Rewrite Rescue & 100% Out-of-Corpus Safety (`full`):** On Turkish cross-lingual analytical query `anal_tr_01`, `full`'s bounded corrective rewrite loop (`rewrite_attempts=1`) lifted Recall from `50.0%` → **`100.0%`** and NDCG from `0.613` → **`0.877`**. On the `5` out-of-corpus queries (`3` web-fallback + `2` unanswerable), `naive_dense` and `hybrid_rerank` sent `k=5` noisy passages into generation on `5/5` queries (`0%` gated) and `adaptive_routing` leaked `unans_en_01` (`conf=0.33`), whereas `full` caught **`5/5` (100.0%)**—triggering `web_fallback` on `3/3` fresh queries (`100%` recall) and structured honest abstention on `2/2` fictional queries (`100%` recall; without a `TAVILY_API_KEY`, noisy zero-key DuckDuckGo snippets were safely rejected by the cross-encoder floor rather than hallucinated).
+- **Independent Grounding Corroboration & Honest Router Trade-Off:** `full`'s Tier-2 claim-level entailment validator audited all `13` grounded answers with **`100.0%` Citation Precision, `100.0%` Claim Support, and `0` phantom IDs**, aligning closely with the independent Qwen3 RAGAS Faithfulness score (`0.988`). Strict 3-way router label accuracy was `70.0%` (`14/20`) because the router conservatively promoted `5` multi-clause factual lookups to `analytical` (while still achieving `100%` conversational-vs-retrieval accuracy and `100%` factual MRR/NDCG).
+
 ### Running Benchmarks
 
 ```bash
@@ -249,8 +282,9 @@ uv run python -m eval.run_benchmark --mode offline-ir --in-memory
 # 2. Full 4-way live Agentic ablation (strict FinOps budget cap + SQLite cache)
 uv run python -m eval.run_benchmark --mode live --in-memory --max-cost-usd 0.50
 
-# 3. Live ablation + optional RAGAS LLM-as-a-Judge (Faithfulness, AnswerRelevancy, Context Precision/Recall)
-uv run python -m eval.run_benchmark --mode live --in-memory --limit 16 --with-ragas --max-cost-usd 0.50
+# 3. Reproducible 20-query proportional stratified live + RAGAS LLM-as-a-Judge ablation
+LLM_CACHE_ENABLED=false uv run python -m eval.run_benchmark --mode live --in-memory \
+  --limit 20 --stratified --with-ragas --max-cost-usd 0.40 --output-dir eval/reports/live
 
 # 4. Run against external JSONL or HuggingFace QA datasets (HotpotQA / RAGBench adapter)
 uv run python -m eval.run_benchmark --mode offline-ir --in-memory \
@@ -303,14 +337,14 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`68` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`71` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy src/eval + UI syntax + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 68 offline unit & in-memory integration tests ($0 API cost)
+make test       # 71 offline unit & in-memory integration tests ($0 API cost)
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)
 make typecheck  # mypy static type check (src, eval)
 ```

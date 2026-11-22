@@ -388,14 +388,82 @@ def load_huggingface_dataset(
     return queries, documents
 
 
+def _allocate_proportional_quotas(
+    counts: Mapping[str, int],
+    total_limit: int,
+) -> dict[str, int]:
+    """Allocate integer quotas summing to ``total_limit`` using Largest Remainder (Hamilton).
+
+    Guarantees at least 1 slot for every non-empty bucket whenever ``total_limit`` is at
+    least the number of non-empty buckets.
+    """
+    non_empty = {k: v for k, v in counts.items() if v > 0}
+    if not non_empty or total_limit <= 0:
+        return {k: 0 for k in counts}
+
+    total_available = sum(non_empty.values())
+    if total_limit >= total_available:
+        return {k: counts.get(k, 0) for k in counts}
+
+    quotas: dict[str, int] = {k: 0 for k in counts}
+    if total_limit >= len(non_empty):
+        for k in non_empty:
+            quotas[k] = 1
+        remaining = total_limit - len(non_empty)
+        residual_caps = {k: non_empty[k] - 1 for k in non_empty}
+    else:
+        remaining = total_limit
+        residual_caps = dict(non_empty)
+
+    residual_total = sum(residual_caps.values())
+    if remaining > 0 and residual_total > 0:
+        exact = {k: (residual_caps[k] / residual_total) * remaining for k in non_empty}
+        floors = {k: min(residual_caps[k], int(exact[k])) for k in non_empty}
+        for k, add in floors.items():
+            quotas[k] += add
+        leftover = remaining - sum(floors.values())
+        remainders = sorted(
+            non_empty.keys(),
+            key=lambda k: (exact[k] - floors[k], non_empty[k]),
+            reverse=True,
+        )
+        for k in remainders:
+            if leftover <= 0:
+                break
+            if quotas[k] < non_empty[k]:
+                quotas[k] += 1
+                leftover -= 1
+
+    return quotas
+
+
+def _evenly_spaced_pick(items: Sequence[GoldenQuery], k: int) -> list[GoldenQuery]:
+    """Deterministically pick ``k`` evenly spaced items spanning the full bucket range."""
+    n = len(items)
+    if k <= 0 or n == 0:
+        return []
+    if k >= n:
+        return list(items)
+    if k == 1:
+        return [items[0]]
+    indices = [round(i * (n - 1) / (k - 1)) for i in range(k)]
+    return [items[idx] for idx in indices]
+
+
 def filter_queries(
     queries: Iterable[GoldenQuery],
     *,
     strata: Sequence[str] | None = None,
     language: str | None = None,
     limit: int | None = None,
+    stratified: bool = False,
 ) -> list[GoldenQuery]:
-    """Filter golden queries deterministically by stratum, language, and max count."""
+    """Filter golden queries deterministically by stratum, language, and max count.
+
+    When ``stratified=True`` and ``limit`` is smaller than the filtered dataset, selects
+    a deterministic proportional slice across all present strata and languages (using
+    evenly spaced picks inside each bucket to cover both early and cross-lingual items).
+    """
     allowed_strata = {s.strip().lower() for s in strata} if strata else None
     lang_norm = language.strip().lower() if language else None
 
@@ -407,6 +475,36 @@ def filter_queries(
             continue
         filtered.append(item)
 
-    if limit is not None and limit > 0:
+    if limit is None or limit <= 0 or limit >= len(filtered):
+        return filtered
+
+    if not stratified:
         return filtered[:limit]
-    return filtered
+
+    by_stratum: dict[str, list[GoldenQuery]] = {}
+    for stratum in EvalStratum:
+        bucket = [q for q in filtered if q.stratum == stratum]
+        if bucket:
+            by_stratum[stratum.value] = bucket
+
+    stratum_quotas = _allocate_proportional_quotas(
+        {name: len(items) for name, items in by_stratum.items()},
+        limit,
+    )
+
+    selected: list[GoldenQuery] = []
+    for stratum_name, items in by_stratum.items():
+        s_quota = stratum_quotas.get(stratum_name, 0)
+        if s_quota <= 0:
+            continue
+        by_lang: dict[str, list[GoldenQuery]] = {}
+        for lang in sorted({q.language for q in items}):
+            by_lang[lang] = [q for q in items if q.language == lang]
+        lang_quotas = _allocate_proportional_quotas(
+            {lang: len(bucket) for lang, bucket in by_lang.items()},
+            s_quota,
+        )
+        for lang, bucket in by_lang.items():
+            selected.extend(_evenly_spaced_pick(bucket, lang_quotas.get(lang, 0)))
+
+    return selected[:limit]

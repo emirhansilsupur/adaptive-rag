@@ -541,6 +541,26 @@ async def test_ragas_embeddings_bridge_and_sample_builder() -> None:
             expected_doc_ids=[],
             reference_answer="Hi there!",
         ),
+        GoldenQuery(
+            id="q3",
+            query="What is the latest Qdrant release today?",
+            stratum=EvalStratum.WEB_FALLBACK,
+            expected_query_type=QueryType.FACTUAL,
+            needs_retrieval=True,
+            expected_doc_ids=[],
+            reference_answer="Requires live web fallback.",
+            expect_web_fallback=True,
+        ),
+        GoldenQuery(
+            id="q4",
+            query="What is the fictional hyper_vacuum_teleporter parameter?",
+            stratum=EvalStratum.UNANSWERABLE,
+            expected_query_type=QueryType.FACTUAL,
+            needs_retrieval=True,
+            expected_doc_ids=[],
+            reference_answer="Insufficient evidence; abstain.",
+            expect_abstention=True,
+        ),
     ]
     answers = [
         FinalAnswer(
@@ -562,6 +582,32 @@ async def test_ragas_embeddings_bridge_and_sample_builder() -> None:
             query_type=QueryType.CONVERSATIONAL,
             evidence_chunks=[],
         ),
+        FinalAnswer(
+            query="What is the latest Qdrant release today?",
+            answer="Stale local guess [C1].",
+            query_type=QueryType.FACTUAL,
+            evidence_chunks=[
+                EvidenceChunk(
+                    citation_id="C1",
+                    chunk_id="c2",
+                    text="Qdrant architecture notes.",
+                    doc_id="01_qdrant_architecture_and_hnsw",
+                )
+            ],
+        ),
+        FinalAnswer(
+            query="What is the fictional hyper_vacuum_teleporter parameter?",
+            answer="Fabricated answer [C1].",
+            query_type=QueryType.FACTUAL,
+            evidence_chunks=[
+                EvidenceChunk(
+                    citation_id="C1",
+                    chunk_id="c3",
+                    text="PostgreSQL MVCC notes.",
+                    doc_id="06_postgresql_mvcc_and_indexing",
+                )
+            ],
+        ),
     ]
 
     included_ids, samples = build_ragas_samples(queries, answers)
@@ -569,6 +615,35 @@ async def test_ragas_embeddings_bridge_and_sample_builder() -> None:
     assert len(samples) == 1
     assert samples[0].user_input == "What is ef_construct?"
     assert samples[0].reference == "Default ef_construct is 100."
+
+
+def test_filter_queries_stratified_proportional_sampling() -> None:
+    golden = load_golden_jsonl(Path("data/eval/golden_set.jsonl"))
+    sample_a = filter_queries(golden, limit=20, stratified=True)
+    sample_b = filter_queries(golden, limit=20, stratified=True)
+
+    # Strictly deterministic and exact target size
+    assert len(sample_a) == 20
+    assert [q.id for q in sample_a] == [q.id for q in sample_b]
+
+    # All 5 strata and both EN + TR languages must be represented
+    strata_counts: dict[EvalStratum, int] = {}
+    lang_counts: dict[str, int] = {}
+    for q in sample_a:
+        strata_counts[q.stratum] = strata_counts.get(q.stratum, 0) + 1
+        lang_counts[q.language] = lang_counts.get(q.language, 0) + 1
+
+    assert set(strata_counts.keys()) == set(EvalStratum)
+    assert all(count >= 2 for count in strata_counts.values())
+    assert lang_counts["en"] >= 8
+    assert lang_counts["tr"] >= 6
+
+    # Verify evenly-spaced TR factual picks include at least one cross-lingual TR->EN query
+    corpus_docs = load_directory(Path("data/raw"))
+    en_doc_ids = {d.doc_id for d in corpus_docs if d.language == "en"}
+    assert any(
+        q.language == "tr" and any(d in en_doc_ids for d in q.expected_doc_ids) for q in sample_a
+    )
 
 
 # ---------------------------------------------------------------------------

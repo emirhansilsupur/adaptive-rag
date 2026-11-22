@@ -56,7 +56,7 @@ from eval.metrics import (
     compute_ir_scores,
     render_markdown_report,
 )
-from eval.ragas_runner import evaluate_with_ragas
+from eval.ragas_runner import aevaluate_with_ragas
 from eval.schemas import (
     BenchmarkReport,
     ConfigBenchmarkSummary,
@@ -396,7 +396,7 @@ async def run_live_ablation_benchmark(
         cfg_answers: list[FinalAnswer] = []
         cfg_error_records: list[QueryEvalRecord] = []
 
-        for query in queries:
+        for idx, query in enumerate(queries, start=1):
             try:
                 answer = await workflow.arun(
                     query.query,
@@ -405,6 +405,24 @@ async def run_live_ablation_benchmark(
                 )
                 cfg_queries.append(query)
                 cfg_answers.append(answer)
+                logger.info(
+                    "benchmark_live_query_done",
+                    config=config_name,
+                    progress=f"{idx}/{len(queries)}",
+                    query_id=query.id,
+                    query_type=answer.query_type.value,
+                    selected_k=len(answer.evidence_chunks),
+                    confidence=(
+                        round(answer.confidence.final_score, 3)
+                        if answer.confidence is not None
+                        else None
+                    ),
+                    fallback=answer.fallback_used,
+                    abstained=answer.abstained,
+                    latency_ms=answer.total_latency_ms,
+                    cost_usd=round(answer.usage.estimated_cost_usd, 6),
+                    cumulative_usd=round(shared_tracker.usage.estimated_cost_usd, 6),
+                )
             except BudgetExceededError as exc:
                 logger.warning(
                     "benchmark_budget_exceeded",
@@ -434,11 +452,12 @@ async def run_live_ablation_benchmark(
         ragas_by_id: dict[str, RagasScores] = {}
         if with_ragas and cfg_answers and not budget_exceeded:
             embedder = ragas_dense_embedder or workflow.runtime.store.dense_embedder
-            ragas_by_id = evaluate_with_ragas(
+            ragas_by_id = await aevaluate_with_ragas(
                 cfg_queries,
                 cfg_answers,
                 judge_llm=workflow.runtime.models.fast_model,
                 dense_embedder=embedder,
+                judge_model_name=workflow.runtime.models.fast_model_name,
             )
 
         cfg_records: list[QueryEvalRecord] = [
@@ -584,6 +603,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Maximum number of queries to evaluate after filtering.",
     )
     parser.add_argument(
+        "--stratified",
+        action="store_true",
+        help="When --limit is set, draw a deterministic proportional slice across all strata & languages.",
+    )
+    parser.add_argument(
         "--fixed-top-k",
         type=int,
         default=5,
@@ -637,6 +661,7 @@ async def _run_cli(args: argparse.Namespace) -> int:
         strata=args.stratum,
         language=args.language,
         limit=args.limit,
+        stratified=args.stratified,
     )
     if not queries:
         print("No evaluation queries matched the provided filters.", file=sys.stderr)
