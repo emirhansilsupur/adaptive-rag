@@ -78,6 +78,7 @@ def _point_to_evidence(
 
     raw_meta = payload.get("metadata")
     metadata: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    source_url = metadata.get("source_url") or metadata.get("url")
 
     return EvidenceChunk(
         chunk_id=str(payload.get("chunk_id") or point.id),
@@ -86,6 +87,7 @@ def _point_to_evidence(
         doc_id=str(payload.get("doc_id", "")),
         title=str(payload.get("title", "")),
         section_path=str(payload.get("section_path", "")),
+        url=str(source_url) if source_url else None,
         metadata=metadata,
         dense_score=dense_score,
         sparse_score=sparse_score,

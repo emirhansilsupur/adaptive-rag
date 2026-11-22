@@ -9,6 +9,7 @@ from fastapi import Request
 
 from adaptiverag.config import Settings, StrategiesConfig, get_settings, load_strategies
 from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
+from adaptiverag.ingestion.web_loader import FirecrawlClient
 from adaptiverag.retrieval.fallback import FallbackRetriever, WebFallbackRetriever
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 
@@ -22,7 +23,9 @@ class AppContainer:
     store: QdrantHybridStore
     fallback_retriever: FallbackRetriever
     workflow: AdaptiveRAGWorkflow | None = None
+    firecrawl_client: FirecrawlClient | None = None
     owns_store: bool = True
+    owns_firecrawl: bool = True
     _workflow_lock: Lock = field(default_factory=Lock, repr=False)
 
     def ensure_workflow(self) -> AdaptiveRAGWorkflow:
@@ -59,6 +62,8 @@ class AppContainer:
 
     async def aclose(self) -> None:
         """Release underlying network clients on application shutdown."""
+        if self.firecrawl_client is not None and self.owns_firecrawl:
+            await self.firecrawl_client.aclose()
         if self.owns_store:
             await self.store.close()
 
@@ -73,6 +78,7 @@ def create_app_container(
     strategies = load_strategies(resolved_settings.strategies_config_path)
     store = QdrantHybridStore.from_settings(resolved_settings, in_memory=in_memory_store)
     fallback_retriever = WebFallbackRetriever.from_settings(resolved_settings)
+    firecrawl_client = FirecrawlClient.from_settings(resolved_settings)
 
     container = AppContainer(
         settings=resolved_settings,
@@ -80,7 +86,9 @@ def create_app_container(
         store=store,
         fallback_retriever=fallback_retriever,
         workflow=None,
+        firecrawl_client=firecrawl_client,
         owns_store=True,
+        owns_firecrawl=True,
     )
 
     # Eagerly build workflow when credentials are configured so startup surfaces wiring errors early.

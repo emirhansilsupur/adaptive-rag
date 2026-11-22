@@ -19,9 +19,19 @@ from adaptiverag.api.schemas import (
     IngestResponse,
     QueryRequest,
 )
-from adaptiverag.ingestion.chunker import ChunkingConfig, chunk_documents
-from adaptiverag.ingestion.indexer import index_corpus
+from adaptiverag.ingestion.chunker import ChunkingConfig
+from adaptiverag.ingestion.indexer import (
+    index_corpus,
+    index_documents,
+    index_web_crawl,
+    index_web_urls,
+)
 from adaptiverag.ingestion.loader import LoadedDocument, detect_document_language
+from adaptiverag.ingestion.web_loader import (
+    FirecrawlError,
+    FirecrawlUnavailableError,
+    UnsafeURLError,
+)
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.schemas.response import FinalAnswer
 
@@ -72,9 +82,18 @@ async def health_check(
         getattr(container.fallback_retriever, "enabled", settings.web_fallback_enabled)
     )
 
+    if container.firecrawl_client is not None:
+        firecrawl_info = await container.firecrawl_client.ahealth_check(timeout_seconds=1.5)
+    else:
+        firecrawl_info = {
+            "status": "disabled",
+            "base_url": settings.firecrawl_local_url,
+        }
+
     return HealthResponse(
         status=overall_status,
         qdrant=qdrant_info,
+        firecrawl=firecrawl_info,
         llm_configured=llm_ok,
         llm_error=llm_error,
         llm_provider=settings.llm_provider,
@@ -189,12 +208,16 @@ async def stream_query(
     )
 
 
-@router.post("/ingest", response_model=IngestResponse, summary="Ingest local corpus or inline docs")
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    summary="Ingest local corpus, inline docs, or live Firecrawl URLs/docs sites",
+)
 async def ingest_documents(
     payload: IngestRequest,
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> IngestResponse:
-    """Chunk, embed (Dense + BM25), and upsert local corpus files or inline documents into Qdrant."""
+    """Chunk, embed (Dense + BM25), and upsert local files, inline docs, or Firecrawl web pages."""
     chunk_cfg = ChunkingConfig(
         max_tokens=payload.max_tokens,
         overlap_tokens=payload.overlap_tokens,
@@ -214,32 +237,89 @@ async def ingest_documents(
             )
             for doc in payload.documents
         ]
-        chunks = chunk_documents(loaded_docs, config=chunk_cfg)
-        created = await container.store.ensure_collection(recreate=payload.recreate_collection)
-        upserted = await container.store.upsert_chunks(
-            chunks,
+        report = await index_documents(
+            loaded_docs,
+            container.store,
+            source="inline",
+            chunk_config=chunk_cfg,
+            recreate=payload.recreate_collection,
             batch_size=payload.batch_size,
-            replace_existing_docs=not payload.recreate_collection,
-        )
-        total_points = await container.store.count_points()
-        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
-
-        logger.info(
-            "api_inline_ingest_complete",
-            documents=len(loaded_docs),
-            chunks=len(chunks),
-            upserted=upserted,
-            total_points=total_points,
+            started_at=started,
         )
         return IngestResponse(
-            collection=container.store.collection_name,
-            source="inline",
-            documents_processed=len(loaded_docs),
-            chunks_created=len(chunks),
-            points_upserted=upserted,
-            total_collection_points=total_points,
-            collection_created=created,
-            elapsed_ms=elapsed_ms,
+            collection=report.collection_name,
+            source=report.data_dir,
+            documents_processed=report.documents_loaded,
+            chunks_created=report.chunks_created,
+            points_upserted=report.points_upserted,
+            total_collection_points=report.total_collection_points,
+            collection_created=report.collection_created,
+            elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
+            source_urls=report.source_urls,
+        )
+
+    if payload.urls is not None or payload.crawl_url is not None:
+        if container.firecrawl_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Firecrawl Local ingestion is disabled. Set FIRECRAWL_LOCAL_URL "
+                    "(e.g., http://localhost:3002) and run `firecrawl-local serve`."
+                ),
+            )
+        try:
+            if payload.urls is not None:
+                report = await index_web_urls(
+                    urls=payload.urls,
+                    store=container.store,
+                    client=container.firecrawl_client,
+                    chunk_config=chunk_cfg,
+                    recreate=payload.recreate_collection,
+                    batch_size=payload.batch_size,
+                    only_main_content=payload.only_main_content,
+                )
+            else:
+                assert payload.crawl_url is not None
+                report = await index_web_crawl(
+                    crawl_url=payload.crawl_url,
+                    store=container.store,
+                    client=container.firecrawl_client,
+                    limit=payload.crawl_limit,
+                    max_depth=payload.crawl_max_depth,
+                    chunk_config=chunk_cfg,
+                    recreate=payload.recreate_collection,
+                    batch_size=payload.batch_size,
+                    only_main_content=payload.only_main_content,
+                )
+        except UnsafeURLError as exc:
+            logger.warning("api_web_ingest_unsafe_url", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        except FirecrawlUnavailableError as exc:
+            logger.warning("api_web_ingest_firecrawl_unavailable", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        except FirecrawlError as exc:
+            logger.warning("api_web_ingest_firecrawl_error", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+
+        return IngestResponse(
+            collection=report.collection_name,
+            source=report.data_dir,
+            documents_processed=report.documents_loaded,
+            chunks_created=report.chunks_created,
+            points_upserted=report.points_upserted,
+            total_collection_points=report.total_collection_points,
+            collection_created=report.collection_created,
+            elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
+            source_urls=report.source_urls,
         )
 
     data_dir = Path(payload.corpus_dir) if payload.corpus_dir else Path("data/raw")
@@ -265,4 +345,5 @@ async def ingest_documents(
         total_collection_points=report.total_collection_points,
         collection_created=report.collection_created,
         elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
+        source_urls=report.source_urls,
     )

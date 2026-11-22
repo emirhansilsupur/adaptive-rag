@@ -119,18 +119,76 @@ def fetch_health(api_base_url: str) -> tuple[dict[str, Any] | None, str | None]:
         return None, str(exc)
 
 
+def parse_url_lines(raw_text: str) -> list[str]:
+    """Split a newline/comma-separated URL input into deduplicated non-empty strings."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for line in raw_text.splitlines():
+        cleaned = line.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            urls.append(cleaned)
+    return urls
+
+
+def build_web_ingest_payload(
+    *,
+    mode: str,
+    urls_text: str = "",
+    crawl_url: str = "",
+    crawl_limit: int = 10,
+    crawl_max_depth: int | None = None,
+    only_main_content: bool = True,
+    recreate_collection: bool = False,
+) -> dict[str, Any]:
+    """Build a validated POST /v1/ingest JSON payload for Firecrawl URL scrape or site crawl."""
+    payload: dict[str, Any] = {
+        "only_main_content": only_main_content,
+        "recreate_collection": recreate_collection,
+    }
+    if mode == "crawl":
+        cleaned = crawl_url.strip()
+        if not cleaned:
+            raise ValueError("Enter a root documentation URL to crawl.")
+        payload["crawl_url"] = cleaned
+        payload["crawl_limit"] = int(crawl_limit)
+        if crawl_max_depth is not None:
+            payload["crawl_max_depth"] = int(crawl_max_depth)
+    else:
+        parsed_urls = parse_url_lines(urls_text)
+        if not parsed_urls:
+            raise ValueError("Enter at least one public http(s) URL to scrape.")
+        payload["urls"] = parsed_urls
+    return payload
+
+
 def trigger_ingest(
     api_base_url: str,
     *,
     recreate_collection: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Trigger POST /v1/ingest for the default local corpus (data/raw)."""
+    return trigger_ingest_payload(api_base_url, {"recreate_collection": recreate_collection})
+
+
+def trigger_ingest_payload(
+    api_base_url: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Send an arbitrary POST /v1/ingest request (local corpus, inline docs, or Firecrawl URLs)."""
     url = f"{api_base_url.rstrip('/')}/v1/ingest"
     try:
-        with httpx.Client(timeout=180.0) as client:
-            resp = client.post(url, json={"recreate_collection": recreate_collection})
+        with httpx.Client(timeout=240.0) as client:
+            resp = client.post(url, json=payload)
             if resp.status_code >= 400:
-                return None, f"HTTP {resp.status_code}: {resp.text}"
+                detail = resp.text
+                try:
+                    parsed = resp.json()
+                    if isinstance(parsed, dict) and parsed.get("detail"):
+                        detail = str(parsed["detail"])
+                except ValueError:
+                    pass
+                return None, f"HTTP {resp.status_code}: {detail}"
             return dict(resp.json()), None
     except Exception as exc:
         return None, str(exc)
@@ -648,6 +706,45 @@ def build_query_payload(
     return payload
 
 
+def _render_sidebar_health(
+    container: Any,
+    health_data: dict[str, Any] | None,
+    health_err: str | None,
+) -> None:
+    """Render (or re-render in place) the sidebar health badge and Backend & Model Status panel."""
+    with container.container():
+        if health_data is not None:
+            status_val = str(health_data.get("status", "degraded"))
+            qdrant = health_data.get("qdrant") or {}
+            points = int(qdrant.get("points_count", 0))
+            if status_val == "ok":
+                st.success(f"API Online · {points} chunks")
+            else:
+                st.warning(f"API Degraded · {points} chunks")
+
+            with st.expander("Backend & Model Status", expanded=(status_val != "ok")):
+                st.markdown(
+                    f"- **Collection:** `{qdrant.get('collection', '-')}` ({qdrant.get('status', '-')})"
+                )
+                st.markdown(f"- **Fast Model:** `{health_data.get('fast_model', '-')}`")
+                st.markdown(f"- **Gen Model:** `{health_data.get('generation_model', '-')}`")
+                st.markdown(f"- **Reranker:** `{health_data.get('reranker_model', '-')}`")
+                providers = ", ".join(health_data.get("web_fallback_providers") or []) or "none"
+                st.markdown(f"- **Web Fallback:** `{providers}`")
+                firecrawl = health_data.get("firecrawl") or {}
+                if firecrawl:
+                    fc_status = firecrawl.get("status", "unknown")
+                    fc_url = firecrawl.get("base_url") or "-"
+                    st.markdown(f"- **Firecrawl Local:** `{fc_status}` (`{fc_url}`)")
+                if not health_data.get("llm_configured") and health_data.get("llm_error"):
+                    st.error(str(health_data["llm_error"]))
+                if qdrant.get("status") == "unreachable":
+                    st.error(f"Qdrant unreachable: {qdrant.get('error', 'Start `make up`')}")
+        else:
+            st.error("API Offline")
+            st.caption(f"Start backend with `make api`. Error: {health_err}")
+
+
 def render_sidebar() -> dict[str, Any]:
     """Render sidebar controls and return current runtime settings dictionary."""
     with st.sidebar:
@@ -661,37 +758,14 @@ def render_sidebar() -> dict[str, Any]:
         ).rstrip("/")
         st.session_state["api_url"] = api_url
 
-        col_h1, col_h2 = st.columns([2, 1])
-        refresh_health = col_h2.button("↻", help="Refresh backend health", width="stretch")
-        if refresh_health or "health_cache" not in st.session_state:
+        if st.button("↻ Refresh Backend Health", width="stretch") or (
+            "health_cache" not in st.session_state
+        ):
             st.session_state["health_cache"] = fetch_health(api_url)
 
+        health_placeholder = st.empty()
         health_data, health_err = st.session_state["health_cache"]
-        if health_data is not None:
-            status_val = str(health_data.get("status", "degraded"))
-            qdrant = health_data.get("qdrant") or {}
-            points = int(qdrant.get("points_count", 0))
-            if status_val == "ok":
-                col_h1.success(f"API Online · {points} chunks")
-            else:
-                col_h1.warning(f"API Degraded · {points} chunks")
-
-            with st.expander("Backend & Model Status", expanded=(status_val != "ok")):
-                st.markdown(
-                    f"- **Collection:** `{qdrant.get('collection', '-')}` ({qdrant.get('status', '-')})"
-                )
-                st.markdown(f"- **Fast Model:** `{health_data.get('fast_model', '-')}`")
-                st.markdown(f"- **Gen Model:** `{health_data.get('generation_model', '-')}`")
-                st.markdown(f"- **Reranker:** `{health_data.get('reranker_model', '-')}`")
-                providers = ", ".join(health_data.get("web_fallback_providers") or []) or "none"
-                st.markdown(f"- **Web Fallback:** `{providers}`")
-                if not health_data.get("llm_configured") and health_data.get("llm_error"):
-                    st.error(str(health_data["llm_error"]))
-                if qdrant.get("status") == "unreachable":
-                    st.error(f"Qdrant unreachable: {qdrant.get('error', 'Start `make up`')}")
-        else:
-            col_h1.error("API Offline")
-            st.caption(f"Start backend with `make api`. Error: {health_err}")
+        _render_sidebar_health(health_placeholder, health_data, health_err)
 
         st.divider()
         st.subheader("Ablation & Pipeline Controls")
@@ -773,6 +847,107 @@ def render_sidebar() -> dict[str, Any]:
                     f"{ingest_res['elapsed_ms']:.0f} ms)."
                 )
                 st.session_state["health_cache"] = fetch_health(api_url)
+                _render_sidebar_health(health_placeholder, *st.session_state["health_cache"])
+
+        with st.expander("🌐 Index Web URL / Docs Site (Firecrawl Local)", expanded=False):
+            fc_info = (health_data or {}).get("firecrawl") or {}
+            fc_status = str(fc_info.get("status", "unknown"))
+            if fc_status == "ok":
+                st.caption(f"🟢 Firecrawl Local online at `{fc_info.get('base_url', '')}`")
+            elif fc_status == "unreachable":
+                st.caption(
+                    f"🟡 Firecrawl Local offline (`{fc_info.get('base_url', 'http://localhost:3002')}`). "
+                    "Run `firecrawl-local serve` to enable live scraping."
+                )
+
+            web_mode = st.radio(
+                "Web Ingest Mode",
+                options=["scrape", "crawl"],
+                format_func=lambda m: "Scrape URL(s)" if m == "scrape" else "Crawl Docs Site",
+                horizontal=True,
+                key="firecrawl_web_mode",
+            )
+            urls_text = ""
+            crawl_url = ""
+            crawl_limit = 8
+            crawl_depth: int | None = None
+            if web_mode == "scrape":
+                urls_text = st.text_area(
+                    "Public URLs (one per line)",
+                    placeholder=(
+                        "https://docs.qdrant.tech/concepts/hybrid-queries/\n"
+                        "https://docs.firecrawl.dev/quickstarts/firecrawl-local"
+                    ),
+                    height=90,
+                    key="firecrawl_urls_text",
+                )
+            else:
+                crawl_url = st.text_input(
+                    "Root Docs URL",
+                    placeholder="https://docs.qdrant.tech/concepts/",
+                    key="firecrawl_crawl_url",
+                )
+                crawl_limit = int(
+                    st.slider(
+                        "Max Pages to Crawl",
+                        min_value=1,
+                        max_value=25,
+                        value=8,
+                        key="firecrawl_crawl_limit",
+                    )
+                )
+                crawl_depth = int(
+                    st.slider(
+                        "Max Link Depth",
+                        min_value=1,
+                        max_value=4,
+                        value=2,
+                        key="firecrawl_crawl_depth",
+                    )
+                )
+            only_main = st.checkbox(
+                "Extract main content only",
+                value=True,
+                key="firecrawl_only_main",
+            )
+
+            if st.button("🚀 Scrape & Index into Qdrant", width="stretch"):
+                try:
+                    web_payload = build_web_ingest_payload(
+                        mode=web_mode,
+                        urls_text=urls_text,
+                        crawl_url=crawl_url,
+                        crawl_limit=crawl_limit,
+                        crawl_max_depth=crawl_depth,
+                        only_main_content=only_main,
+                        recreate_collection=recreate_col,
+                    )
+                except ValueError as exc:
+                    st.warning(str(exc))
+                else:
+                    spinner_msg = (
+                        f"Crawling up to {crawl_limit} pages via Firecrawl Local..."
+                        if web_mode == "crawl"
+                        else "Scraping URL(s) via Firecrawl Local & indexing into Qdrant..."
+                    )
+                    with st.spinner(spinner_msg):
+                        web_res, web_err = trigger_ingest_payload(api_url, web_payload)
+                    if web_err:
+                        st.error(f"Web ingest failed: {web_err}")
+                    elif web_res:
+                        st.success(
+                            f"Indexed {web_res['documents_processed']} page(s) -> "
+                            f"{web_res['chunks_created']} chunks "
+                            f"({web_res['total_collection_points']} total points, "
+                            f"{web_res['elapsed_ms']:.0f} ms)."
+                        )
+                        indexed_urls = web_res.get("source_urls") or []
+                        if indexed_urls:
+                            st.caption("Indexed URLs:")
+                            for u in indexed_urls[:10]:
+                                st.markdown(f"- [{u}]({u})")
+                        st.session_state["health_cache"] = fetch_health(api_url)
+                _render_sidebar_health(health_placeholder, *st.session_state["health_cache"])
 
         st.divider()
         st.subheader("Quick Demo Queries (TR + EN)")

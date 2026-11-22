@@ -76,15 +76,48 @@ class InlineDocument(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    """Payload for POST /v1/ingest supporting either corpus directory or inline documents."""
+    """Payload for POST /v1/ingest supporting local files, inline docs, or Firecrawl URLs."""
 
     corpus_dir: str | None = Field(
         default=None,
-        description="Directory containing .md/.txt/.pdf files (defaults to data/raw when documents is omitted).",
+        description=(
+            "Directory containing .md/.txt/.pdf files "
+            "(defaults to data/raw when no other source is provided)."
+        ),
     )
     documents: list[InlineDocument] | None = Field(
         default=None,
         description="Optional list of inline documents to chunk and upsert directly.",
+    )
+    urls: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of public HTTP/HTTPS URLs (max 25) to scrape via firecrawl-local "
+            "and index into Qdrant."
+        ),
+    )
+    crawl_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional public root documentation/website URL to crawl via firecrawl-local "
+            "and index into Qdrant."
+        ),
+    )
+    crawl_limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of pages to crawl when 'crawl_url' is provided.",
+    )
+    crawl_max_depth: int | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description="Optional maximum link discovery depth when 'crawl_url' is provided.",
+    )
+    only_main_content: bool = Field(
+        default=True,
+        description="Ask Firecrawl to strip navbars/sidebars/footers and keep primary content.",
     )
     recreate_collection: bool = Field(
         default=False,
@@ -100,15 +133,45 @@ class IngestRequest(BaseModel):
             raise ValueError(
                 f"overlap_tokens ({self.overlap_tokens}) must be < max_tokens ({self.max_tokens})"
             )
-        if self.documents is not None and self.corpus_dir is not None:
-            raise ValueError("Provide either 'documents' or 'corpus_dir', not both.")
+
+        if self.urls is not None:
+            cleaned_urls = [u.strip() for u in self.urls]
+            if not cleaned_urls:
+                raise ValueError("'urls' must contain at least one URL when provided.")
+            if any(not u for u in cleaned_urls):
+                raise ValueError("'urls' must not contain empty or whitespace-only entries.")
+            if len(cleaned_urls) > 25:
+                raise ValueError(
+                    "'urls' supports at most 25 URLs per request; use 'crawl_url' for larger sites."
+                )
+            self.urls = cleaned_urls
+
+        if self.crawl_url is not None:
+            cleaned_crawl = self.crawl_url.strip()
+            if not cleaned_crawl:
+                raise ValueError("'crawl_url' must not be empty or whitespace-only.")
+            self.crawl_url = cleaned_crawl
+
+        active_sources = [
+            name
+            for name, val in (
+                ("corpus_dir", self.corpus_dir),
+                ("documents", self.documents),
+                ("urls", self.urls),
+                ("crawl_url", self.crawl_url),
+            )
+            if val is not None
+        ]
+        if len(active_sources) > 1:
+            joined = ", ".join(f"'{s}'" for s in active_sources)
+            raise ValueError(f"Provide at most one ingestion source, got multiple: {joined}.")
         if self.documents is not None and len(self.documents) == 0:
             raise ValueError("'documents' must contain at least one document when provided.")
         return self
 
 
 class IngestResponse(BaseModel):
-    """Summary returned after corpus or inline document ingestion."""
+    """Summary returned after corpus, inline, or live Firecrawl URL ingestion."""
 
     collection: str
     source: str
@@ -118,6 +181,7 @@ class IngestResponse(BaseModel):
     total_collection_points: int = Field(ge=0)
     collection_created: bool = False
     elapsed_ms: float = Field(ge=0.0)
+    source_urls: list[str] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):
@@ -126,6 +190,7 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     version: str = "0.1.0"
     qdrant: dict[str, Any]
+    firecrawl: dict[str, Any] = Field(default_factory=dict)
     llm_configured: bool
     llm_error: str | None = None
     llm_provider: str

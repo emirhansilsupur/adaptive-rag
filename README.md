@@ -149,10 +149,38 @@ AdaptiveRAG exposes four versioned REST/SSE endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
-| `/v1/health` | `GET` | Non-crashing Qdrant status (`ok` / `collection_missing` / `unreachable`), LLM readiness, active models, and web fallback providers |
-| `/v1/ingest` | `POST` | Idempotently index a local corpus directory (`corpus_dir`) or inline documents (`documents`) |
+| `/v1/health` | `GET` | Non-crashing Qdrant status (`ok` / `collection_missing` / `unreachable`), Firecrawl Local status, LLM readiness, active models, and web fallback providers |
+| `/v1/ingest` | `POST` | Idempotently index a local corpus directory (`corpus_dir`), inline documents (`documents`), live URLs (`urls`), or a full docs site crawl (`crawl_url`) via `firecrawl-local` |
 | `/v1/query` | `POST` | Synchronous full `FinalAnswer` JSON with ablation preset overrides and optional `max_cost_usd` (`HTTP 402` if exceeded) |
 | `/v1/query/stream` | `POST` | Server-Sent Events (`sse-starlette`) streaming `event: node_update` per LangGraph node followed by `event: final_answer` |
+
+### Live URL & Documentation Site Indexing (`firecrawl-local`, `$0` Local Scraping)
+
+AdaptiveRAG supports scraping individual public URLs or recursively crawling entire documentation sites into clean Markdown via [**Firecrawl Local**](https://docs.firecrawl.dev/quickstarts/firecrawl-local) (`firecrawl-local serve` on `http://localhost:3002`, zero Docker/Redis/cloud keys required). Every scraped page is validated against **SSRF guardrails** (blocking `localhost`, private/loopback/cloud-metadata IPs, and non-HTTP(S) schemes), assigned a deterministic URL-based `doc_id` for idempotent re-indexing, split by the structure-aware Markdown chunker, upserted into Qdrant Hybrid Search, and surfaced with clickable source links in the Glass-Box Evidence tab.
+
+```bash
+# 1. Install & start Firecrawl Local (one-time Rust binary, runs on localhost:3002)
+cargo install firecrawl-local
+FIRECRAWL_CLOUD=off firecrawl-local serve
+
+# 2. Index specific public URL(s) via CLI
+uv run python -m adaptiverag.ingestion.indexer \
+  --url https://docs.qdrant.tech/concepts/hybrid-queries/ \
+  --url https://docs.firecrawl.dev/quickstarts/firecrawl-local
+
+# 3. Recursively crawl & index a documentation site via CLI
+uv run python -m adaptiverag.ingestion.indexer \
+  --crawl-url https://docs.qdrant.tech/concepts/ --crawl-limit 10 --crawl-max-depth 2
+
+# 4. Or trigger live URL / docs crawl over REST API (or the Streamlit sidebar)
+curl -s http://localhost:8000/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "crawl_url": "https://docs.qdrant.tech/concepts/",
+    "crawl_limit": 8,
+    "crawl_max_depth": 2
+  }' | jq '{documents_processed, chunks_created, total_collection_points, source_urls}'
+```
 
 ### Example: Synchronous Query with Ablation Preset
 
@@ -161,7 +189,7 @@ curl -s http://localhost:8000/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Compare Qdrant Filterable HNSW and PostgreSQL pgvector for hybrid RAG.",
-    "ablation_preset": "full",
+    "preset": "full",
     "max_cost_usd": 0.05
   }' | jq '{query_type, confidence: .confidence.level, k: (.evidence_chunks | length), citation_passed: .citation_report.passed, cost_usd: .usage.estimated_cost_usd}'
 ```
@@ -173,7 +201,7 @@ curl -N http://localhost:8000/v1/query/stream \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Qdrant ta ef_construct varsayilan degeri nedir?",
-    "ablation_preset": "full"
+    "preset": "full"
   }'
 ```
 
@@ -311,7 +339,7 @@ adaptiverag/
 │   ├── config.py                    # Pydantic Settings + YAML strategy loader
 │   ├── schemas/                     # Pure Pydantic v2 contracts (query, retrieval, citation, response)
 │   ├── llm/                         # Multi-provider factory, resilient structured output, SQLite cache, CostTracker
-│   ├── ingestion/                   # Markdown/PDF loader, structure-aware chunker, idempotent Qdrant indexer
+│   ├── ingestion/                   # Markdown/PDF loader, Firecrawl Local web/docs scraper (SSRF-safe), structure-aware chunker, Qdrant indexer
 │   ├── retrieval/                   # FastEmbed Dense/BM25, Async Qdrant Hybrid RRF, Cross-Encoder, Dynamic Top-K, Web Fallback
 │   ├── verification/                # Multi-signal Confidence + CRAG grader, Two-Tier Citation Validator
 │   ├── graph/                       # LangGraph AgentState, AblationConfig, prompts, 12 async nodes, conditional edges, workflow
@@ -337,14 +365,14 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`71` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`102` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy src/eval + UI syntax + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 71 offline unit & in-memory integration tests ($0 API cost)
+make test       # 102 offline unit & in-memory integration tests ($0 API cost)
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)
 make typecheck  # mypy static type check (src, eval)
 ```

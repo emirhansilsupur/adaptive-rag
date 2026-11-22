@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from adaptiverag.schemas.query import QueryType, StrategyProfile
@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     web_fallback_enabled: bool = True
     web_fallback_max_results: int = Field(default=4, ge=1, le=10)
 
+    # --- Live URL & Docs Site Ingestion (Firecrawl Local v2 API) ---
+    firecrawl_local_url: str | None = Field(
+        default="http://localhost:3002",
+        description="Base URL for a local firecrawl-local serve instance (empty to disable).",
+    )
+    firecrawl_api_key: SecretStr | None = None
+    firecrawl_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    firecrawl_default_crawl_limit: int = Field(default=10, ge=1, le=100)
+    firecrawl_allow_private_urls: bool = False
+
     # --- Observability (Langfuse) ---
     langfuse_enabled: bool = False
     langfuse_host: str = "http://localhost:3000"
@@ -116,6 +126,14 @@ class Settings(BaseSettings):
     # --- Paths & Logging ---
     strategies_config_path: Path = Path("configs/strategies.yaml")
     log_level: str = "INFO"
+
+    @field_validator("firecrawl_local_url", mode="before")
+    @classmethod
+    def _normalize_firecrawl_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip().rstrip("/")
+        return cleaned or None
 
 
 def load_strategies(path: Path | str = Path("configs/strategies.yaml")) -> StrategiesConfig:

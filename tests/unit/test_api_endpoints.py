@@ -23,9 +23,10 @@ from adaptiverag.api.main import create_app
 from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.ingestion.chunker import DocumentChunk
+from adaptiverag.ingestion.web_loader import FirecrawlClient
 from adaptiverag.llm import CostTracker, ModelBundle, SQLiteLLMCache
 from adaptiverag.retrieval.embeddings import SparseVectorData
-from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
+from adaptiverag.retrieval.qdrant_store import QdrantHybridStore, RetrievalMode
 from adaptiverag.schemas import EvidenceChunk, FinalAnswer, QueryType
 
 _TEST_NAMESPACE = UUID("22345678-1234-5678-1234-567812345678")
@@ -240,6 +241,7 @@ async def _build_test_container(
     gen_model_name: str = "fake/gen",
     cost_tracker: CostTracker | None = None,
     seed_docs: bool = True,
+    firecrawl_client: FirecrawlClient | None = None,
 ) -> AppContainer:
     settings = Settings(
         llm_provider="openrouter",
@@ -345,7 +347,9 @@ async def _build_test_container(
         store=store,
         fallback_retriever=fallback,
         workflow=workflow,
+        firecrawl_client=firecrawl_client,
         owns_store=True,
+        owns_firecrawl=firecrawl_client is not None,
     )
 
 
@@ -679,3 +683,207 @@ def test_ui_sse_parser_and_payload_builder() -> None:
     )
     assert "preset" not in custom_payload
     assert custom_payload["ablation"]["retrieval_mode"] == "dense_only"
+
+    parsed_urls = module.parse_url_lines(
+        "  https://docs.qdrant.tech/concepts/hybrid-queries/ \n\n"
+        "https://docs.qdrant.tech/concepts/hybrid-queries/\n"
+        "https://docs.firecrawl.dev/quickstarts/firecrawl-local  "
+    )
+    assert parsed_urls == [
+        "https://docs.qdrant.tech/concepts/hybrid-queries/",
+        "https://docs.firecrawl.dev/quickstarts/firecrawl-local",
+    ]
+
+    scrape_payload = module.build_web_ingest_payload(
+        mode="scrape",
+        urls_text="https://docs.qdrant.tech/concepts/hybrid-queries/",
+        only_main_content=True,
+        recreate_collection=False,
+    )
+    assert scrape_payload["urls"] == ["https://docs.qdrant.tech/concepts/hybrid-queries/"]
+    assert "crawl_url" not in scrape_payload
+
+    crawl_payload = module.build_web_ingest_payload(
+        mode="crawl",
+        crawl_url=" https://docs.qdrant.tech/concepts/ ",
+        crawl_limit=8,
+        crawl_max_depth=2,
+    )
+    assert crawl_payload["crawl_url"] == "https://docs.qdrant.tech/concepts/"
+    assert crawl_payload["crawl_limit"] == 8
+    assert crawl_payload["crawl_max_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ingest_firecrawl_urls_crawl_and_error_handling(tmp_path: Path) -> None:
+    def mock_firecrawl_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.method == "POST" and request.url.path == "/v2/scrape":
+            body = json.loads(request.content.decode("utf-8"))
+            url = body["url"]
+            if "fail-upstream" in url:
+                return httpx.Response(500, json={"success": False, "error": "Upstream 500"})
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {
+                        "markdown": (
+                            "# Qdrant Hybrid Guide\n\n"
+                            "## Reciprocal Rank Fusion\n\n"
+                            "Qdrant combines dense vectors and BM25 sparse vectors with RRF."
+                        ),
+                        "metadata": {
+                            "title": "Qdrant Hybrid Guide",
+                            "sourceURL": url,
+                            "statusCode": 200,
+                        },
+                    },
+                },
+            )
+        if request.method == "POST" and request.url.path == "/v2/crawl":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "id": "crawl-1",
+                    "url": "http://localhost:3002/v2/crawl/crawl-1",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/v2/crawl/crawl-1":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "completed",
+                    "data": [
+                        {
+                            "markdown": "# FastAPI SSE\n\nFastAPI streams SSE updates cleanly.",
+                            "metadata": {
+                                "title": "FastAPI SSE Docs",
+                                "sourceURL": "https://docs.example.com/fastapi-sse",
+                            },
+                        },
+                        {
+                            "markdown": "# LangGraph Cyclic Agents\n\nLangGraph manages bounded state loops.",
+                            "metadata": {
+                                "title": "LangGraph Docs",
+                                "sourceURL": "https://docs.example.com/langgraph",
+                            },
+                        },
+                    ],
+                },
+            )
+        raise AssertionError(f"Unexpected Firecrawl request: {request.method} {request.url}")
+
+    fc_client = FirecrawlClient(
+        "http://localhost:3002",
+        resolve_dns=False,
+        transport=httpx.MockTransport(mock_firecrawl_handler),
+    )
+    container = await _build_test_container(
+        tmp_path,
+        seed_docs=False,
+        firecrawl_client=fc_client,
+    )
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            # 1. Health endpoint reports Firecrawl Local as ok
+            health = await client.get("/v1/health")
+            assert health.status_code == 200
+            assert health.json()["firecrawl"]["status"] == "ok"
+
+            # 2. Live URL scrape ingestion + idempotency + EvidenceChunk.url propagation
+            target_url = "https://docs.qdrant.tech/concepts/hybrid-queries/"
+            scrape_resp = await client.post(
+                "/v1/ingest",
+                json={"urls": [target_url]},
+            )
+            assert scrape_resp.status_code == 200
+            scrape_data = scrape_resp.json()
+            assert scrape_data["source"] == "firecrawl_scrape"
+            assert scrape_data["documents_processed"] == 1
+            assert scrape_data["source_urls"] == [target_url]
+            points_after_first = scrape_data["total_collection_points"]
+            assert points_after_first >= 1
+
+            # Verify stored chunk carries source_url onto EvidenceChunk.url
+            hits = await container.store.search_single(
+                "Qdrant hybrid BM25 RRF",
+                mode=RetrievalMode.HYBRID,
+                fusion_limit=5,
+            )
+            assert any(h.url == target_url for h in hits)
+
+            # Re-scraping the exact same URL is idempotent (zero duplicate points)
+            rescrape_resp = await client.post("/v1/ingest", json={"urls": [target_url]})
+            assert rescrape_resp.status_code == 200
+            assert rescrape_resp.json()["total_collection_points"] == points_after_first
+
+            # 3. Live docs site crawl ingestion
+            crawl_resp = await client.post(
+                "/v1/ingest",
+                json={
+                    "crawl_url": "https://docs.example.com/",
+                    "crawl_limit": 5,
+                    "crawl_max_depth": 2,
+                },
+            )
+            assert crawl_resp.status_code == 200
+            crawl_data = crawl_resp.json()
+            assert crawl_data["documents_processed"] == 2
+            assert crawl_data["source_urls"] == [
+                "https://docs.example.com/fastapi-sse",
+                "https://docs.example.com/langgraph",
+            ]
+            assert crawl_data["total_collection_points"] > points_after_first
+
+            # 4. SSRF URL returns HTTP 422
+            ssrf_resp = await client.post(
+                "/v1/ingest",
+                json={"urls": ["http://169.254.169.254/latest/meta-data/"]},
+            )
+            assert ssrf_resp.status_code == 422
+            assert "SSRF" in ssrf_resp.json()["detail"]
+
+            # 5. Multiple conflicting sources return HTTP 422
+            conflict_resp = await client.post(
+                "/v1/ingest",
+                json={
+                    "urls": [target_url],
+                    "crawl_url": "https://docs.example.com/",
+                },
+            )
+            assert conflict_resp.status_code == 422
+
+            # 6. Upstream Firecrawl 500 maps cleanly to HTTP 502
+            bad_gw_resp = await client.post(
+                "/v1/ingest",
+                json={"urls": ["https://docs.example.com/fail-upstream"]},
+            )
+            assert bad_gw_resp.status_code == 502
+
+            # 7. Unreachable Firecrawl Local maps cleanly to HTTP 503
+            def _connect_fail(req: httpx.Request) -> httpx.Response:
+                raise httpx.ConnectError("Connection refused", request=req)
+
+            down_client = FirecrawlClient(
+                "http://localhost:3002",
+                resolve_dns=False,
+                transport=httpx.MockTransport(_connect_fail),
+            )
+            container.firecrawl_client = down_client
+            try:
+                down_resp = await client.post("/v1/ingest", json={"urls": [target_url]})
+                assert down_resp.status_code == 503
+                assert "firecrawl-local serve" in down_resp.json()["detail"]
+            finally:
+                await down_client.aclose()
+                container.firecrawl_client = fc_client
+    finally:
+        await container.aclose()

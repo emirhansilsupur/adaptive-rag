@@ -72,6 +72,7 @@ class DocumentChunk(BaseModel):
 
     def to_evidence_chunk(self) -> EvidenceChunk:
         """Convert to runtime EvidenceChunk representation."""
+        source_url = self.metadata.get("source_url") or self.metadata.get("url")
         return EvidenceChunk(
             chunk_id=self.chunk_id,
             text=self.text,
@@ -79,6 +80,7 @@ class DocumentChunk(BaseModel):
             doc_id=self.doc_id,
             title=self.title,
             section_path=self.section_path,
+            url=str(source_url) if source_url else None,
             metadata=dict(self.metadata),
             token_count=self.token_count,
         )

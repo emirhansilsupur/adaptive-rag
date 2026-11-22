@@ -1,10 +1,11 @@
-"""Idempotent corpus ingestion CLI and programmatic indexing pipeline."""
+"""Idempotent corpus and live web/docs ingestion CLI and programmatic indexing pipeline."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
@@ -12,7 +13,8 @@ from pydantic import BaseModel, Field
 
 from adaptiverag.config import get_settings
 from adaptiverag.ingestion.chunker import ChunkingConfig, chunk_documents
-from adaptiverag.ingestion.loader import load_directory
+from adaptiverag.ingestion.loader import LoadedDocument, load_directory
+from adaptiverag.ingestion.web_loader import FirecrawlClient
 from adaptiverag.observability.tracing import configure_logging
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 
@@ -20,7 +22,7 @@ logger = structlog.get_logger(__name__)
 
 
 class IndexingReport(BaseModel):
-    """Summary returned after indexing a document directory into Qdrant."""
+    """Summary returned after indexing local files or web/docs pages into Qdrant."""
 
     data_dir: str
     collection_name: str
@@ -30,21 +32,23 @@ class IndexingReport(BaseModel):
     total_collection_points: int = Field(ge=0)
     collection_created: bool = False
     elapsed_seconds: float = Field(ge=0.0)
+    source_urls: list[str] = Field(default_factory=list)
 
 
-async def index_corpus(
-    data_dir: Path,
+async def index_documents(
+    docs: Sequence[LoadedDocument],
     store: QdrantHybridStore,
     *,
+    source: str,
     chunk_config: ChunkingConfig | None = None,
     recreate: bool = False,
     batch_size: int = 64,
+    started_at: float | None = None,
 ) -> IndexingReport:
-    """Load, structure-chunk, embed (Dense + BM25), and upsert a corpus into Qdrant."""
-    started = time.perf_counter()
-
-    docs = load_directory(data_dir)
-    chunks = chunk_documents(docs, config=chunk_config)
+    """Structure-chunk, embed (Dense + BM25), and idempotently upsert LoadedDocuments into Qdrant."""
+    started = started_at if started_at is not None else time.perf_counter()
+    doc_list = list(docs)
+    chunks = chunk_documents(doc_list, config=chunk_config)
 
     created = await store.ensure_collection(recreate=recreate)
     upserted = await store.upsert_chunks(
@@ -55,29 +59,147 @@ async def index_corpus(
     total_points = await store.count_points()
     elapsed = round(time.perf_counter() - started, 3)
 
+    source_urls = [
+        str(doc.metadata["source_url"])
+        for doc in doc_list
+        if isinstance(doc.metadata.get("source_url"), str) and doc.metadata["source_url"].strip()
+    ]
+
     report = IndexingReport(
-        data_dir=str(data_dir),
+        data_dir=source,
         collection_name=store.collection_name,
-        documents_loaded=len(docs),
+        documents_loaded=len(doc_list),
         chunks_created=len(chunks),
         points_upserted=upserted,
         total_collection_points=total_points,
         collection_created=created,
         elapsed_seconds=elapsed,
+        source_urls=source_urls,
     )
     logger.info("corpus_indexing_complete", **report.model_dump())
     return report
 
 
+async def index_corpus(
+    data_dir: Path,
+    store: QdrantHybridStore,
+    *,
+    chunk_config: ChunkingConfig | None = None,
+    recreate: bool = False,
+    batch_size: int = 64,
+) -> IndexingReport:
+    """Load, structure-chunk, embed (Dense + BM25), and upsert a local corpus into Qdrant."""
+    started = time.perf_counter()
+    docs = load_directory(data_dir)
+    return await index_documents(
+        docs,
+        store,
+        source=str(data_dir),
+        chunk_config=chunk_config,
+        recreate=recreate,
+        batch_size=batch_size,
+        started_at=started,
+    )
+
+
+async def index_web_urls(
+    urls: Sequence[str],
+    store: QdrantHybridStore,
+    client: FirecrawlClient,
+    *,
+    chunk_config: ChunkingConfig | None = None,
+    recreate: bool = False,
+    batch_size: int = 64,
+    only_main_content: bool = True,
+) -> IndexingReport:
+    """Scrape one or more public URLs via Firecrawl Local and upsert chunks into Qdrant."""
+    started = time.perf_counter()
+    docs = await client.ascrape_urls(urls, only_main_content=only_main_content)
+    return await index_documents(
+        docs,
+        store,
+        source="firecrawl_scrape",
+        chunk_config=chunk_config,
+        recreate=recreate,
+        batch_size=batch_size,
+        started_at=started,
+    )
+
+
+async def index_web_crawl(
+    crawl_url: str,
+    store: QdrantHybridStore,
+    client: FirecrawlClient,
+    *,
+    limit: int = 10,
+    max_depth: int | None = None,
+    chunk_config: ChunkingConfig | None = None,
+    recreate: bool = False,
+    batch_size: int = 64,
+    only_main_content: bool = True,
+) -> IndexingReport:
+    """Crawl a live documentation/website root URL via Firecrawl Local and upsert into Qdrant."""
+    started = time.perf_counter()
+    docs = await client.acrawl_site(
+        crawl_url,
+        limit=limit,
+        max_depth=max_depth,
+        only_main_content=only_main_content,
+    )
+    return await index_documents(
+        docs,
+        store,
+        source=f"firecrawl_crawl:{crawl_url}",
+        chunk_config=chunk_config,
+        recreate=recreate,
+        batch_size=batch_size,
+        started_at=started,
+    )
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Index Markdown/PDF/text documents into Qdrant with Dense + BM25 Hybrid vectors."
+        description=(
+            "Index local Markdown/PDF/text files or live web/docs URLs (via firecrawl-local) "
+            "into Qdrant with Dense + BM25 Hybrid vectors."
+        )
     )
     parser.add_argument(
         "--data-dir",
         type=Path,
         default=Path("data/raw"),
-        help="Directory containing source documents (default: data/raw).",
+        help="Directory containing local source documents (default: data/raw).",
+    )
+    parser.add_argument(
+        "--url",
+        action="append",
+        dest="urls",
+        default=None,
+        help="Public HTTP/HTTPS URL to scrape via firecrawl-local (repeatable).",
+    )
+    parser.add_argument(
+        "--crawl-url",
+        type=str,
+        default=None,
+        help="Root documentation/website URL to crawl via firecrawl-local.",
+    )
+    parser.add_argument(
+        "--crawl-limit",
+        type=int,
+        default=None,
+        help="Maximum pages to crawl when --crawl-url is specified (default from settings).",
+    )
+    parser.add_argument(
+        "--crawl-max-depth",
+        type=int,
+        default=None,
+        help="Optional maximum link discovery depth for --crawl-url.",
+    )
+    parser.add_argument(
+        "--firecrawl-url",
+        type=str,
+        default=None,
+        help="Override FIRECRAWL_LOCAL_URL (default: http://localhost:3002).",
     )
     parser.add_argument(
         "--collection",
@@ -108,7 +230,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=64,
         help="Upsert batch size (default: 64).",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.urls and args.crawl_url:
+        parser.error("Provide either --url or --crawl-url, not both.")
+    return args
 
 
 async def _run_cli(args: argparse.Namespace) -> IndexingReport:
@@ -120,7 +245,51 @@ async def _run_cli(args: argparse.Namespace) -> IndexingReport:
         max_tokens=args.max_tokens,
         overlap_tokens=args.overlap_tokens,
     )
+    firecrawl_client: FirecrawlClient | None = None
     try:
+        if args.urls or args.crawl_url:
+            base_url = args.firecrawl_url or settings.firecrawl_local_url
+            if not base_url:
+                raise ValueError(
+                    "FIRECRAWL_LOCAL_URL is disabled. Pass --firecrawl-url or set "
+                    "FIRECRAWL_LOCAL_URL=http://localhost:3002."
+                )
+            api_key = (
+                settings.firecrawl_api_key.get_secret_value().strip() or None
+                if settings.firecrawl_api_key is not None
+                else None
+            )
+            firecrawl_client = FirecrawlClient(
+                base_url=base_url,
+                api_key=api_key,
+                timeout_seconds=settings.firecrawl_timeout_seconds,
+                allow_private_urls=settings.firecrawl_allow_private_urls,
+            )
+            if args.urls:
+                return await index_web_urls(
+                    urls=args.urls,
+                    store=store,
+                    client=firecrawl_client,
+                    chunk_config=chunk_cfg,
+                    recreate=args.recreate,
+                    batch_size=args.batch_size,
+                )
+            crawl_limit = (
+                args.crawl_limit
+                if args.crawl_limit is not None
+                else settings.firecrawl_default_crawl_limit
+            )
+            return await index_web_crawl(
+                crawl_url=args.crawl_url,
+                store=store,
+                client=firecrawl_client,
+                limit=crawl_limit,
+                max_depth=args.crawl_max_depth,
+                chunk_config=chunk_cfg,
+                recreate=args.recreate,
+                batch_size=args.batch_size,
+            )
+
         return await index_corpus(
             data_dir=args.data_dir,
             store=store,
@@ -129,6 +298,8 @@ async def _run_cli(args: argparse.Namespace) -> IndexingReport:
             batch_size=args.batch_size,
         )
     finally:
+        if firecrawl_client is not None:
+            await firecrawl_client.aclose()
         await store.close()
 
 
