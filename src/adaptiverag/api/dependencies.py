@@ -1,0 +1,99 @@
+"""Lifespan-managed dependency container and FastAPI dependency providers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from threading import Lock
+
+from fastapi import Request
+
+from adaptiverag.config import Settings, StrategiesConfig, get_settings, load_strategies
+from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
+from adaptiverag.retrieval.fallback import FallbackRetriever, WebFallbackRetriever
+from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
+
+
+@dataclass
+class AppContainer:
+    """Shared concurrency-safe runtime container bound to FastAPI app.state."""
+
+    settings: Settings
+    strategies: StrategiesConfig
+    store: QdrantHybridStore
+    fallback_retriever: FallbackRetriever
+    workflow: AdaptiveRAGWorkflow | None = None
+    owns_store: bool = True
+    _workflow_lock: Lock = field(default_factory=Lock, repr=False)
+
+    def ensure_workflow(self) -> AdaptiveRAGWorkflow:
+        """Return the active AdaptiveRAGWorkflow, building it lazily on first query."""
+        if self.workflow is not None:
+            return self.workflow
+        with self._workflow_lock:
+            if self.workflow is None:
+                self.workflow = AdaptiveRAGWorkflow.from_settings(
+                    self.settings,
+                    strategies=self.strategies,
+                    store=self.store,
+                    fallback_retriever=self.fallback_retriever,
+                )
+            return self.workflow
+
+    def check_llm_configured(self) -> tuple[bool, str | None]:
+        """Check whether LLM credentials/runtime are configured without executing API calls."""
+        if self.workflow is not None:
+            return True, None
+        provider = self.settings.llm_provider
+        if provider == "ollama":
+            return True, None
+        key_map = {
+            "openrouter": (self.settings.openrouter_api_key, "OPENROUTER_API_KEY"),
+            "openai": (self.settings.openai_api_key, "OPENAI_API_KEY"),
+            "gemini": (self.settings.gemini_api_key, "GEMINI_API_KEY"),
+            "anthropic": (self.settings.anthropic_api_key, "ANTHROPIC_API_KEY"),
+        }
+        secret, env_var = key_map[provider]
+        if secret is None or not secret.get_secret_value().strip():
+            return False, f"Missing required API key: set {env_var} in your environment or .env"
+        return True, None
+
+    async def aclose(self) -> None:
+        """Release underlying network clients on application shutdown."""
+        if self.owns_store:
+            await self.store.close()
+
+
+def create_app_container(
+    settings: Settings | None = None,
+    *,
+    in_memory_store: bool = False,
+) -> AppContainer:
+    """Construct the default runtime container from Settings & configs/strategies.yaml."""
+    resolved_settings = settings or get_settings()
+    strategies = load_strategies(resolved_settings.strategies_config_path)
+    store = QdrantHybridStore.from_settings(resolved_settings, in_memory=in_memory_store)
+    fallback_retriever = WebFallbackRetriever.from_settings(resolved_settings)
+
+    container = AppContainer(
+        settings=resolved_settings,
+        strategies=strategies,
+        store=store,
+        fallback_retriever=fallback_retriever,
+        workflow=None,
+        owns_store=True,
+    )
+
+    # Eagerly build workflow when credentials are configured so startup surfaces wiring errors early.
+    llm_ok, _ = container.check_llm_configured()
+    if llm_ok:
+        container.ensure_workflow()
+
+    return container
+
+
+def get_container(request: Request) -> AppContainer:
+    """FastAPI dependency returning the active AppContainer from app.state."""
+    container: AppContainer | None = getattr(request.app.state, "container", None)
+    if container is None:
+        raise RuntimeError("AdaptiveRAG AppContainer is not initialized on app.state.")
+    return container
