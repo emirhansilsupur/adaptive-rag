@@ -58,6 +58,8 @@ def test_token_usage_addition() -> None:
 def test_settings_defaults_to_openrouter_multilingual() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.llm_provider == "openrouter"
+    assert settings.llm_fast_model == "qwen/qwen3-30b-a3b-instruct-2507"
+    assert settings.llm_generation_model == "deepseek/deepseek-v3.2"
     assert "multilingual" in settings.dense_embedding_model
     assert "m3" in settings.reranker_model or "multilingual" in settings.reranker_model
     assert settings.sparse_embedding_model == "Qdrant/bm25"

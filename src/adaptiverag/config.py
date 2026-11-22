@@ -84,8 +84,8 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     ollama_base_url: str = "http://localhost:11434/v1"
 
-    llm_fast_model: str = "qwen/qwen-2.5-7b-instruct"
-    llm_generation_model: str = "deepseek/deepseek-chat"
+    llm_fast_model: str = "qwen/qwen3-30b-a3b-instruct-2507"
+    llm_generation_model: str = "deepseek/deepseek-v3.2"
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     llm_request_timeout: float = Field(default=45.0, gt=1.0)
 

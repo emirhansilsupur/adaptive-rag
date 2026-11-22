@@ -19,14 +19,18 @@ class ModelPricing:
 # Approximate reference pricing (USD / 1M tokens) for OpenRouter & major providers.
 # Local Ollama and mock models default to $0.00.
 MODEL_PRICING: dict[str, ModelPricing] = {
-    # OpenRouter — Qwen family
-    "qwen/qwen-2.5-7b-instruct": ModelPricing(0.05, 0.10),
+    # OpenRouter — Qwen family (verified reference rates)
+    "qwen/qwen3-30b-a3b-instruct-2507": ModelPricing(0.10, 0.30),
+    "qwen/qwen3-235b-a22b-instruct-2507": ModelPricing(0.12, 0.58),
+    "qwen/qwen-2.5-7b-instruct": ModelPricing(0.10, 0.20),
     "qwen/qwen-2.5-72b-instruct": ModelPricing(0.15, 0.40),
     "qwen/qwen3-32b": ModelPricing(0.10, 0.30),
     "qwen/qwen3-8b": ModelPricing(0.05, 0.15),
     # OpenRouter — DeepSeek family
-    "deepseek/deepseek-chat": ModelPricing(0.27, 1.10),
-    "deepseek/deepseek-chat-v3-0324": ModelPricing(0.27, 1.10),
+    "deepseek/deepseek-v3.2": ModelPricing(0.26, 0.38),
+    "deepseek/deepseek-chat-v3.1": ModelPricing(0.25, 0.95),
+    "deepseek/deepseek-chat": ModelPricing(0.26, 1.03),
+    "deepseek/deepseek-chat-v3-0324": ModelPricing(0.26, 1.03),
     "deepseek/deepseek-r1": ModelPricing(0.55, 2.19),
     # OpenAI
     "gpt-4o-mini": ModelPricing(0.15, 0.60),

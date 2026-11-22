@@ -143,5 +143,6 @@ async def test_cost_tracker_enforces_hard_budget_cap() -> None:
 
 def test_estimate_cost_zero_for_ollama_and_free_tier() -> None:
     assert estimate_cost_usd("ollama/qwen2.5:7b", 10_000, 5_000) == 0.0
-    assert estimate_cost_usd("qwen/qwen-2.5-7b-instruct:free", 10_000, 5_000) == 0.0
-    assert estimate_cost_usd("qwen/qwen-2.5-7b-instruct", 1_000_000, 0) == pytest.approx(0.05)
+    assert estimate_cost_usd("qwen/qwen3-30b-a3b-instruct-2507:free", 10_000, 5_000) == 0.0
+    assert estimate_cost_usd("qwen/qwen3-30b-a3b-instruct-2507", 1_000_000, 1_000_000) == pytest.approx(0.40)
+    assert estimate_cost_usd("deepseek/deepseek-v3.2", 1_000_000, 1_000_000) == pytest.approx(0.64)
