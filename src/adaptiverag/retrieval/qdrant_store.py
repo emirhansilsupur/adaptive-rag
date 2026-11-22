@@ -480,6 +480,100 @@ class QdrantHybridStore:
         res = await self._client.count(collection_name=self._collection_name, exact=True)
         return int(res.count)
 
+    async def count_by_doc_id(self, doc_id: str) -> int:
+        """Return exact chunk count for a single doc_id."""
+        cleaned = doc_id.strip()
+        if not cleaned or not await self._client.collection_exists(self._collection_name):
+            return 0
+        flt = _build_filter(doc_ids=[cleaned])
+        res = await self._client.count(
+            collection_name=self._collection_name,
+            count_filter=flt,
+            exact=True,
+        )
+        return int(res.count)
+
+    async def delete_document(self, doc_id: str) -> tuple[int, int]:
+        """Delete all chunks for a single doc_id and return (deleted_chunks, remaining_points)."""
+        cleaned = doc_id.strip()
+        if not cleaned or not await self._client.collection_exists(self._collection_name):
+            return 0, 0
+
+        existing_count = await self.count_by_doc_id(cleaned)
+        if existing_count == 0:
+            return 0, await self.count_points()
+
+        await self.delete_by_doc_ids([cleaned])
+        remaining = await self.count_points()
+        logger.info(
+            "qdrant_document_deleted",
+            collection=self._collection_name,
+            doc_id=cleaned,
+            deleted_chunks=existing_count,
+            remaining_points=remaining,
+        )
+        return existing_count, remaining
+
+    async def list_documents(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Aggregate indexed chunks by doc_id for Knowledge Base inspection."""
+        if not await self._client.collection_exists(self._collection_name):
+            return []
+
+        docs_by_id: dict[str, dict[str, Any]] = {}
+        offset: Any = None
+
+        while True:
+            records, next_offset = await self._client.scroll(
+                collection_name=self._collection_name,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for rec in records:
+                payload: dict[str, Any] = dict(rec.payload or {})
+                doc_id = str(payload.get("doc_id") or "").strip()
+                if not doc_id:
+                    continue
+
+                raw_meta = payload.get("metadata")
+                meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+                token_count = int(payload.get("token_count") or 0)
+
+                entry = docs_by_id.get(doc_id)
+                if entry is None:
+                    source_url = meta.get("source_url") or meta.get("url")
+                    source_path = meta.get("source_path")
+                    file_name = meta.get("file_name")
+                    source_origin = (
+                        "web" if source_url or meta.get("source") == "firecrawl_local" else "local"
+                    )
+                    docs_by_id[doc_id] = {
+                        "doc_id": doc_id,
+                        "title": str(payload.get("title") or doc_id),
+                        "source_origin": source_origin,
+                        "doc_type": str(meta.get("doc_type") or "markdown"),
+                        "language": str(payload.get("language") or meta.get("language") or "en"),
+                        "chunk_count": 1,
+                        "total_tokens": token_count,
+                        "source_url": str(source_url) if source_url else None,
+                        "source_path": str(source_path) if source_path else None,
+                        "file_name": str(file_name) if file_name else None,
+                    }
+                else:
+                    entry["chunk_count"] = int(entry["chunk_count"]) + 1
+                    entry["total_tokens"] = int(entry["total_tokens"]) + token_count
+
+            if next_offset is None or not records:
+                break
+            offset = next_offset
+
+        ordered = sorted(
+            docs_by_id.values(),
+            key=lambda d: (str(d["source_origin"]), str(d["title"]).lower(), str(d["doc_id"])),
+        )
+        return ordered[: max(1, limit)]
+
     async def health_check(self) -> dict[str, Any]:
         """Return lightweight Qdrant collection health metadata."""
         exists = await self._client.collection_exists(self._collection_name)

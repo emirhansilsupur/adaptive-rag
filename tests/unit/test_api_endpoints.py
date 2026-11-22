@@ -887,3 +887,118 @@ async def test_ingest_firecrawl_urls_crawl_and_error_handling(tmp_path: Path) ->
                 container.firecrawl_client = fc_client
     finally:
         await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_documents_list_delete_and_file_upload_endpoints(tmp_path: Path) -> None:
+    container = await _build_test_container(tmp_path, seed_docs=False)
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            # 1. Empty collection returns zero documents cleanly
+            empty_resp = await client.get("/v1/documents")
+            assert empty_resp.status_code == 200
+            empty_data = empty_resp.json()
+            assert empty_data["total_documents"] == 0
+            assert empty_data["total_chunks"] == 0
+            assert empty_data["documents"] == []
+
+            # 2. Multipart file upload (.md + .txt, TR + EN)
+            md_bytes = (
+                b"# Hybrid Search Architecture\n\n"
+                b"Dense cosine search and BM25 sparse vectors merge via Reciprocal Rank Fusion.\n"
+            )
+            txt_bytes = (
+                "Türkçe RAG değerlendirme notları: çapraz kodlayıcı yeniden sıralama "
+                "ve güven eşiği doğruluk oranını önemli ölçüde artırır.\n"
+            ).encode()
+
+            upload_resp = await client.post(
+                "/v1/ingest/upload",
+                files=[
+                    ("files", ("hybrid_guide.md", md_bytes, "text/markdown")),
+                    ("files", ("tr_notlar.txt", txt_bytes, "text/plain")),
+                ],
+                data={"recreate_collection": "false"},
+            )
+            assert upload_resp.status_code == 200
+            upload_data = upload_resp.json()
+            assert upload_data["source"] == "upload"
+            assert upload_data["documents_processed"] == 2
+            assert upload_data["chunks_created"] >= 2
+            total_points = upload_data["total_collection_points"]
+            assert total_points == upload_data["chunks_created"]
+
+            # 3. Also ingest a web-metadata inline document so web vs local classification is tested
+            web_inline_resp = await client.post(
+                "/v1/ingest",
+                json={
+                    "documents": [
+                        {
+                            "doc_id": "web_docs_demo",
+                            "title": "Firecrawl Docs Demo",
+                            "content": "# Firecrawl Local\n\nScrapes web pages into clean Markdown.",
+                            "language": "en",
+                            "metadata": {
+                                "source": "firecrawl_local",
+                                "source_url": "https://docs.firecrawl.dev/quickstarts/firecrawl-local",
+                            },
+                        }
+                    ]
+                },
+            )
+            assert web_inline_resp.status_code == 200
+
+            # 4. List documents verifies grouping, source_origin, language, and totals
+            list_resp = await client.get("/v1/documents")
+            assert list_resp.status_code == 200
+            list_data = list_resp.json()
+            assert list_data["total_documents"] == 3
+            assert list_data["total_chunks"] >= 3
+            by_id = {d["doc_id"]: d for d in list_data["documents"]}
+            assert by_id["hybrid_guide"]["title"] == "Hybrid Search Architecture"
+            assert by_id["hybrid_guide"]["source_origin"] == "local"
+            assert by_id["hybrid_guide"]["doc_type"] == "markdown"
+            assert by_id["hybrid_guide"]["language"] == "en"
+            assert by_id["tr_notlar"]["language"] == "tr"
+            assert by_id["tr_notlar"]["doc_type"] == "text"
+            assert by_id["web_docs_demo"]["source_origin"] == "web"
+            assert (
+                by_id["web_docs_demo"]["source_url"]
+                == "https://docs.firecrawl.dev/quickstarts/firecrawl-local"
+            )
+
+            # 5. Delete an indexed document and confirm points drop accordingly
+            del_resp = await client.delete("/v1/documents/hybrid_guide")
+            assert del_resp.status_code == 200
+            del_data = del_resp.json()
+            assert del_data["doc_id"] == "hybrid_guide"
+            assert del_data["deleted_chunks"] >= 1
+            assert del_data["remaining_collection_points"] == (
+                list_data["total_chunks"] - del_data["deleted_chunks"]
+            )
+
+            # Deleting the same document again returns HTTP 404
+            missing_del = await client.delete("/v1/documents/hybrid_guide")
+            assert missing_del.status_code == 404
+
+            # 6. Upload validation: unsupported extension and empty file return HTTP 422
+            bad_ext = await client.post(
+                "/v1/ingest/upload",
+                files=[("files", ("malware.exe", b"MZ\x90\x00", "application/octet-stream"))],
+            )
+            assert bad_ext.status_code == 422
+            assert "Unsupported document extension" in bad_ext.json()["detail"]
+
+            empty_file = await client.post(
+                "/v1/ingest/upload",
+                files=[("files", ("empty.md", b"", "text/markdown"))],
+            )
+            assert empty_file.status_code == 422
+            assert "empty" in empty_file.json()["detail"].lower()
+    finally:
+        await container.aclose()

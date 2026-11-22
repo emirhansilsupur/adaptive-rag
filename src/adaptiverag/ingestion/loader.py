@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -91,9 +92,8 @@ def detect_document_language(text: str, filename: str = "") -> str:
     return "en"
 
 
-def _read_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
-    """Extract text page-by-page from a PDF file using pypdf."""
-    reader = PdfReader(str(path))
+def _extract_pdf_reader(reader: PdfReader) -> tuple[str, dict[str, Any]]:
+    """Extract text page-by-page from an opened PdfReader."""
     pages: list[str] = []
     for idx, page in enumerate(reader.pages, start=1):
         extracted = (page.extract_text() or "").strip()
@@ -103,6 +103,71 @@ def _read_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
     if reader.metadata and reader.metadata.title:
         meta["pdf_title"] = str(reader.metadata.title).strip()
     return "\n\n".join(pages), meta
+
+
+def _read_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
+    """Extract text page-by-page from a PDF file using pypdf."""
+    return _extract_pdf_reader(PdfReader(str(path)))
+
+
+def load_document_bytes(filename: str, data: bytes) -> LoadedDocument:
+    """Load an uploaded document from raw bytes (.md, .markdown, .txt, .pdf)."""
+    safe_name = Path(filename or "").name.strip()
+    if not safe_name:
+        raise ValueError("Uploaded file must have a valid filename.")
+
+    pseudo_path = Path(safe_name)
+    suffix = pseudo_path.suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported document extension '{suffix or '(none)'}' for {safe_name}. "
+            f"Supported: {sorted(SUPPORTED_EXTENSIONS)}"
+        )
+
+    if not data:
+        raise ValueError(f"Uploaded file '{safe_name}' is empty.")
+
+    extra_meta: dict[str, Any] = {}
+    if suffix in {".md", ".markdown"}:
+        try:
+            content = data.decode("utf-8-sig").strip()
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"File '{safe_name}' is not valid UTF-8 text.") from exc
+        doc_type: Literal["markdown", "pdf", "text"] = "markdown"
+        title = _extract_markdown_title(content, pseudo_path)
+    elif suffix == ".txt":
+        try:
+            content = data.decode("utf-8-sig").strip()
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"File '{safe_name}' is not valid UTF-8 text.") from exc
+        doc_type = "text"
+        title = _prettify_filename(pseudo_path)
+    else:
+        try:
+            content, extra_meta = _extract_pdf_reader(PdfReader(io.BytesIO(data)))
+        except Exception as exc:
+            raise ValueError(f"Failed to parse PDF '{safe_name}': {exc}") from exc
+        doc_type = "pdf"
+        title = str(extra_meta.get("pdf_title") or _prettify_filename(pseudo_path))
+
+    if not content:
+        raise ValueError(f"Document has no extractable text content: {safe_name}")
+
+    language = detect_document_language(content, safe_name)
+    return LoadedDocument(
+        doc_id=_slugify_doc_id(pseudo_path),
+        title=title,
+        content=content,
+        source_path=f"upload://{safe_name}",
+        doc_type=doc_type,
+        language=language,
+        metadata={
+            "file_name": safe_name,
+            "file_size_bytes": len(data),
+            "source": "upload",
+            **extra_meta,
+        },
+    )
 
 
 def load_document(path: Path, base_dir: Path | None = None) -> LoadedDocument:

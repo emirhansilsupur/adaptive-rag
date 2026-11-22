@@ -83,6 +83,9 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
                 "POST /v1/query",
                 "POST /v1/query/stream",
                 "POST /v1/ingest",
+                "POST /v1/ingest/upload",
+                "GET /v1/documents",
+                "DELETE /v1/documents/{doc_id}",
             ],
         }
 

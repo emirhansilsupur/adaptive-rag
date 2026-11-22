@@ -184,6 +184,39 @@ class IngestResponse(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
 
 
+class IndexedDocumentInfo(BaseModel):
+    """Aggregated metadata for one indexed document in the Qdrant collection."""
+
+    doc_id: str
+    title: str
+    source_origin: Literal["local", "web"] = "local"
+    doc_type: str = "markdown"
+    language: str = "en"
+    chunk_count: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    source_url: str | None = None
+    source_path: str | None = None
+    file_name: str | None = None
+
+
+class DocumentListResponse(BaseModel):
+    """Response payload for GET /v1/documents."""
+
+    collection: str
+    total_documents: int = Field(ge=0)
+    total_chunks: int = Field(ge=0)
+    documents: list[IndexedDocumentInfo] = Field(default_factory=list)
+
+
+class DeleteDocumentResponse(BaseModel):
+    """Response payload for DELETE /v1/documents/{doc_id}."""
+
+    collection: str
+    doc_id: str
+    deleted_chunks: int = Field(ge=0)
+    remaining_collection_points: int = Field(ge=0)
+
+
 class HealthResponse(BaseModel):
     """Operational readiness & configuration summary for GET /v1/health."""
 

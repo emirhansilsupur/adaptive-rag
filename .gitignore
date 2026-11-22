@@ -30,6 +30,11 @@ eval/reports/
 *.sqlite3
 *.db
 
+# Frontend (Vite / React)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # OS / IDE
 .DS_Store
 .vscode/

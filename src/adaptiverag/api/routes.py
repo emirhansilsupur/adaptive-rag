@@ -9,12 +9,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from adaptiverag.api.dependencies import AppContainer, get_container
 from adaptiverag.api.schemas import (
+    DeleteDocumentResponse,
+    DocumentListResponse,
     HealthResponse,
+    IndexedDocumentInfo,
     IngestRequest,
     IngestResponse,
     QueryRequest,
@@ -26,7 +29,11 @@ from adaptiverag.ingestion.indexer import (
     index_web_crawl,
     index_web_urls,
 )
-from adaptiverag.ingestion.loader import LoadedDocument, detect_document_language
+from adaptiverag.ingestion.loader import (
+    LoadedDocument,
+    detect_document_language,
+    load_document_bytes,
+)
 from adaptiverag.ingestion.web_loader import (
     FirecrawlError,
     FirecrawlUnavailableError,
@@ -346,4 +353,149 @@ async def ingest_documents(
         collection_created=report.collection_created,
         elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
         source_urls=report.source_urls,
+    )
+
+
+MAX_UPLOAD_FILES = 20
+MAX_UPLOAD_FILE_BYTES = 15 * 1024 * 1024  # 15 MiB per file
+
+
+@router.post(
+    "/ingest/upload",
+    response_model=IngestResponse,
+    summary="Upload and index .md, .txt, or .pdf files into Qdrant",
+)
+async def upload_and_ingest_files(
+    files: list[UploadFile] = File(...),  # noqa: B008
+    recreate_collection: bool = Form(default=False),
+    max_tokens: int = Form(default=512, ge=64, le=4096),
+    overlap_tokens: int = Form(default=64, ge=0, le=512),
+    container: AppContainer = Depends(get_container),  # noqa: B008
+) -> IngestResponse:
+    """Parse uploaded Markdown, plain text, or PDF files and upsert chunks into Qdrant."""
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="At least one file must be uploaded.",
+        )
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"At most {MAX_UPLOAD_FILES} files may be uploaded per request.",
+        )
+    if overlap_tokens >= max_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"overlap_tokens ({overlap_tokens}) must be < max_tokens ({max_tokens}).",
+        )
+
+    started = time.perf_counter()
+    loaded_docs: list[LoadedDocument] = []
+    for upload in files:
+        filename = upload.filename or "untitled"
+        raw = await upload.read()
+        await upload.close()
+        if len(raw) > MAX_UPLOAD_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=(
+                    f"File '{filename}' exceeds maximum size of "
+                    f"{MAX_UPLOAD_FILE_BYTES // (1024 * 1024)} MB."
+                ),
+            )
+        try:
+            loaded_docs.append(load_document_bytes(filename, raw))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+    chunk_cfg = ChunkingConfig(max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+    report = await index_documents(
+        loaded_docs,
+        container.store,
+        source="upload",
+        chunk_config=chunk_cfg,
+        recreate=recreate_collection,
+        started_at=started,
+    )
+    return IngestResponse(
+        collection=report.collection_name,
+        source=report.data_dir,
+        documents_processed=report.documents_loaded,
+        chunks_created=report.chunks_created,
+        points_upserted=report.points_upserted,
+        total_collection_points=report.total_collection_points,
+        collection_created=report.collection_created,
+        elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
+        source_urls=report.source_urls,
+    )
+
+
+@router.get(
+    "/documents",
+    response_model=DocumentListResponse,
+    summary="List indexed documents in the active Qdrant collection",
+)
+async def list_indexed_documents(
+    container: AppContainer = Depends(get_container),  # noqa: B008
+) -> DocumentListResponse:
+    """Return all indexed documents grouped by doc_id with chunk and token statistics."""
+    try:
+        raw_docs = await container.store.list_documents()
+    except Exception as exc:
+        logger.warning("list_documents_failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Unable to read documents from Qdrant: {exc}",
+        ) from exc
+
+    docs = [IndexedDocumentInfo.model_validate(item) for item in raw_docs]
+    total_chunks = sum(d.chunk_count for d in docs)
+    return DocumentListResponse(
+        collection=container.store.collection_name,
+        total_documents=len(docs),
+        total_chunks=total_chunks,
+        documents=docs,
+    )
+
+
+@router.delete(
+    "/documents/{doc_id:path}",
+    response_model=DeleteDocumentResponse,
+    summary="Delete all chunks of an indexed document from Qdrant",
+)
+async def delete_indexed_document(
+    doc_id: str,
+    container: AppContainer = Depends(get_container),  # noqa: B008
+) -> DeleteDocumentResponse:
+    """Remove every Qdrant point belonging to ``doc_id``."""
+    cleaned_id = doc_id.strip()
+    if not cleaned_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="doc_id must not be empty.",
+        )
+
+    try:
+        deleted_chunks, remaining = await container.store.delete_document(cleaned_id)
+    except Exception as exc:
+        logger.warning("delete_document_failed", doc_id=cleaned_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Unable to delete document from Qdrant: {exc}",
+        ) from exc
+
+    if deleted_chunks == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{cleaned_id}' not found in collection '{container.store.collection_name}'.",
+        )
+
+    return DeleteDocumentResponse(
+        collection=container.store.collection_name,
+        doc_id=cleaned_id,
+        deleted_chunks=deleted_chunks,
+        remaining_collection_points=remaining,
     )

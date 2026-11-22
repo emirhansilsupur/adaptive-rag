@@ -138,19 +138,23 @@ make api
 In terminal 2:
 ```bash
 make ui
-# Streamlit Glass-Box RAG Inspector available at http://localhost:8501
+# React + TypeScript Glass-Box Studio available at http://localhost:5173
+# (Optional legacy Streamlit UI: `make ui-legacy` at http://localhost:8501)
 ```
 
 ---
 
 ## API & Live SSE Streaming
 
-AdaptiveRAG exposes four versioned REST/SSE endpoints:
+AdaptiveRAG exposes seven versioned REST/SSE endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
 | `/v1/health` | `GET` | Non-crashing Qdrant status (`ok` / `collection_missing` / `unreachable`), Firecrawl Local status, LLM readiness, active models, and web fallback providers |
+| `/v1/documents` | `GET` | List all indexed documents in Qdrant grouped by `doc_id` with source origin (`local` / `web`), chunk counts, token totals, and clickable URLs |
+| `/v1/documents/{doc_id}` | `DELETE` | Delete all Qdrant chunks belonging to `doc_id` and return remaining collection points |
 | `/v1/ingest` | `POST` | Idempotently index a local corpus directory (`corpus_dir`), inline documents (`documents`), live URLs (`urls`), or a full docs site crawl (`crawl_url`) via `firecrawl-local` |
+| `/v1/ingest/upload` | `POST` | Multipart file upload for `.md`, `.markdown`, `.txt`, and `.pdf` documents with structure-aware chunking and idempotent Qdrant upsert |
 | `/v1/query` | `POST` | Synchronous full `FinalAnswer` JSON with ablation preset overrides and optional `max_cost_usd` (`HTTP 402` if exceeded) |
 | `/v1/query/stream` | `POST` | Server-Sent Events (`sse-starlette`) streaming `event: node_update` per LangGraph node followed by `event: final_answer` |
 
@@ -205,13 +209,19 @@ curl -N http://localhost:8000/v1/query/stream \
   }'
 ```
 
-### Glass-Box Streamlit Inspector (`ui/app.py`)
-The Streamlit UI streams live node transitions (`st.status`) from `/v1/query/stream`, supports switching between all 4 ablation presets (plus fine-grained feature toggles) on the fly, includes one-click TR/EN demo prompts and corpus re-indexing, and renders **5 inspection tabs**:
-1. **Trace & Query Plan:** Node-by-node latency bar chart, routing rationale, rewritten/decomposed sub-queries.
-2. **Dynamic Top-K & Rerank:** Interactive Plotly score waterfall showing calibrated cross-encoder scores, $\tau_{\min}$ relevance floor, $\alpha \cdot s_1$ cutoff line, and token budget utilization.
-3. **Confidence & CRAG:** Gauge & multi-signal breakdown ($S_{\text{top1}}$, $S_{\text{mean}}$, $S_{\text{cov}}$, $C_{\text{det}}$, CRAG verdict, and control action).
-4. **Evidence Passages:** Ranked `[C1]..[Ck]` / `[W1]..[Wn]` chunks with `section_path`, scores, and source links.
-5. **Citation Audit:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 claim-level entailment verdicts.
+### Glass-Box Studio Workbench (`frontend/`, React + TypeScript + Vite + Tailwind CSS)
+The primary 3-pane Glass-Box Studio (`make ui` at `http://localhost:5173`) provides a dark/light themed engineering workbench built directly over the FastAPI REST & SSE endpoints:
+- **Left Rail (Sessions & Controls):** `localStorage`-persisted research sessions, instant `Workbench` / `Knowledge Base` switcher, live ablation preset selector (`Full`, `Adaptive Routing`, `Hybrid + Rerank`, `Naive Dense`, or granular `Custom` switches), per-request USD cost cap, and live API/Qdrant/Firecrawl health status.
+- **Center Chat & Live LangGraph Stepper:** Real-time animated LangGraph node execution track over `/v1/query/stream` (with cancelable `AbortController`), KaTeX math + GitHub-flavored Markdown rendering, and **clickable inline `[C1]` / `[W1]` citation pills** that immediately open and highlight the exact source chunk in the right Inspector.
+- **Right Resizable Glass-Box Inspector (`⌘I`):**
+  1. **Trace & Plan:** Query plan, sub-queries, strategy hyperparameters JSON, and proportional LangGraph Latency Waterfall.
+  2. **Dynamic Top-K:** Interactive SVG rerank/fusion bar chart with $\tau_{\min}$ threshold indicator and click-to-jump bars.
+  3. **Confidence & CRAG:** Semicircular confidence gauge, CRAG grade & action badges, and 5-signal breakdown ($S_{\text{top1}}$, $S_{\text{mean}}$, $S_{\text{cov}}$, $C_{\text{det}}$, final score).
+  4. **Evidence Passages:** Local/Web filter, expandable passage cards with scores, section paths, clickable Firecrawl/Web URLs, and pulse-highlight on inline citation click.
+  5. **Citation Audit:** Tier-1 valid/fabricated IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards with clickable cited IDs.
+- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` file upload (`/v1/ingest/upload`), one-click local corpus re-indexing, live **Firecrawl Local** URL scraper & docs crawler, and a searchable/filterable table of all indexed Qdrant documents with safe 2-step deletion.
+
+*(The legacy Streamlit inspector remains available as an optional Python fallback via `make ui-legacy` on port `8501`.)*
 
 ---
 
@@ -345,8 +355,14 @@ adaptiverag/
 │   ├── graph/                       # LangGraph AgentState, AblationConfig, prompts, 12 async nodes, conditional edges, workflow
 │   ├── observability/               # Structlog JSON/console logging + Langfuse callback
 │   └── api/                         # FastAPI app, lifespan container, REST + SSE streaming routes
+├── frontend/
+│   ├── src/
+│   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, LivePipelineTracker, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
+│   │   ├── lib/                     # Typed FastAPI + SSE ReadableStream client, citation tokenizer, URL helpers
+│   │   └── test/                    # Vitest + Testing Library unit tests
+│   └── vite.config.ts               # React 19 + TypeScript + Tailwind CSS v4 + KaTeX math
 ├── ui/
-│   └── app.py                       # Streamlit Glass-Box RAG Inspector (live SSE + 5 Plotly/audit tabs)
+│   └── app.py                       # Optional legacy Streamlit Glass-Box Inspector (`make ui-legacy`)
 ├── eval/
 │   ├── schemas.py                   # GoldenQuery, IRScores, RagasScores, BenchmarkReport schemas
 │   ├── datasets.py                  # Golden JSONL loader + flexible external JSONL & HuggingFace (HotpotQA/RAGBench) adapters
@@ -365,14 +381,16 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`102` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`103` backend unit & in-memory Qdrant integration tests + `7` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
-# Run the full local CI mirror (lint + format + mypy src/eval + UI syntax + offline pytest w/ coverage)
+# Run the full local CI mirror (lint + format + mypy + frontend typecheck/test/build + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 102 offline unit & in-memory integration tests ($0 API cost)
+make test       # 103 offline Python unit & in-memory integration tests ($0 API cost)
+make ui-test    # Frontend TypeScript typecheck + 7 Vitest unit tests
+make ui-build   # Production Vite bundle build
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)
 make typecheck  # mypy static type check (src, eval)
 ```
