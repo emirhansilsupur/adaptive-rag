@@ -129,7 +129,7 @@ class QdrantHybridStore:
             is_local = True
         else:
             api_key = (
-                settings.qdrant_api_key.get_secret_value()
+                settings.qdrant_api_key.get_secret_value().strip() or None
                 if settings.qdrant_api_key is not None
                 else None
             )

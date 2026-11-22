@@ -130,6 +130,52 @@ def _deduplicate_queries(queries: Sequence[str], *, limit: int) -> list[str]:
     return cleaned
 
 
+async def _rerank_against_active_queries(
+    reranker: Reranker,
+    *,
+    standalone_query: str,
+    active_queries: Sequence[str],
+    candidates: Sequence[EvidenceChunk],
+    per_query_cap: int = 12,
+) -> list[EvidenceChunk]:
+    """Rerank candidates against active (decomposed or rewritten) queries using max-score fusion.
+
+    Single-query runs execute in one cross-encoder pass. Multi-query analytical runs and
+    corrective rewrites score each active query against the candidates it matched (falling back
+    to the top candidates when sub-query provenance is absent) and retain each chunk's peak
+    relevance score so multi-hop evidence and cross-lingual rewrites are never penalized against
+    a stale initial query.
+    """
+    queries = _deduplicate_queries(active_queries, limit=5) or [standalone_query]
+    if len(queries) == 1:
+        return await reranker.arerank(queries[0], candidates)
+
+    best_by_id: dict[str, EvidenceChunk] = {}
+    for q in queries:
+        matched = [c for c in candidates if q in c.matched_sub_queries]
+        sub_candidates = matched[:per_query_cap] if matched else list(candidates[:per_query_cap])
+        if not sub_candidates:
+            continue
+        scored = await reranker.arerank(q, sub_candidates)
+        for chunk in scored:
+            prev = best_by_id.get(chunk.chunk_id)
+            if prev is None or (chunk.rerank_score or 0.0) > (prev.rerank_score or 0.0):
+                best_by_id[chunk.chunk_id] = chunk
+
+    for chunk in candidates:
+        best_by_id.setdefault(chunk.chunk_id, chunk)
+
+    ranked = list(best_by_id.values())
+    ranked.sort(
+        key=lambda c: (
+            c.rerank_score if c.rerank_score is not None else -1.0,
+            c.fusion_score if c.fusion_score is not None else -1.0,
+        ),
+        reverse=True,
+    )
+    return ranked
+
+
 def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
     """Create all bound async LangGraph node callables for the AdaptiveRAG state machine."""
 
@@ -387,8 +433,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         ablation = state.get("ablation") or AblationConfig()
         candidates = state.get("retrieved_chunks") or []
 
+        active_queries = state.get("active_queries") or [plan.standalone_query]
         if ablation.enable_rerank and candidates:
-            ranked = await runtime.reranker.arerank(plan.standalone_query, candidates)
+            ranked = await _rerank_against_active_queries(
+                runtime.reranker,
+                standalone_query=plan.standalone_query,
+                active_queries=active_queries,
+                candidates=candidates,
+            )
         else:
             ranked = list(candidates)
 
@@ -593,6 +645,10 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
 
         if web_chunks and ablation.enable_rerank:
             web_chunks = await runtime.reranker.arerank(plan.standalone_query, web_chunks)
+            min_web_score = max(0.15, plan.strategy.tau_min * 0.5)
+            web_chunks = [
+                c for c in web_chunks if c.rerank_score is None or c.rerank_score >= min_web_score
+            ]
         web_chunks = assign_citation_ids(web_chunks, prefix="W", start_index=1)
 
         # Keep local chunks only when they were NOT graded insufficient/low-confidence.

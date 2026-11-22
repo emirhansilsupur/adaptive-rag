@@ -135,14 +135,22 @@ def build_corrective_rewrite_messages(
     language: str,
 ) -> list[BaseMessage]:
     """Build messages for corrective query reformulation after low/medium confidence."""
+    cross_lingual_rule = (
+        f"- Because technical knowledge bases often mix Turkish and English documentation, "
+        f"write AT LEAST ONE query in canonical English technical terminology and keep the remaining "
+        f"query(s) in {language} using standard English acronyms/identifiers."
+        if language != "en"
+        else "- Use canonical English technical terminology, exact parameter/class names, and synonyms."
+    )
     system_prompt = f"""You are a Corrective Retrieval Rewriter (CRAG query optimizer) for a multilingual (TR/EN) hybrid BM25 + dense vector search engine.
 
-The initial retrieval produced low or partial confidence. Reformulate 1 to 3 improved search queries that use better technical synonyms, canonical terminology (including English technical terms when querying a mixed TR/EN corpus), or clearer aspect separation.
+The initial retrieval produced low or partial confidence. Reformulate 2 to 3 improved search queries that use better technical synonyms, canonical terminology, or clearer aspect separation.
 
 Rules:
 - Do NOT simply repeat the prior queries verbatim.
 - Target any missing aspects identified in the confidence diagnosis.
-- Keep queries concise and retrieval-oriented (user language={language})."""
+{cross_lingual_rule}
+- Keep every query concise and retrieval-oriented."""
 
     prior_lines = "\n".join(f"  - {q}" for q in prior_queries) if prior_queries else "  - (none)"
     diag_text = confidence.reasoning if confidence is not None else "Weak initial retrieval scores."

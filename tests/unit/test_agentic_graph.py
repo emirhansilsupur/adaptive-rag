@@ -132,6 +132,7 @@ class _ControllableReranker:
     def __init__(self, score_schedule: list[float] | None = None) -> None:
         self._schedule = list(score_schedule) if score_schedule is not None else []
         self.call_count = 0
+        self.seen_queries: list[str] = []
 
     @property
     def model_name(self) -> str:
@@ -146,6 +147,7 @@ class _ControllableReranker:
     ) -> list[EvidenceChunk]:
         call_idx = self.call_count
         self.call_count += 1
+        self.seen_queries.append(query)
         base_score = (
             self._schedule[min(call_idx, len(self._schedule) - 1)] if self._schedule else 0.88
         )
@@ -854,5 +856,120 @@ async def test_graph_ablation_naive_dense_and_astream_events() -> None:
             "generate_answer",
             "validate_citations",
         ]
+    finally:
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# 9. Rewrite-aware reranking & web-fallback noise filtering regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_graph_reranks_against_rewritten_queries_not_stale_standalone() -> None:
+    store = await _build_in_memory_store()
+    try:
+        router_json = json.dumps(
+            {
+                "query_type": "factual",
+                "needs_retrieval": True,
+                "language": "tr",
+                "standalone_query": "vLLM KV onbellek bellek israfini nasil azaltir?",
+                "requires_fresh_web_info": False,
+                "reasoning": "Cross-lingual technical lookup.",
+            }
+        )
+        rewrite_json = json.dumps(
+            {
+                "rewritten_queries": [
+                    "vLLM PagedAttention KV cache memory fragmentation",
+                    "vLLM PagedAttention bellek parcalanmasi",
+                ],
+                "diagnosis": "Added canonical English query for cross-lingual reranking.",
+            }
+        )
+        entailment_json = json.dumps(
+            {
+                "verifications": [
+                    {
+                        "claim": "vLLM PagedAttention kullanarak KV-cache bellek parçalanmasını azaltır.",
+                        "cited_ids": ["C1"],
+                        "verdict": "supported",
+                        "explanation": "Supported by C1.",
+                    }
+                ]
+            }
+        )
+        # 1st pass (original TR query) scores 0.20 (< tau_min -> rewrite)
+        # 2nd pass scores the 2 rewritten queries (0.91 and 0.72 -> max-score fusion keeps 0.91)
+        workflow, _, _, reranker, fallback = _make_workflow(
+            store=store,
+            fast_responses=[router_json, rewrite_json, entailment_json],
+            gen_responses=[
+                "vLLM, PagedAttention mekanizmasıyla KV-cache bellek parçalanmasını azaltır [C1]."
+            ],
+            reranker_scores=[0.20, 0.91, 0.72],
+        )
+
+        result = await workflow.arun("vLLM KV onbellek bellek israfini nasil azaltir?")
+
+        assert result.abstained is False
+        assert result.fallback_used is False
+        assert result.rewrite_attempts == 1
+        assert fallback.calls == []
+        assert "vLLM PagedAttention KV cache memory fragmentation" in reranker.seen_queries
+        assert "vLLM PagedAttention bellek parcalanmasi" in reranker.seen_queries
+        assert result.confidence is not None and result.confidence.final_score >= 0.72
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_web_fallback_filters_irrelevant_snippets_and_abstains() -> None:
+    store = await _build_in_memory_store()
+    try:
+        router_json = json.dumps(
+            {
+                "query_type": "factual",
+                "needs_retrieval": True,
+                "language": "en",
+                "standalone_query": "What is the official website URL of FastAPI?",
+                "requires_fresh_web_info": False,
+                "reasoning": "External documentation lookup.",
+            }
+        )
+        rewrite_json = json.dumps(
+            {
+                "rewritten_queries": ["FastAPI official documentation URL"],
+                "diagnosis": "Try canonical query.",
+            }
+        )
+        noisy_web_hit = EvidenceChunk(
+            citation_id="W1",
+            chunk_id="web-dict-noise",
+            doc_id="web::dictionary.example",
+            title="Dictionary definition of official",
+            text="Official means relating to an authority or public body.",
+            source_type=SourceType.WEB,
+            url="https://dictionary.example/official",
+            token_count=12,
+        )
+        # Local pass 1 (0.10), local pass 2 (0.10), web rerank (0.04 < min_web_score 0.175 -> filtered)
+        workflow, _, gen_model, _, fallback = _make_workflow(
+            store=store,
+            fast_responses=[router_json, rewrite_json],
+            gen_responses=[],
+            reranker_scores=[0.10, 0.10, 0.04],
+            web_chunks=[noisy_web_hit],
+        )
+
+        result = await workflow.arun("What is the official website URL of FastAPI?")
+
+        assert result.fallback_used is True
+        assert result.abstained is True
+        assert result.evidence_chunks == []
+        assert len(fallback.calls) == 1
+        assert gen_model.call_count == 0
+        assert "abstain_response" in [t.node for t in result.trace]
     finally:
         await store.close()

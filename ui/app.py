@@ -312,13 +312,14 @@ def _render_trace_and_plan_tab(result: dict[str, Any]) -> None:
             marker_color=colors,
             text=[f"{ms:.1f} ms" for ms in latencies],
             textposition="outside",
+            cliponaxis=False,
             hovertext=summaries,
             hovertemplate="<b>%{y}</b><br>Latency: %{x:.1f} ms<br>%{hovertext}<extra></extra>",
         )
     )
     fig.update_layout(
         height=max(240, 40 * len(labels) + 60),
-        margin={"l": 10, "r": 55, "t": 15, "b": 30},
+        margin={"l": 10, "r": 85, "t": 15, "b": 30},
         xaxis_title="Latency (ms)",
         yaxis={"autorange": "reversed"},
     )
