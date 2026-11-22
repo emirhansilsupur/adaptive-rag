@@ -1,0 +1,63 @@
+# ==============================================================================
+# AdaptiveRAG Strategy & Threshold Configuration
+# ==============================================================================
+# All routing, hybrid search, dynamic top-k, confidence gating, and citation
+# verification parameters are externally tunable without code edits.
+
+strategies:
+  conversational:
+    needs_retrieval: false
+    max_sub_queries: 0
+    dense_prefetch_limit: 0
+    sparse_prefetch_limit: 0
+    fusion_limit: 0
+    rerank_min_k: 0
+    rerank_max_k: 0
+    tau_min: 0.0
+    alpha_relative: 0.0
+    delta_gap: 1.0
+    max_context_tokens: 1024
+
+  factual:
+    needs_retrieval: true
+    max_sub_queries: 1
+    dense_prefetch_limit: 20
+    sparse_prefetch_limit: 25
+    fusion_limit: 20
+    rerank_min_k: 2
+    rerank_max_k: 5
+    tau_min: 0.35
+    alpha_relative: 0.65
+    delta_gap: 0.25
+    max_context_tokens: 2500
+
+  analytical:
+    needs_retrieval: true
+    max_sub_queries: 4
+    dense_prefetch_limit: 30
+    sparse_prefetch_limit: 30
+    fusion_limit: 25
+    rerank_min_k: 4
+    rerank_max_k: 10
+    tau_min: 0.30
+    alpha_relative: 0.45
+    delta_gap: 0.35
+    max_context_tokens: 5500
+
+confidence:
+  # Composite deterministic score weights (must sum to 1.0)
+  weight_top1: 0.50
+  weight_mean_topk: 0.30
+  weight_subquery_coverage: 0.20
+  # Threshold bands
+  high_threshold: 0.72
+  low_threshold: 0.38
+  # Ambiguous band [low_threshold, high_threshold) triggers lightweight CRAG grader
+  enable_crag_grader_in_ambiguous_band: true
+  max_corrective_rewrites: 1
+
+citation_validation:
+  enable_semantic_entailment: true
+  min_claim_support_rate: 0.85
+  max_regenerations: 1
+  allow_partial_as_supported: false
