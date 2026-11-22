@@ -208,6 +208,37 @@ AdaptiveRAG includes a **66-query TR + EN golden evaluation dataset** grounded i
 | **`adaptive_routing`** | Dense + BM25 RRF | On | On | 3-Stage Adaptive | Off *(Tier-1 citation telemetry only)* |
 | **`full`** | Dense + BM25 RRF | On | On | 3-Stage Adaptive | **All Enabled** |
 
+### Measured Offline IR Ablation Results (`$0` LLM API Cost)
+
+Measured locally on **all 66 queries** in [`data/eval/golden_set.jsonl`](data/eval/golden_set.jsonl) (40 EN + 26 TR; 46 retrieval-bearing + 6 conversational + 7 web-fallback + 7 unanswerable) against the 10 corpus documents (`61` indexed chunks) in [`data/raw/`](data/raw/) using real local ONNX weights (`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, `Qdrant/bm25` with `Modifier.IDF`, and `BAAI/bge-reranker-v2-m3-int8` on Apple Silicon `arm64` CPU; run `offline_b5256ec3`, `$0.00` LLM API spend):
+
+#### Overall Scorecard (66 Queries)
+
+| Config | Recall@k | Precision@k | MRR | NDCG@k | Avg `k` | Avg Ctx Tokens | Out-of-Corpus Gate (Rec / Prec) | p50 / p95 Latency (ms) | LLM Cost |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `naive_dense` | 90.6% | 60.5% | 0.886 | 0.870 | 5.00 | 734 | 0.0% / — | 9.4 / 13.7 | `$0.00` |
+| `hybrid_static` | 92.4% | 64.3% | 0.967 | 0.912 | 5.00 | 887 | 0.0% / — | 10.9 / 14.4 | `$0.00` |
+| `hybrid_rerank` | **97.1%** | 62.7% | **0.989** | **0.958** | 5.00 | 1,093 | 0.0% / — | 6,210.1 / 6,692.7 | `$0.00` |
+| `adaptive_dynamic_k` | 88.4% | **87.3%** | 0.946 | 0.891 | **1.53** | **347** | **100.0%** (14/14) / **87.5%** | 6,384.1 / 8,478.9 | `$0.00` |
+
+#### Per-Stratum & Cross-Lingual Highlights
+
+| Stratum / Slice | `naive_dense` | `hybrid_static` | `hybrid_rerank` | `adaptive_dynamic_k` *(offline, no LLM decomposition)* |
+| :--- | :---: | :---: | :---: | :---: |
+| **`factual` (28 EN+TR)** | 92.9% Rec · 0.848 MRR · `k=5.00` (`723` tok) | 100.0% Rec · 0.946 MRR · `k=5.00` (`878` tok) | **100.0% Rec · 1.000 MRR · 1.000 NDCG** · `k=5.00` (`1,049` tok) | **100.0% Rec · 1.000 MRR · 1.000 NDCG** · **`k=1.39` (`340` tok, -67.6%)** |
+| **`factual` TR subset (10, incl. TR→EN)** | 100.0% Rec · 0.825 MRR · `k=5.00` | 100.0% Rec · 0.950 MRR · `k=5.00` | **100.0% Rec · 1.000 MRR** · `k=5.00` | **100.0% Rec · 1.000 MRR · `k=1.20`** |
+| **`analytical` (18 multi-doc)** | 87.0% Rec · 0.944 MRR · `k=5.00` | 80.6% Rec · 1.000 MRR · `k=5.00` | **92.6% Rec · 0.972 MRR · 0.892 NDCG** · `k=5.00` | 70.4% Rec · 0.861 MRR · `k=3.44` (`744` tok) |
+| **`conversational` (6)** | `k=5.00` (`1,342` wasted tok) | `k=5.00` (`1,256` wasted tok) | `k=5.00` (`1,328` wasted tok) | **`k=0.00` (`0` tok — 100% skipped)** |
+| **`web_fallback` (7) + `unanswerable` (7)** | `k=5.00` · 0/14 gated (`462–550` tok) | `k=5.00` · 0/14 gated (`710–793` tok) | `k=5.00` · 0/14 gated (`1,064–1,089` tok) | **`k=0.00` · 14/14 (100.0%) gated (`0` tok)** |
+
+#### Key Engineering Takeaways
+
+- **Monotonic Retrieval Gains via Hybrid RRF + Multilingual Cross-Encoder:** Upgrading from `naive_dense` to `hybrid_static` to `hybrid_rerank` lifts overall MRR from `0.886` → `0.967` → **`0.989`** (`+0.103`), NDCG@k from `0.870` → `0.912` → **`0.958`** (`+0.088`), and Turkish factual MRR (including TR→EN cross-lingual lookups) from `0.825` → `0.950` → **`1.000`**.
+- **68.3% Context-Token Reduction & +24.6 pp Precision via 3-Stage Dynamic Top-K:** Compared to static `hybrid_rerank` (`k=5`), `adaptive_dynamic_k` raises overall Precision@k from `62.7%` to **`87.3%`** while cutting average prompt context from `1,093` to **`347` tokens** (`-68.3%`). On all 28 `factual` queries, it retains **100.0% Recall, 1.000 MRR, and 1.000 NDCG** at **`Avg k = 1.39`** (`-67.6%` tokens).
+- **Zero-LLM Out-of-Corpus Detection:** Calibrated `bge-reranker-v2-m3-int8` sigmoid probabilities plus Stage-1 $\tau_{\min}$ catch **14/14 (100.0%)** `web_fallback` and `unanswerable` queries (`87.5%` precision; 2 false positives out of 52 in-corpus queries) without spending a single LLM token.
+- **Why Multi-Hop Analytical Queries Need Live Agentic Decomposition:** In `$0` offline mode (where LLM `decompose_queries` is disabled), single-query `adaptive_dynamic_k` drops `analytical` Recall from `92.6%` to `70.4%` and trips $\tau_{\min}$ on 2/7 compound Turkish cross-document queries, because no individual chunk covers two distinct subsystems at once. This directly motivates AdaptiveRAG's full LangGraph path (`--mode live`), which decomposes analytical queries into 2–4 atomic sub-queries before hybrid retrieval and reranking.
+- **CPU vs. GPU Latency Trade-Off:** Qdrant Hybrid RRF retrieval runs in `10.9 ms` p50, while local CPU-only ONNX cross-encoder inference over 20 candidates takes `6.2 s` p50 on Apple Silicon CPU; deploying ONNX Runtime with GPU/CoreML execution or tightening `fusion_limit` brings reranking into the sub-200 ms range.
+
 ### Running Benchmarks
 
 ```bash
