@@ -73,11 +73,11 @@ async def test_invoke_structured_repairs_invalid_json_once() -> None:
         responses=[
             '{"query_type": "invalid_route", "needs_retrieval": true}',
             (
-                '```json\n'
+                "```json\n"
                 '{"query_type": "factual", "needs_retrieval": true, "language": "tr", '
                 '"standalone_query": "Qdrant ef_construct varsayılan değeri nedir?", '
                 '"requires_fresh_web_info": false, "reasoning": "Tek bir teknik parametre soruluyor."}'
-                '\n```'
+                "\n```"
             ),
         ]
     )
@@ -144,5 +144,7 @@ async def test_cost_tracker_enforces_hard_budget_cap() -> None:
 def test_estimate_cost_zero_for_ollama_and_free_tier() -> None:
     assert estimate_cost_usd("ollama/qwen2.5:7b", 10_000, 5_000) == 0.0
     assert estimate_cost_usd("qwen/qwen3-30b-a3b-instruct-2507:free", 10_000, 5_000) == 0.0
-    assert estimate_cost_usd("qwen/qwen3-30b-a3b-instruct-2507", 1_000_000, 1_000_000) == pytest.approx(0.40)
+    assert estimate_cost_usd(
+        "qwen/qwen3-30b-a3b-instruct-2507", 1_000_000, 1_000_000
+    ) == pytest.approx(0.40)
     assert estimate_cost_usd("deepseek/deepseek-v3.2", 1_000_000, 1_000_000) == pytest.approx(0.64)

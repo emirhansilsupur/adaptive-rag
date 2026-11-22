@@ -287,7 +287,7 @@ def build_abstention_message(
             else "yerel bilgi tabanında"
         )
         return (
-            f"\"{query.strip()}\" sorusunu güvenilir biçimde yanıtlamak için {scope} "
+            f'"{query.strip()}" sorusunu güvenilir biçimde yanıtlamak için {scope} '
             f"yeterli doğrulanmış kanıt bulunamadı (güven skoru: {score_str}). "
             "Yanıltıcı bilgi üretmemek adına tahminde bulunmuyorum; soruyu daha spesifik teknik "
             "terimlerle daraltabilir veya ilgili dokümanları indeksleyebilirsiniz."
@@ -299,7 +299,7 @@ def build_abstention_message(
         else "the local knowledge base"
     )
     return (
-        f"I cannot provide a verified answer to \"{query.strip()}\" because {scope_en} "
+        f'I cannot provide a verified answer to "{query.strip()}" because {scope_en} '
         f"did not return sufficient supporting evidence (confidence score: {score_str}). "
         "Rather than speculating, I am abstaining; please try narrowing the technical terms "
         "or ingesting the relevant documentation."

@@ -1,0 +1,63 @@
+"""Evaluation suite, dataset adapters, and 4-way ablation benchmark harness for AdaptiveRAG."""
+
+from eval.datasets import (
+    adapt_generic_row,
+    adapt_hotpotqa_row,
+    adapt_ragbench_row,
+    filter_queries,
+    load_external_jsonl,
+    load_golden_jsonl,
+    load_huggingface_dataset,
+)
+from eval.metrics import (
+    aggregate_config_summary,
+    build_ablation_chart_html,
+    compute_binary_precision_recall,
+    compute_ir_scores,
+    deduplicate_doc_ids,
+    mrr_at_k,
+    ndcg_at_k,
+    percentile,
+    precision_at_k,
+    recall_at_k,
+    render_markdown_report,
+)
+from eval.schemas import (
+    BenchmarkReport,
+    ConfigBenchmarkSummary,
+    EvalStratum,
+    GoldenQuery,
+    IRScores,
+    QueryEvalRecord,
+    RagasScores,
+    StratumSummary,
+)
+
+__all__ = [
+    "BenchmarkReport",
+    "ConfigBenchmarkSummary",
+    "EvalStratum",
+    "GoldenQuery",
+    "IRScores",
+    "QueryEvalRecord",
+    "RagasScores",
+    "StratumSummary",
+    "adapt_generic_row",
+    "adapt_hotpotqa_row",
+    "adapt_ragbench_row",
+    "aggregate_config_summary",
+    "build_ablation_chart_html",
+    "compute_binary_precision_recall",
+    "compute_ir_scores",
+    "deduplicate_doc_ids",
+    "filter_queries",
+    "load_external_jsonl",
+    "load_golden_jsonl",
+    "load_huggingface_dataset",
+    "mrr_at_k",
+    "ndcg_at_k",
+    "percentile",
+    "precision_at_k",
+    "recall_at_k",
+    "render_markdown_report",
+]

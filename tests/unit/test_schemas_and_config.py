@@ -45,8 +45,16 @@ def test_confidence_config_rejects_inverted_thresholds() -> None:
 
 
 def test_token_usage_addition() -> None:
-    a = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150, estimated_cost_usd=0.001)
-    b = TokenUsage(prompt_tokens=200, completion_tokens=25, total_tokens=225, estimated_cost_usd=0.002, cache_hits=1)
+    a = TokenUsage(
+        prompt_tokens=100, completion_tokens=50, total_tokens=150, estimated_cost_usd=0.001
+    )
+    b = TokenUsage(
+        prompt_tokens=200,
+        completion_tokens=25,
+        total_tokens=225,
+        estimated_cost_usd=0.002,
+        cache_hits=1,
+    )
     combined = a.add(b)
     assert combined.prompt_tokens == 300
     assert combined.completion_tokens == 75

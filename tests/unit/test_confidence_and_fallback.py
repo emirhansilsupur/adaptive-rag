@@ -133,7 +133,9 @@ def test_deterministic_confidence_formula_and_subquery_coverage() -> None:
 
 async def test_confidence_high_and_low_fast_paths_make_zero_llm_calls() -> None:
     cfg = ConfidenceConfig()  # high=0.72, low=0.38
-    model = _ScriptedModel(responses=['{"grade": "sufficient", "missing_aspects": [], "reasoning": "unused"}'])
+    model = _ScriptedModel(
+        responses=['{"grade": "sufficient", "missing_aspects": [], "reasoning": "unused"}']
+    )
 
     # HIGH fast path: 0.5*0.92 + 0.3*0.86 + 0.2*1.0 = 0.918 >= 0.72
     high_chunks = [_chunk("h1", 0.92, matched=["q1"]), _chunk("h2", 0.80, matched=["q1"])]
@@ -348,7 +350,9 @@ async def test_confidence_freshness_override_and_budget_error_propagation() -> N
 
     # Disabled CRAG grader skips LLM entirely in ambiguous band
     cfg_no_crag = ConfidenceConfig(enable_crag_grader_in_ambiguous_band=False)
-    unused_model = _ScriptedModel(responses=['{"grade": "sufficient", "missing_aspects": [], "reasoning": "x"}'])
+    unused_model = _ScriptedModel(
+        responses=['{"grade": "sufficient", "missing_aspects": [], "reasoning": "x"}']
+    )
     det_only, det_usage = await assess_retrieval_confidence(
         query="CRAG disabled test",
         selected_chunks=ambiguous,

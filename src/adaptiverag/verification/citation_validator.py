@@ -287,9 +287,7 @@ async def validate_citations(
 
         supported_count = sum(1 for item in verifications if item.verdict in supported_verdicts)
         claim_support_rate = round(supported_count / len(verifications), 4)
-        has_contradiction = any(
-            item.verdict == ClaimVerdict.CONTRADICTED for item in verifications
-        )
+        has_contradiction = any(item.verdict == ClaimVerdict.CONTRADICTED for item in verifications)
     else:
         claim_support_rate = tier1.claim_support_rate
         has_contradiction = False

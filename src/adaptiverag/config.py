@@ -50,9 +50,7 @@ class StrategiesConfig(BaseModel):
 
     strategies: dict[QueryType, StrategyProfile]
     confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
-    citation_validation: CitationValidationConfig = Field(
-        default_factory=CitationValidationConfig
-    )
+    citation_validation: CitationValidationConfig = Field(default_factory=CitationValidationConfig)
 
     @model_validator(mode="after")
     def _ensure_all_query_types_present(self) -> StrategiesConfig:

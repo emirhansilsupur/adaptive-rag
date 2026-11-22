@@ -166,7 +166,5 @@ def load_directory(directory: Path, *, recursive: bool = True) -> list[LoadedDoc
         raise FileNotFoundError(f"Corpus directory not found: {root}")
 
     iterator = root.rglob("*") if recursive else root.glob("*")
-    paths = sorted(
-        p for p in iterator if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-    )
+    paths = sorted(p for p in iterator if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS)
     return [load_document(p, base_dir=root) for p in paths]

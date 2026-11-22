@@ -67,7 +67,9 @@ def estimate_cost_usd(
         base = normalized.split(":", maxsplit=1)[0]
         pricing = MODEL_PRICING.get(base, DEFAULT_FALLBACK_PRICING)
 
-    cost = (prompt_tokens * pricing.input_per_1m + completion_tokens * pricing.output_per_1m) / 1_000_000.0
+    cost = (
+        prompt_tokens * pricing.input_per_1m + completion_tokens * pricing.output_per_1m
+    ) / 1_000_000.0
     return round(cost, 8)
 
 
@@ -103,10 +105,7 @@ class CostTracker:
         with self._lock:
             self._usage = self._usage.add(delta)
             current = self._usage.model_copy()
-            if (
-                self._max_cost_usd is not None
-                and current.estimated_cost_usd > self._max_cost_usd
-            ):
+            if self._max_cost_usd is not None and current.estimated_cost_usd > self._max_cost_usd:
                 raise BudgetExceededError(
                     f"LLM budget cap exceeded: ${current.estimated_cost_usd:.4f} > "
                     f"${self._max_cost_usd:.4f}"

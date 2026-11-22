@@ -596,12 +596,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         web_chunks = assign_citation_ids(web_chunks, prefix="W", start_index=1)
 
         # Keep local chunks only when they were NOT graded insufficient/low-confidence.
-        local_is_usable = (
-            confidence is None
-            or (
-                confidence.level != ConfidenceLevel.LOW
-                and confidence.crag_grade != CRAGGrade.INSUFFICIENT
-            )
+        local_is_usable = confidence is None or (
+            confidence.level != ConfidenceLevel.LOW
+            and confidence.crag_grade != CRAGGrade.INSUFFICIENT
         )
         kept_local: list[EvidenceChunk] = []
         if local_is_usable and existing_local:

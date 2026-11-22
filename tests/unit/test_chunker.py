@@ -29,7 +29,9 @@ def test_load_curated_corpus_detects_languages_and_titles() -> None:
 
 
 def test_detect_document_language_handles_tr_and_en() -> None:
-    assert detect_document_language("Bu doküman Türkçe karakterler içerir: ğ, ş, ı, ö, ü, ç.") == "tr"
+    assert (
+        detect_document_language("Bu doküman Türkçe karakterler içerir: ğ, ş, ı, ö, ü, ç.") == "tr"
+    )
     assert detect_document_language("Qdrant uses HNSW graphs and BM25 sparse vectors.") == "en"
 
 
@@ -96,7 +98,9 @@ def test_chunker_keeps_tables_intact_and_repeats_header_when_oversized() -> None
         language="en",
     )
 
-    chunks = chunk_document(doc, ChunkingConfig(max_tokens=140, overlap_tokens=0, min_chunk_tokens=10))
+    chunks = chunk_document(
+        doc, ChunkingConfig(max_tokens=140, overlap_tokens=0, min_chunk_tokens=10)
+    )
     assert len(chunks) >= 2
     for chunk in chunks:
         assert chunk.metadata.get("has_table") is True

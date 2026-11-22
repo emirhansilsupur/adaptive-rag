@@ -31,7 +31,9 @@ def sigmoid(logit: float, *, temperature: float = 1.0) -> float:
 
 def format_passage_for_rerank(chunk: EvidenceChunk) -> str:
     """Attach title and section breadcrumb so the cross-encoder sees structural context."""
-    header_parts = [part.strip() for part in (chunk.title, chunk.section_path) if part and part.strip()]
+    header_parts = [
+        part.strip() for part in (chunk.title, chunk.section_path) if part and part.strip()
+    ]
     if not header_parts:
         return chunk.text
     prefix = f"[{' | '.join(header_parts)}]"

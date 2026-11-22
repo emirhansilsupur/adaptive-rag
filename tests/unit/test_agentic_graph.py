@@ -147,9 +147,7 @@ class _ControllableReranker:
         call_idx = self.call_count
         self.call_count += 1
         base_score = (
-            self._schedule[min(call_idx, len(self._schedule) - 1)]
-            if self._schedule
-            else 0.88
+            self._schedule[min(call_idx, len(self._schedule) - 1)] if self._schedule else 0.88
         )
         scored: list[EvidenceChunk] = []
         for idx, chunk in enumerate(chunks):
@@ -292,7 +290,13 @@ def _make_workflow(
     reranker_scores: list[float] | None = None,
     web_chunks: list[EvidenceChunk] | None = None,
     cache_path: Path | None = None,
-) -> tuple[AdaptiveRAGWorkflow, _ScriptedChatModel, _ScriptedChatModel, _ControllableReranker, _StubWebFallback]:
+) -> tuple[
+    AdaptiveRAGWorkflow,
+    _ScriptedChatModel,
+    _ScriptedChatModel,
+    _ControllableReranker,
+    _StubWebFallback,
+]:
     settings = Settings(
         llm_cache_enabled=cache_path is not None,
         web_fallback_enabled=True,
@@ -342,7 +346,10 @@ async def test_graph_conversational_path_skips_retrieval() -> None:
         )
         workflow, fast_model, gen_model, reranker, fallback = _make_workflow(
             store=store,
-            fast_responses=[router_json, "Merhaba! Size teknik dokümanlarınızla ilgili nasıl yardımcı olabilirim?"],
+            fast_responses=[
+                router_json,
+                "Merhaba! Size teknik dokümanlarınızla ilgili nasıl yardımcı olabilirim?",
+            ],
             gen_responses=[],
         )
 
@@ -408,7 +415,9 @@ async def test_graph_factual_happy_path_with_coreference() -> None:
             ChatMessage(role="user", content="Tell me about Qdrant."),
             ChatMessage(role="assistant", content="Qdrant is a vector search engine."),
         ]
-        result = await workflow.arun("How does it fuse dense and sparse search?", chat_history=history)
+        result = await workflow.arun(
+            "How does it fuse dense and sparse search?", chat_history=history
+        )
 
         assert result.query_type == QueryType.FACTUAL
         assert result.query_plan is not None
@@ -632,7 +641,10 @@ async def test_graph_web_fallback_for_fresh_web_query() -> None:
         assert result.fallback_used is True
         assert result.abstained is False
         assert len(fallback.calls) == 1
-        assert any(c.source_type == SourceType.WEB and c.citation_id == "W1" for c in result.evidence_chunks)
+        assert any(
+            c.source_type == SourceType.WEB and c.citation_id == "W1"
+            for c in result.evidence_chunks
+        )
         assert result.citation_report is not None and result.citation_report.passed is True
         assert "W1" in result.citation_report.valid_citation_ids
         assert "web_fallback_search" in [t.node for t in result.trace]
@@ -810,9 +822,7 @@ async def test_graph_ablation_naive_dense_and_astream_events() -> None:
         workflow, fast_model, gen_model, reranker, fallback = _make_workflow(
             store=store,
             fast_responses=[],
-            gen_responses=[
-                "Qdrant combines dense and sparse vectors natively via RRF [C1]."
-            ],
+            gen_responses=["Qdrant combines dense and sparse vectors natively via RRF [C1]."],
             reranker_scores=[0.90],
         )
 

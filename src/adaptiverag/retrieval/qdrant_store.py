@@ -154,6 +154,14 @@ class QdrantHybridStore:
     def client(self) -> AsyncQdrantClient:
         return self._client
 
+    @property
+    def dense_embedder(self) -> DenseEmbedder:
+        return self._dense
+
+    @property
+    def sparse_embedder(self) -> SparseEmbedder:
+        return self._sparse
+
     async def close(self) -> None:
         """Close the underlying async Qdrant client connection."""
         await self._client.close()

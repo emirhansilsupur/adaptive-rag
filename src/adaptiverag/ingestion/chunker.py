@@ -328,7 +328,9 @@ def _expand_oversized_block(
     ]
 
 
-def _extract_overlap_tail(blocks: list[_AtomicBlock], overlap_tokens: int, encoding_name: str) -> str:
+def _extract_overlap_tail(
+    blocks: list[_AtomicBlock], overlap_tokens: int, encoding_name: str
+) -> str:
     """Extract clean prose overlap from the tail of the previous chunk (never broken fences)."""
     if overlap_tokens <= 0 or not blocks:
         return ""

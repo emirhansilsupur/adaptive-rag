@@ -81,7 +81,9 @@ def test_sigmoid_numerical_stability_and_temperature() -> None:
 
 
 def test_format_passage_for_rerank_prepends_breadcrumb_once() -> None:
-    chunk = _make_chunk("c1", title="Qdrant HNSW", section_path="Parameters", text="ef_construct=100")
+    chunk = _make_chunk(
+        "c1", title="Qdrant HNSW", section_path="Parameters", text="ef_construct=100"
+    )
     formatted = format_passage_for_rerank(chunk)
     assert formatted == "[Qdrant HNSW | Parameters]\nef_construct=100"
 
@@ -99,9 +101,17 @@ async def test_fastembed_reranker_calibrates_sorts_and_preserves_metadata() -> N
     reranker._model = fake_onnx  # type: ignore[assignment]
 
     candidates = [
-        _make_chunk("c_low", text="PostgreSQL MVCC visibility rules.", matched_sub_queries=["q_mvcc"]),
-        _make_chunk("c_mid", text="vLLM PagedAttention KV cache blocks.", matched_sub_queries=["q_vllm"]),
-        _make_chunk("c_top", text="Qdrant HNSW ef_construct defaults to 100.", matched_sub_queries=["q_qdrant", "q_hnsw"]),
+        _make_chunk(
+            "c_low", text="PostgreSQL MVCC visibility rules.", matched_sub_queries=["q_mvcc"]
+        ),
+        _make_chunk(
+            "c_mid", text="vLLM PagedAttention KV cache blocks.", matched_sub_queries=["q_vllm"]
+        ),
+        _make_chunk(
+            "c_top",
+            text="Qdrant HNSW ef_construct defaults to 100.",
+            matched_sub_queries=["q_qdrant", "q_hnsw"],
+        ),
     ]
 
     ranked = await reranker.arerank("Qdrant ef_construct varsayılan değeri nedir?", candidates)

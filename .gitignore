@@ -25,6 +25,7 @@ htmlcov/
 # Local data / runtime state
 qdrant_storage/
 .adaptiverag_cache/
+eval/reports/
 *.sqlite
 *.sqlite3
 *.db

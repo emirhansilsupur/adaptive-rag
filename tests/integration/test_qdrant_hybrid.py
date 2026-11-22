@@ -187,8 +187,7 @@ async def test_hybrid_rrf_recalls_exact_technical_identifiers_when_dense_is_blin
         )
         assert hybrid_vllm
         assert any(
-            h.doc_id == "04_vllm_serving_and_paged_attention"
-            and "max_num_batched_tokens" in h.text
+            h.doc_id == "04_vllm_serving_and_paged_attention" and "max_num_batched_tokens" in h.text
             for h in hybrid_vllm[:2]
         )
     finally:

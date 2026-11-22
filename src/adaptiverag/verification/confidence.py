@@ -301,7 +301,9 @@ async def assess_retrieval_confidence(
             judgment = crag_result.parsed
 
             if judgment.grade == CRAGGrade.SUFFICIENT:
-                upgraded = round(_clamp01(max(signals.deterministic_score, config.high_threshold + 0.08)), 4)
+                upgraded = round(
+                    _clamp01(max(signals.deterministic_score, config.high_threshold + 0.08)), 4
+                )
                 return (
                     ConfidenceAssessment(
                         top1_score=signals.top1_score,
@@ -345,7 +347,9 @@ async def assess_retrieval_confidence(
                 )
 
             # CRAGGrade.INSUFFICIENT
-            downgraded = round(_clamp01(min(signals.deterministic_score, max(0.0, config.low_threshold - 0.05))), 4)
+            downgraded = round(
+                _clamp01(min(signals.deterministic_score, max(0.0, config.low_threshold - 0.05))), 4
+            )
             action = _select_recovery_action(
                 rewrite_attempts=rewrite_attempts,
                 config=config,
