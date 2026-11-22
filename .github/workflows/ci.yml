@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-typecheck:
+    name: Lint, Format & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python from .python-version
+        run: uv python install
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --extra ui --extra eval --group dev
+
+      - name: Ruff lint
+        run: uv run --no-sync ruff check src tests eval ui
+
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check src tests eval ui
+
+      - name: Mypy static type check
+        run: uv run --no-sync mypy src eval
+
+      - name: Compile-check Streamlit UI entrypoint
+        run: uv run --no-sync python -m py_compile ui/app.py
+
+  test:
+    name: Offline $0 Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      LANGFUSE_ENABLED: "false"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python from .python-version
+        run: uv python install
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --extra ui --extra eval --group dev
+
+      - name: Run $0 offline pytest suite with coverage
+        run: uv run --no-sync pytest -v --cov=adaptiverag --cov=eval --cov-report=term-missing

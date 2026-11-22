@@ -2,6 +2,7 @@
 
 > **Query-aware Agentic RAG engine** built with **LangGraph**, **Pydantic v2**, **Qdrant** (native Dense + BM25 Hybrid Search & RRF), local **FastEmbed ONNX** multilingual embeddings & cross-encoder reranking (**TR + EN**), 3-stage Dynamic Top-K selection, multi-signal CRAG confidence gating, web search fallback, two-tier citation validation, FastAPI SSE streaming, and a **Glass-Box Streamlit Inspector**.
 
+[![CI](https://github.com/emirhansilsupur/Adaptive-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/emirhansilsupur/Adaptive-RAG/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-1C3C3C)
 ![Qdrant](https://img.shields.io/badge/Vector%20DB-Qdrant%20Hybrid%20RRF-DC244C)
@@ -264,6 +265,8 @@ Every run writes machine-readable JSON (`benchmark_report.json`), a GitHub-flavo
 
 ```text
 adaptiverag/
+├── .github/workflows/
+│   └── ci.yml                       # GitHub Actions CI: ruff lint/format, mypy (src+eval), $0 offline pytest+cov
 ├── configs/
 │   └── strategies.yaml              # Declarative routing, dynamic-k, confidence & citation thresholds
 ├── data/
@@ -288,9 +291,11 @@ adaptiverag/
 │   ├── metrics.py                   # Recall@k, Precision@k, MRR, NDCG@k, percentiles, Markdown/Plotly report generators
 │   ├── ragas_runner.py              # RAGAS v0.4+ LLM-as-a-Judge wrapper with local $0 FastEmbed embeddings
 │   └── run_benchmark.py             # CLI & async 4-way ablation runner (offline-ir + live + budget guardrails)
-├── tests/unit/                      # Deterministic $0 unit & graph test suite (zero paid API calls)
+├── tests/
+│   ├── unit/                        # Deterministic $0 unit, graph, API, citation & eval tests
+│   └── integration/                 # In-memory Qdrant native Dense + BM25 RRF hybrid search tests
 ├── docker-compose.yml               # Qdrant + optional Langfuse observability profile
-├── Makefile                         # install, up, ingest, api, ui, test, lint, typecheck, eval
+├── Makefile                         # install, up, ingest, api, ui, test, lint, typecheck, ci, eval
 └── pyproject.toml                   # uv project config, ruff, mypy, pytest settings
 ```
 
@@ -298,15 +303,14 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** using deterministic embeddings/reranker stubs, in-memory Qdrant, and scripted fake LLMs:
+All automated tests run **100% offline at `$0` API cost** (`68` unit & in-memory Qdrant integration tests, `82%` coverage across `src/adaptiverag` & `eval/`) using deterministic embeddings/reranker stubs, in-memory Qdrant, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
-# Run full unit & end-to-end graph/API/eval test suite
-make test
+# Run the full local CI mirror (lint + format + mypy src/eval + UI syntax + offline pytest w/ coverage)
+make ci
 
-# Static lint & formatting verification (src, tests, eval, ui)
-make lint
-
-# Static type checking (strict untyped-defs enforcement on src/)
-make typecheck
+# Or run individual gates:
+make test       # 68 offline unit & in-memory integration tests ($0 API cost)
+make lint       # ruff check + ruff format --check (src, tests, eval, ui)
+make typecheck  # mypy static type check (src, eval)
 ```

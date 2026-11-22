@@ -1,4 +1,4 @@
-.PHONY: install up up-full down ingest api ui test test-unit lint typecheck eval
+.PHONY: install up up-full down ingest api ui test test-unit lint typecheck ci eval
 
 install:
 	uv sync --extra ui --extra eval --group dev
@@ -32,7 +32,11 @@ lint:
 	uv run ruff format --check src tests eval ui
 
 typecheck:
-	uv run mypy src
+	uv run mypy src eval
+
+ci: lint typecheck
+	uv run python -m py_compile ui/app.py
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 LANGFUSE_ENABLED=false uv run pytest -v --cov=adaptiverag --cov=eval --cov-report=term-missing
 
 eval:
 	uv run python -m eval.run_benchmark
