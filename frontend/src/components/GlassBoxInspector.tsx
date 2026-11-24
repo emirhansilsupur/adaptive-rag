@@ -327,12 +327,19 @@ function DynamicKTab({
               value={dk.total_context_tokens.toLocaleString("en-US")}
             />
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-3 py-2 text-xs">
-            <Layers className="h-3.5 w-3.5 shrink-0 text-teal-400" />
-            <span className="text-[var(--text-muted)]">Cutoff Reason:</span>
-            <code className="font-mono text-[11px] font-medium text-[var(--text-primary)]">
-              {dk.cutoff_reason}
-            </code>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <Layers className="h-3.5 w-3.5 shrink-0 text-teal-400" />
+              <span className="text-[var(--text-muted)]">Cutoff Reason:</span>
+              <code className="font-mono text-[11px] font-medium text-[var(--text-primary)]">
+                {dk.cutoff_reason}
+              </code>
+            </div>
+            {dk.parent_expansion_applied && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-indigo-500/35 bg-indigo-500/12 px-2 py-0.5 font-mono text-[10.5px] font-medium text-indigo-600 dark:text-indigo-300">
+                Small→Big: {dk.collapsed_child_count ?? 0} child → {dk.expanded_parent_count ?? 0} parent
+              </span>
+            )}
           </div>
         </>
       )}
@@ -824,6 +831,11 @@ function EvidenceTab({
                       {ch.token_count > 0 && (
                         <span className="font-mono tabular-nums">
                           {ch.token_count} tokens
+                        </span>
+                      )}
+                      {ch.expanded_to_parent && (
+                        <span className="rounded border border-indigo-500/35 bg-indigo-500/12 px-1.5 py-0.5 font-mono text-[10px] font-medium text-indigo-600 dark:text-indigo-300">
+                          Parent Section ({ch.matched_child_ids?.length || 1} child)
                         </span>
                       )}
                     </div>

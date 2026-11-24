@@ -29,12 +29,18 @@ _FALLBACK_TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
 
 class ChunkingConfig(BaseModel):
-    """Parameters governing token-budgeted, structure-aware chunking."""
+    """Parameters governing token-budgeted, structure-aware (flat or parent-child) chunking."""
 
     max_tokens: int = Field(default=512, ge=64, le=4096)
     overlap_tokens: int = Field(default=64, ge=0, le=512)
     min_chunk_tokens: int = Field(default=40, ge=1, le=512)
     encoding_name: str = "cl100k_base"
+
+    # Optional Hierarchical Parent-Child (Small-to-Big) mode
+    parent_child_enabled: bool = False
+    parent_max_tokens: int = Field(default=1000, ge=128, le=8192)
+    child_max_tokens: int = Field(default=256, ge=64, le=2048)
+    child_overlap_tokens: int = Field(default=40, ge=0, le=512)
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> ChunkingConfig:
@@ -46,6 +52,22 @@ class ChunkingConfig(BaseModel):
             raise ValueError(
                 f"min_chunk_tokens ({self.min_chunk_tokens}) must be <= max_tokens ({self.max_tokens})"
             )
+        if self.parent_child_enabled:
+            if self.child_overlap_tokens >= self.child_max_tokens:
+                raise ValueError(
+                    f"child_overlap_tokens ({self.child_overlap_tokens}) must be < "
+                    f"child_max_tokens ({self.child_max_tokens})"
+                )
+            if self.child_max_tokens >= self.parent_max_tokens:
+                raise ValueError(
+                    f"child_max_tokens ({self.child_max_tokens}) must be < "
+                    f"parent_max_tokens ({self.parent_max_tokens})"
+                )
+            if self.min_chunk_tokens > self.child_max_tokens:
+                raise ValueError(
+                    f"min_chunk_tokens ({self.min_chunk_tokens}) must be <= "
+                    f"child_max_tokens ({self.child_max_tokens})"
+                )
         return self
 
 
@@ -60,6 +82,14 @@ class DocumentChunk(BaseModel):
     chunk_index: int = Field(ge=0)
     token_count: int = Field(ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # Optional Parent-Child (Small-to-Big) lineage populated when parent_child_enabled=True
+    parent_id: str | None = None
+    parent_text: str | None = None
+    parent_section_path: str | None = None
+    parent_token_count: int | None = Field(default=None, ge=1)
+    child_index: int | None = Field(default=None, ge=0)
+    child_count: int | None = Field(default=None, ge=1)
 
     @property
     def embedding_text(self) -> str:
@@ -83,6 +113,10 @@ class DocumentChunk(BaseModel):
             url=str(source_url) if source_url else None,
             metadata=dict(self.metadata),
             token_count=self.token_count,
+            parent_id=self.parent_id,
+            parent_text=self.parent_text,
+            parent_section_path=self.parent_section_path,
+            parent_token_count=self.parent_token_count,
         )
 
 
@@ -122,6 +156,8 @@ class _AtomicBlock:
 class _MarkdownSection:
     section_path: str
     blocks: list[_AtomicBlock]
+    heading_level: int = 0
+    heading_text: str = ""
 
 
 def _flush_paragraph(buf: list[str], blocks: list[_AtomicBlock]) -> None:
@@ -138,6 +174,8 @@ def _parse_markdown_sections(content: str, doc_title: str) -> list[_MarkdownSect
     sections: list[_MarkdownSection] = []
 
     current_path = doc_title
+    current_level = 0
+    current_heading = doc_title
     current_blocks: list[_AtomicBlock] = []
     para_buf: list[str] = []
 
@@ -175,7 +213,14 @@ def _parse_markdown_sections(content: str, doc_title: str) -> list[_MarkdownSect
         if heading_match:
             _flush_paragraph(para_buf, current_blocks)
             if current_blocks:
-                sections.append(_MarkdownSection(section_path=current_path, blocks=current_blocks))
+                sections.append(
+                    _MarkdownSection(
+                        section_path=current_path,
+                        blocks=current_blocks,
+                        heading_level=current_level,
+                        heading_text=current_heading,
+                    )
+                )
                 current_blocks = []
 
             level = len(heading_match.group(1))
@@ -184,6 +229,8 @@ def _parse_markdown_sections(content: str, doc_title: str) -> list[_MarkdownSect
                 heading_stack.pop()
             heading_stack.append((level, heading_text))
             current_path = " > ".join(h_text for _, h_text in heading_stack)
+            current_level = level
+            current_heading = heading_text
             i += 1
             continue
 
@@ -210,7 +257,14 @@ def _parse_markdown_sections(content: str, doc_title: str) -> list[_MarkdownSect
 
     _flush_paragraph(para_buf, current_blocks)
     if current_blocks:
-        sections.append(_MarkdownSection(section_path=current_path, blocks=current_blocks))
+        sections.append(
+            _MarkdownSection(
+                section_path=current_path,
+                blocks=current_blocks,
+                heading_level=current_level,
+                heading_text=current_heading,
+            )
+        )
 
     return sections
 
@@ -361,65 +415,254 @@ def _make_chunk_id(doc_id: str, chunk_index: int) -> str:
     return str(uuid.uuid5(ADAPTIVERAG_CHUNK_NAMESPACE, f"{doc_id}::{chunk_index}"))
 
 
+def _make_child_chunk_id(doc_id: str, chunk_index: int) -> str:
+    """Create a deterministic UUIDv5 child chunk ID disjoint from flat chunk IDs."""
+    return str(uuid.uuid5(ADAPTIVERAG_CHUNK_NAMESPACE, f"{doc_id}::child::{chunk_index}"))
+
+
+def _make_parent_id(doc_id: str, parent_index: int) -> str:
+    """Create a deterministic UUIDv5 parent passage identifier for Small-to-Big retrieval."""
+    return str(uuid.uuid5(ADAPTIVERAG_CHUNK_NAMESPACE, f"{doc_id}::parent::{parent_index}"))
+
+
+def _pack_blocks(
+    blocks: list[_AtomicBlock],
+    *,
+    max_tokens: int,
+    overlap_tokens: int,
+    min_chunk_tokens: int,
+    encoding_name: str,
+) -> list[tuple[list[_AtomicBlock], str]]:
+    """Pack atomic blocks into token-budgeted windows preserving code fences and tables."""
+    expanded: list[_AtomicBlock] = []
+    for blk in blocks:
+        expanded.extend(_expand_oversized_block(blk, max_tokens, encoding_name))
+
+    packed: list[tuple[list[_AtomicBlock], str]] = []
+    current_blocks: list[_AtomicBlock] = []
+    overlap_prefix = ""
+
+    for blk in expanded:
+        parts = [overlap_prefix] if overlap_prefix else []
+        parts.extend(b.text for b in current_blocks)
+        parts.append(blk.text)
+        candidate_text = "\n\n".join(parts)
+
+        if current_blocks and count_tokens(candidate_text, encoding_name) > max_tokens:
+            finalized_parts = [overlap_prefix] if overlap_prefix else []
+            finalized_parts.extend(b.text for b in current_blocks)
+            packed.append((list(current_blocks), "\n\n".join(finalized_parts)))
+
+            overlap_prefix = _extract_overlap_tail(current_blocks, overlap_tokens, encoding_name)
+            if (
+                overlap_prefix
+                and count_tokens(f"{overlap_prefix}\n\n{blk.text}", encoding_name) > max_tokens
+            ):
+                overlap_prefix = ""
+            current_blocks = [blk]
+        else:
+            current_blocks.append(blk)
+
+    if current_blocks:
+        finalized_parts = [overlap_prefix] if overlap_prefix else []
+        finalized_parts.extend(b.text for b in current_blocks)
+        packed.append((list(current_blocks), "\n\n".join(finalized_parts)))
+
+    # Merge tiny trailing chunk within the same scope when safely within budget
+    if len(packed) >= 2:
+        last_blocks, last_text = packed[-1]
+        if count_tokens(last_text, encoding_name) < min_chunk_tokens:
+            prev_blocks, prev_text = packed[-2]
+            merged_text = f"{prev_text}\n\n" + "\n\n".join(b.text for b in last_blocks)
+            if count_tokens(merged_text, encoding_name) <= int(max_tokens * 1.15):
+                packed[-2] = (prev_blocks + last_blocks, merged_text)
+                packed.pop()
+
+    return packed
+
+
+@dataclass(frozen=True)
+class _ScopedBlock:
+    section_path: str
+    subheading_line: str | None
+    block: _AtomicBlock
+
+
+def _group_sections_into_parent_scopes(
+    sections: list[_MarkdownSection],
+) -> list[tuple[str, list[_MarkdownSection]]]:
+    """Group H3/H4 subsections under their enclosing H1/H2 parent section."""
+    groups: list[tuple[str, list[_MarkdownSection]]] = []
+    for section in sections:
+        starts_new_parent = not groups or section.heading_level <= 2
+        if starts_new_parent:
+            groups.append((section.section_path, [section]))
+        else:
+            groups[-1][1].append(section)
+    return groups
+
+
+def _render_parent_window_text(items: list[_ScopedBlock]) -> str:
+    """Render cohesive Markdown text for a parent window, keeping H3/H4 subheadings intact."""
+    parts: list[str] = []
+    emitted_headings: set[tuple[str, str]] = set()
+    for item in items:
+        if item.subheading_line:
+            key = (item.section_path, item.subheading_line)
+            if key not in emitted_headings:
+                emitted_headings.add(key)
+                parts.append(item.subheading_line)
+        parts.append(item.block.text)
+    return "\n\n".join(parts).strip()
+
+
+def _chunk_document_parent_child(
+    doc: LoadedDocument,
+    cfg: ChunkingConfig,
+) -> list[DocumentChunk]:
+    """Build cohesive parent windows (<= parent_max_tokens) and focused child chunks (<= child_max_tokens)."""
+    sections = _parse_markdown_sections(doc.content, doc_title=doc.title)
+    parent_groups = _group_sections_into_parent_scopes(sections)
+
+    chunks: list[DocumentChunk] = []
+    parent_idx = 0
+    global_child_idx = 0
+
+    for parent_section_path, group_sections in parent_groups:
+        # Flatten group blocks while preserving subsection breadcrumbs and atomic constraints
+        scoped_items: list[_ScopedBlock] = []
+        for sub_sec in group_sections:
+            subheading_line: str | None = None
+            if (
+                sub_sec.section_path != parent_section_path
+                and sub_sec.heading_level >= 3
+                and sub_sec.heading_text
+            ):
+                subheading_line = f"{'#' * sub_sec.heading_level} {sub_sec.heading_text}"
+            for blk in sub_sec.blocks:
+                for piece in _expand_oversized_block(blk, cfg.parent_max_tokens, cfg.encoding_name):
+                    scoped_items.append(
+                        _ScopedBlock(
+                            section_path=sub_sec.section_path,
+                            subheading_line=subheading_line,
+                            block=piece,
+                        )
+                    )
+
+        if not scoped_items:
+            continue
+
+        # Pack scoped items into parent windows up to parent_max_tokens
+        parent_windows: list[list[_ScopedBlock]] = []
+        current_window: list[_ScopedBlock] = []
+        for item in scoped_items:
+            candidate_window = [*current_window, item]
+            candidate_text = _render_parent_window_text(candidate_window)
+            if (
+                current_window
+                and count_tokens(candidate_text, cfg.encoding_name) > cfg.parent_max_tokens
+            ):
+                parent_windows.append(current_window)
+                current_window = [item]
+            else:
+                current_window.append(item)
+        if current_window:
+            parent_windows.append(current_window)
+
+        for window_items in parent_windows:
+            parent_text = _render_parent_window_text(window_items)
+            if not parent_text:
+                continue
+            parent_id = _make_parent_id(doc.doc_id, parent_idx)
+            parent_tokens = max(1, count_tokens(parent_text, cfg.encoding_name))
+            parent_idx += 1
+
+            # Slice this parent window into child chunks respecting contiguous subsection boundaries
+            subsection_runs: list[tuple[str, list[_AtomicBlock]]] = []
+            for item in window_items:
+                if subsection_runs and subsection_runs[-1][0] == item.section_path:
+                    subsection_runs[-1][1].append(item.block)
+                else:
+                    subsection_runs.append((item.section_path, [item.block]))
+
+            raw_children: list[tuple[str, str, bool, bool]] = []
+            for sub_path, sub_blocks in subsection_runs:
+                packed_children = _pack_blocks(
+                    sub_blocks,
+                    max_tokens=cfg.child_max_tokens,
+                    overlap_tokens=cfg.child_overlap_tokens,
+                    min_chunk_tokens=cfg.min_chunk_tokens,
+                    encoding_name=cfg.encoding_name,
+                )
+                for child_blocks, child_text in packed_children:
+                    cleaned = child_text.strip()
+                    if not cleaned:
+                        continue
+                    has_code = any(b.kind == "code" for b in child_blocks)
+                    has_table = any(b.kind == "table" for b in child_blocks)
+                    raw_children.append((sub_path, cleaned, has_code, has_table))
+
+            child_total = len(raw_children)
+            for local_idx, (child_section_path, child_text, has_code, has_table) in enumerate(
+                raw_children
+            ):
+                child_tokens = max(1, count_tokens(child_text, cfg.encoding_name))
+                chunks.append(
+                    DocumentChunk(
+                        chunk_id=_make_child_chunk_id(doc.doc_id, global_child_idx),
+                        doc_id=doc.doc_id,
+                        title=doc.title,
+                        section_path=child_section_path,
+                        text=child_text,
+                        chunk_index=global_child_idx,
+                        token_count=child_tokens,
+                        parent_id=parent_id,
+                        parent_text=parent_text,
+                        parent_section_path=parent_section_path,
+                        parent_token_count=parent_tokens,
+                        child_index=local_idx,
+                        child_count=child_total,
+                        metadata={
+                            **doc.metadata,
+                            "source_path": doc.source_path,
+                            "doc_type": doc.doc_type,
+                            "language": doc.language,
+                            "content_hash": _content_hash(child_text),
+                            "has_code_block": has_code,
+                            "has_table": has_table,
+                            "chunk_strategy": "parent_child",
+                            "parent_id": parent_id,
+                            "parent_token_count": parent_tokens,
+                            "child_index": local_idx,
+                            "child_count": child_total,
+                        },
+                    )
+                )
+                global_child_idx += 1
+
+    return chunks
+
+
 def chunk_document(
     doc: LoadedDocument,
     config: ChunkingConfig | None = None,
 ) -> list[DocumentChunk]:
     """Split a LoadedDocument into structure-aware, token-budgeted DocumentChunks."""
     cfg = config or ChunkingConfig()
-    sections = _parse_markdown_sections(doc.content, doc_title=doc.title)
+    if cfg.parent_child_enabled:
+        return _chunk_document_parent_child(doc, cfg)
 
+    sections = _parse_markdown_sections(doc.content, doc_title=doc.title)
     raw_chunks: list[tuple[str, str, bool, bool]] = []  # (section_path, text, has_code, has_table)
 
     for section in sections:
-        expanded: list[_AtomicBlock] = []
-        for blk in section.blocks:
-            expanded.extend(_expand_oversized_block(blk, cfg.max_tokens, cfg.encoding_name))
-
-        section_packed: list[tuple[list[_AtomicBlock], str]] = []
-        current_blocks: list[_AtomicBlock] = []
-        overlap_prefix = ""
-
-        for blk in expanded:
-            parts = [overlap_prefix] if overlap_prefix else []
-            parts.extend(b.text for b in current_blocks)
-            parts.append(blk.text)
-            candidate_text = "\n\n".join(parts)
-
-            if current_blocks and count_tokens(candidate_text, cfg.encoding_name) > cfg.max_tokens:
-                finalized_parts = [overlap_prefix] if overlap_prefix else []
-                finalized_parts.extend(b.text for b in current_blocks)
-                section_packed.append((list(current_blocks), "\n\n".join(finalized_parts)))
-
-                overlap_prefix = _extract_overlap_tail(
-                    current_blocks, cfg.overlap_tokens, cfg.encoding_name
-                )
-                # Ensure overlap + new block does not exceed max_tokens
-                if (
-                    overlap_prefix
-                    and count_tokens(f"{overlap_prefix}\n\n{blk.text}", cfg.encoding_name)
-                    > cfg.max_tokens
-                ):
-                    overlap_prefix = ""
-                current_blocks = [blk]
-            else:
-                current_blocks.append(blk)
-
-        if current_blocks:
-            finalized_parts = [overlap_prefix] if overlap_prefix else []
-            finalized_parts.extend(b.text for b in current_blocks)
-            section_packed.append((list(current_blocks), "\n\n".join(finalized_parts)))
-
-        # Merge tiny trailing chunk within the same section when safely within budget
-        if len(section_packed) >= 2:
-            last_blocks, last_text = section_packed[-1]
-            if count_tokens(last_text, cfg.encoding_name) < cfg.min_chunk_tokens:
-                prev_blocks, prev_text = section_packed[-2]
-                merged_text = f"{prev_text}\n\n" + "\n\n".join(b.text for b in last_blocks)
-                if count_tokens(merged_text, cfg.encoding_name) <= int(cfg.max_tokens * 1.15):
-                    section_packed[-2] = (prev_blocks + last_blocks, merged_text)
-                    section_packed.pop()
-
+        section_packed = _pack_blocks(
+            section.blocks,
+            max_tokens=cfg.max_tokens,
+            overlap_tokens=cfg.overlap_tokens,
+            min_chunk_tokens=cfg.min_chunk_tokens,
+            encoding_name=cfg.encoding_name,
+        )
         for packed_blocks, chunk_text in section_packed:
             has_code = any(b.kind == "code" for b in packed_blocks)
             has_table = any(b.kind == "table" for b in packed_blocks)

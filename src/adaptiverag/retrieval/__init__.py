@@ -16,6 +16,7 @@ from adaptiverag.retrieval.fallback import (
     WebSearchProvider,
     WebSearchResult,
 )
+from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import (
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
@@ -48,6 +49,7 @@ __all__ = [
     "WebSearchProvider",
     "WebSearchResult",
     "assign_citation_ids",
+    "expand_to_parent_chunks",
     "format_passage_for_rerank",
     "select_dynamic_top_k",
     "sigmoid",

@@ -158,12 +158,20 @@ async def health_check(
         "pii_mode": settings.guardrails_pii_mode if settings.guardrails_enabled else "off",
     }
 
+    parent_child_info = {
+        "enabled": settings.enable_parent_child_retrieval,
+        "parent_max_tokens": settings.parent_max_tokens,
+        "child_max_tokens": settings.child_max_tokens,
+        "child_overlap_tokens": settings.child_overlap_tokens,
+    }
+
     return HealthResponse(
         status=overall_status,
         qdrant=qdrant_info,
         firecrawl=firecrawl_info,
         langfuse=langfuse_info,
         security=security_info,
+        parent_child_retrieval=parent_child_info,
         llm_configured=llm_ok,
         llm_error=llm_error,
         llm_provider=settings.llm_provider,
@@ -294,6 +302,58 @@ async def stream_query(
     )
 
 
+def _build_chunking_config(
+    container: AppContainer,
+    *,
+    max_tokens: int,
+    overlap_tokens: int,
+    parent_child: bool | None = None,
+    parent_max_tokens: int | None = None,
+    child_max_tokens: int | None = None,
+    child_overlap_tokens: int | None = None,
+) -> ChunkingConfig:
+    settings = container.settings
+    use_pc = parent_child if parent_child is not None else settings.enable_parent_child_retrieval
+    try:
+        return ChunkingConfig(
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+            parent_child_enabled=use_pc,
+            parent_max_tokens=(
+                parent_max_tokens if parent_max_tokens is not None else settings.parent_max_tokens
+            ),
+            child_max_tokens=(
+                child_max_tokens if child_max_tokens is not None else settings.child_max_tokens
+            ),
+            child_overlap_tokens=(
+                child_overlap_tokens
+                if child_overlap_tokens is not None
+                else settings.child_overlap_tokens
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+def _report_to_ingest_response(report: Any) -> IngestResponse:
+    return IngestResponse(
+        collection=report.collection_name,
+        source=report.data_dir,
+        documents_processed=report.documents_loaded,
+        chunks_created=report.chunks_created,
+        points_upserted=report.points_upserted,
+        total_collection_points=report.total_collection_points,
+        collection_created=report.collection_created,
+        elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
+        source_urls=report.source_urls,
+        parent_child_enabled=report.parent_child_enabled,
+        unique_parents_created=report.unique_parents_created,
+    )
+
+
 @router.post(
     "/ingest",
     response_model=IngestResponse,
@@ -304,9 +364,14 @@ async def ingest_documents(
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> IngestResponse:
     """Chunk, embed (Dense + BM25), and upsert local files, inline docs, or Firecrawl web pages."""
-    chunk_cfg = ChunkingConfig(
+    chunk_cfg = _build_chunking_config(
+        container,
         max_tokens=payload.max_tokens,
         overlap_tokens=payload.overlap_tokens,
+        parent_child=payload.parent_child,
+        parent_max_tokens=payload.parent_max_tokens,
+        child_max_tokens=payload.child_max_tokens,
+        child_overlap_tokens=payload.child_overlap_tokens,
     )
 
     if payload.documents is not None:
@@ -332,17 +397,7 @@ async def ingest_documents(
             batch_size=payload.batch_size,
             started_at=started,
         )
-        return IngestResponse(
-            collection=report.collection_name,
-            source=report.data_dir,
-            documents_processed=report.documents_loaded,
-            chunks_created=report.chunks_created,
-            points_upserted=report.points_upserted,
-            total_collection_points=report.total_collection_points,
-            collection_created=report.collection_created,
-            elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
-            source_urls=report.source_urls,
-        )
+        return _report_to_ingest_response(report)
 
     if payload.urls is not None or payload.crawl_url is not None:
         if container.firecrawl_client is None:
@@ -396,17 +451,7 @@ async def ingest_documents(
                 detail=str(exc),
             ) from exc
 
-        return IngestResponse(
-            collection=report.collection_name,
-            source=report.data_dir,
-            documents_processed=report.documents_loaded,
-            chunks_created=report.chunks_created,
-            points_upserted=report.points_upserted,
-            total_collection_points=report.total_collection_points,
-            collection_created=report.collection_created,
-            elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
-            source_urls=report.source_urls,
-        )
+        return _report_to_ingest_response(report)
 
     data_dir = Path(payload.corpus_dir) if payload.corpus_dir else Path("data/raw")
     if not data_dir.is_dir():
@@ -422,17 +467,7 @@ async def ingest_documents(
         recreate=payload.recreate_collection,
         batch_size=payload.batch_size,
     )
-    return IngestResponse(
-        collection=report.collection_name,
-        source=report.data_dir,
-        documents_processed=report.documents_loaded,
-        chunks_created=report.chunks_created,
-        points_upserted=report.points_upserted,
-        total_collection_points=report.total_collection_points,
-        collection_created=report.collection_created,
-        elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
-        source_urls=report.source_urls,
-    )
+    return _report_to_ingest_response(report)
 
 
 MAX_UPLOAD_FILES = 20
@@ -449,6 +484,7 @@ async def upload_and_ingest_files(
     recreate_collection: bool = Form(default=False),
     max_tokens: int = Form(default=512, ge=64, le=4096),
     overlap_tokens: int = Form(default=64, ge=0, le=512),
+    parent_child: bool | None = Form(default=None),
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> IngestResponse:
     """Parse uploaded Markdown, plain text, or PDF files and upsert chunks into Qdrant."""
@@ -490,7 +526,12 @@ async def upload_and_ingest_files(
                 detail=str(exc),
             ) from exc
 
-    chunk_cfg = ChunkingConfig(max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+    chunk_cfg = _build_chunking_config(
+        container,
+        max_tokens=max_tokens,
+        overlap_tokens=overlap_tokens,
+        parent_child=parent_child,
+    )
     report = await index_documents(
         loaded_docs,
         container.store,
@@ -499,17 +540,7 @@ async def upload_and_ingest_files(
         recreate=recreate_collection,
         started_at=started,
     )
-    return IngestResponse(
-        collection=report.collection_name,
-        source=report.data_dir,
-        documents_processed=report.documents_loaded,
-        chunks_created=report.chunks_created,
-        points_upserted=report.points_upserted,
-        total_collection_points=report.total_collection_points,
-        collection_created=report.collection_created,
-        elapsed_ms=round(report.elapsed_seconds * 1000.0, 2),
-        source_urls=report.source_urls,
-    )
+    return _report_to_ingest_response(report)
 
 
 @router.get(

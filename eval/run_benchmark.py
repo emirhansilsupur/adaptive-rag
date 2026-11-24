@@ -32,12 +32,17 @@ import structlog
 from adaptiverag.config import Settings, StrategiesConfig, get_settings, load_strategies
 from adaptiverag.graph.state import AblationConfig
 from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
-from adaptiverag.ingestion.chunker import chunk_documents, count_tokens
+from adaptiverag.ingestion.chunker import ChunkingConfig, chunk_documents, count_tokens
 from adaptiverag.ingestion.loader import LoadedDocument, load_directory
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.observability.tracing import LangfuseObservability, configure_logging
 from adaptiverag.retrieval.dynamic_k import select_dynamic_top_k
-from adaptiverag.retrieval.embeddings import DenseEmbedder
+from adaptiverag.retrieval.embeddings import (
+    DenseEmbedder,
+    FastEmbedDenseEmbedder,
+    FastEmbedSparseEmbedder,
+)
+from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore, RetrievalMode
 from adaptiverag.retrieval.reranker import FastEmbedCrossEncoderReranker, Reranker
 from adaptiverag.schemas.query import QueryType
@@ -54,6 +59,7 @@ from eval.langfuse_eval import publish_benchmark_report_to_langfuse
 from eval.metrics import (
     aggregate_config_summary,
     build_ablation_chart_html,
+    compute_fact_coverage,
     compute_ir_scores,
     render_markdown_report,
 )
@@ -74,6 +80,13 @@ OFFLINE_IR_CONFIGS: tuple[str, ...] = (
     "hybrid_static",
     "hybrid_rerank",
     "adaptive_dynamic_k",
+)
+
+PARENT_CHILD_COMPARE_CONFIGS: tuple[str, ...] = (
+    "flat_hybrid_rerank",
+    "flat_adaptive_dynamic_k",
+    "parent_child_hybrid_rerank",
+    "parent_child_adaptive_dynamic_k",
 )
 
 LIVE_CONFIG_NAMES: tuple[str, ...] = (
@@ -107,6 +120,65 @@ def _estimate_context_tokens(chunks: Sequence[EvidenceChunk]) -> int:
     return total
 
 
+class _BenchmarkRerankerCache:
+    """Bit-exact content-addressed memoization avoiding duplicate ONNX scoring within one index."""
+
+    def __init__(self, inner: Reranker) -> None:
+        self._inner = inner
+        self._scores: dict[tuple[str, str, str, str], tuple[float | None, float | None]] = {}
+
+    @staticmethod
+    def _key(query: str, chunk: EvidenceChunk) -> tuple[str, str, str, str]:
+        return (query, chunk.title, chunk.section_path, chunk.text)
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    def rerank(
+        self,
+        query: str,
+        chunks: Sequence[EvidenceChunk],
+        *,
+        top_n: int | None = None,
+    ) -> list[EvidenceChunk]:
+        return self._inner.rerank(query, chunks, top_n=top_n)
+
+    async def arerank(
+        self,
+        query: str,
+        chunks: Sequence[EvidenceChunk],
+        *,
+        top_n: int | None = None,
+    ) -> list[EvidenceChunk]:
+        if not chunks:
+            return []
+        missing = [c for c in chunks if self._key(query, c) not in self._scores]
+        if missing:
+            scored_missing = await self._inner.arerank(query, missing)
+            for item in scored_missing:
+                self._scores[self._key(query, item)] = (item.rerank_raw_score, item.rerank_score)
+
+        rehydrated = [
+            chunk.model_copy(
+                update={
+                    "rerank_raw_score": self._scores[self._key(query, chunk)][0],
+                    "rerank_score": self._scores[self._key(query, chunk)][1],
+                }
+            )
+            for chunk in chunks
+        ]
+        rehydrated.sort(
+            key=lambda c: (
+                c.rerank_score if c.rerank_score is not None else -1.0,
+                c.rerank_raw_score if c.rerank_raw_score is not None else float("-inf"),
+                c.fusion_score if c.fusion_score is not None else 0.0,
+            ),
+            reverse=True,
+        )
+        return rehydrated[:top_n] if top_n is not None else rehydrated
+
+
 async def _evaluate_single_offline_ir(
     query: GoldenQuery,
     *,
@@ -115,8 +187,11 @@ async def _evaluate_single_offline_ir(
     reranker: Reranker,
     strategies: StrategiesConfig,
     fixed_top_k: int,
+    enable_parent_child: bool = False,
+    record_config_name: str | None = None,
 ) -> QueryEvalRecord:
     started = time.perf_counter()
+    output_config_name = record_config_name or config_name
 
     if config_name not in OFFLINE_IR_CONFIGS:
         raise ValueError(
@@ -132,13 +207,14 @@ async def _evaluate_single_offline_ir(
             query_id=query.id,
             stratum=query.stratum,
             language=query.language,
-            config_name=config_name,
+            config_name=output_config_name,
             predicted_query_type=QueryType.CONVERSATIONAL,
             routing_correct=query.expected_query_type == QueryType.CONVERSATIONAL,
             retrieved_doc_ids=[],
             selected_k=0,
             context_tokens=0,
             ir_scores=None,
+            fact_coverage=None,
             confidence_score=None,
             confidence_level=None,
             fallback_used=False,
@@ -196,6 +272,12 @@ async def _evaluate_single_offline_ir(
         selected, _decision = select_dynamic_top_k(reranked, strategy)
         predicted_qtype = query.expected_query_type
 
+    if enable_parent_child and selected:
+        selected, _ = expand_to_parent_chunks(
+            selected,
+            max_context_tokens=strategy.max_context_tokens,
+        )
+
     signals = compute_deterministic_confidence(
         selected,
         sub_queries=[query.query],
@@ -215,6 +297,11 @@ async def _evaluate_single_offline_ir(
         if query.expected_doc_ids
         else None
     )
+    fact_cov = (
+        compute_fact_coverage([chunk.text for chunk in selected], query.key_facts)
+        if query.key_facts
+        else None
+    )
 
     # In offline IR mode (no live web search), adaptive_dynamic_k flags LOW confidence as
     # abstention/fallback-candidate when evidence drops below relevance floor.
@@ -227,7 +314,7 @@ async def _evaluate_single_offline_ir(
         query_id=query.id,
         stratum=query.stratum,
         language=query.language,
-        config_name=config_name,
+        config_name=output_config_name,
         predicted_query_type=predicted_qtype,
         routing_correct=(predicted_qtype == query.expected_query_type)
         if config_name == "adaptive_dynamic_k"
@@ -236,6 +323,7 @@ async def _evaluate_single_offline_ir(
         selected_k=len(selected),
         context_tokens=_estimate_context_tokens(selected),
         ir_scores=ir_scores,
+        fact_coverage=fact_cov,
         confidence_score=round(signals.deterministic_score, 6),
         confidence_level=conf_level,
         fallback_used=False,
@@ -252,6 +340,7 @@ async def run_offline_ir_benchmark(
     strategies: StrategiesConfig,
     configs: Sequence[str] | None = None,
     fixed_top_k: int = 5,
+    enable_parent_child: bool = False,
     dataset_source: str = "data/eval/golden_set.jsonl",
 ) -> BenchmarkReport:
     """Run a deterministic $0 LLM-cost IR ablation benchmark across retrieval configurations."""
@@ -264,6 +353,7 @@ async def run_offline_ir_benchmark(
             "benchmark_offline_config_start",
             config=config_name,
             queries=len(queries),
+            parent_child=enable_parent_child,
         )
         cfg_records: list[QueryEvalRecord] = []
         for query in queries:
@@ -275,6 +365,7 @@ async def run_offline_ir_benchmark(
                     reranker=reranker,
                     strategies=strategies,
                     fixed_top_k=fixed_top_k,
+                    enable_parent_child=enable_parent_child,
                 )
             except Exception as exc:
                 logger.exception("benchmark_offline_query_error", query_id=query.id, error=str(exc))
@@ -310,6 +401,91 @@ async def run_offline_ir_benchmark(
     )
 
 
+async def run_parent_child_ablation_benchmark(
+    queries: Sequence[GoldenQuery],
+    *,
+    flat_store: QdrantHybridStore,
+    parent_child_store: QdrantHybridStore,
+    reranker: Reranker,
+    strategies: StrategiesConfig,
+    fixed_top_k: int = 5,
+    dataset_source: str = "data/eval/golden_set.jsonl",
+) -> BenchmarkReport:
+    """Head-to-head $0 IR ablation comparing flat structure-aware chunks vs Small-to-Big Parent-Child."""
+    flat_reranker: Reranker = _BenchmarkRerankerCache(reranker)
+    pc_reranker: Reranker = _BenchmarkRerankerCache(reranker)
+    plan_specs: list[tuple[str, str, QdrantHybridStore, Reranker, bool]] = [
+        ("flat_hybrid_rerank", "hybrid_rerank", flat_store, flat_reranker, False),
+        ("flat_adaptive_dynamic_k", "adaptive_dynamic_k", flat_store, flat_reranker, False),
+        ("parent_child_hybrid_rerank", "hybrid_rerank", parent_child_store, pc_reranker, True),
+        (
+            "parent_child_adaptive_dynamic_k",
+            "adaptive_dynamic_k",
+            parent_child_store,
+            pc_reranker,
+            True,
+        ),
+    ]
+
+    all_records: list[QueryEvalRecord] = []
+    summaries: list[ConfigBenchmarkSummary] = []
+
+    for label, base_config, target_store, active_reranker, use_pc in plan_specs:
+        logger.info(
+            "benchmark_parent_child_config_start",
+            config=label,
+            queries=len(queries),
+            parent_child=use_pc,
+        )
+        cfg_records: list[QueryEvalRecord] = []
+        for query in queries:
+            try:
+                record = await _evaluate_single_offline_ir(
+                    query,
+                    config_name=base_config,
+                    store=target_store,
+                    reranker=active_reranker,
+                    strategies=strategies,
+                    fixed_top_k=fixed_top_k,
+                    enable_parent_child=use_pc,
+                    record_config_name=label,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "benchmark_parent_child_query_error", query_id=query.id, error=str(exc)
+                )
+                record = QueryEvalRecord(
+                    query_id=query.id,
+                    stratum=query.stratum,
+                    language=query.language,
+                    config_name=label,
+                    error=str(exc),
+                )
+            cfg_records.append(record)
+
+        all_records.extend(cfg_records)
+        summaries.append(
+            aggregate_config_summary(
+                config_name=label,
+                mode="offline-ir",
+                queries=queries,
+                records=cfg_records,
+            )
+        )
+
+    return BenchmarkReport(
+        run_id=f"pc_ablation_{uuid.uuid4().hex[:8]}",
+        timestamp_utc=datetime.now(UTC).isoformat(timespec="seconds"),
+        mode="offline-ir",
+        dataset_source=dataset_source,
+        total_queries=len(queries),
+        configs=[spec[0] for spec in plan_specs],
+        budget_exceeded=False,
+        summaries=summaries,
+        records=all_records,
+    )
+
+
 def _final_answer_to_record(
     query: GoldenQuery,
     config_name: str,
@@ -321,6 +497,11 @@ def _final_answer_to_record(
     ir_scores = (
         compute_ir_scores(retrieved_doc_ids, query.expected_doc_ids)
         if query.expected_doc_ids
+        else None
+    )
+    fact_cov = (
+        compute_fact_coverage([chunk.text for chunk in answer.evidence_chunks], query.key_facts)
+        if query.key_facts
         else None
     )
     context_tokens = (
@@ -341,6 +522,7 @@ def _final_answer_to_record(
         selected_k=len(answer.evidence_chunks),
         context_tokens=context_tokens,
         ir_scores=ir_scores,
+        fact_coverage=fact_cov,
         confidence_score=answer.confidence.final_score if answer.confidence is not None else None,
         confidence_level=answer.confidence.level.value if answer.confidence is not None else None,
         fallback_used=answer.fallback_used,
@@ -526,9 +708,11 @@ def save_benchmark_artifacts(
 async def _seed_in_memory_store(
     store: QdrantHybridStore,
     documents: Sequence[LoadedDocument],
+    *,
+    chunk_config: ChunkingConfig | None = None,
 ) -> int:
     await store.ensure_collection(recreate=True)
-    chunks = chunk_documents(list(documents))
+    chunks = chunk_documents(list(documents), config=chunk_config)
     return await store.upsert_chunks(chunks)
 
 
@@ -542,6 +726,33 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("offline-ir", "live"),
         default="offline-ir",
         help="Benchmark mode: 'offline-ir' ($0 LLM cost) or 'live' (full LangGraph ablation).",
+    )
+    parser.add_argument(
+        "--chunk-strategy",
+        choices=("flat", "parent_child", "compare"),
+        default="flat",
+        help=(
+            "Chunking strategy for --in-memory indexing: 'flat' (512-tok structure-aware), "
+            "'parent_child' (Small-to-Big), or 'compare' (offline-ir head-to-head ablation)."
+        ),
+    )
+    parser.add_argument(
+        "--parent-max-tokens",
+        type=int,
+        default=1000,
+        help="Parent passage token cap when --chunk-strategy uses parent_child (default: 1000).",
+    )
+    parser.add_argument(
+        "--child-max-tokens",
+        type=int,
+        default=256,
+        help="Child chunk token cap when --chunk-strategy uses parent_child (default: 256).",
+    )
+    parser.add_argument(
+        "--child-overlap-tokens",
+        type=int,
+        default=40,
+        help="Overlap tokens between sibling child chunks (default: 40).",
     )
     parser.add_argument(
         "--dataset",
@@ -690,41 +901,112 @@ async def _run_cli(args: argparse.Namespace) -> int:
         print("No evaluation queries matched the provided filters.", file=sys.stderr)
         return 1
 
-    store = QdrantHybridStore.from_settings(settings, in_memory=args.in_memory)
-    try:
-        if args.in_memory:
-            seed_docs = hf_docs if hf_docs else load_directory(args.corpus_dir)
-            chunk_count = await _seed_in_memory_store(store, seed_docs)
-            logger.info("benchmark_in_memory_seeded", docs=len(seed_docs), chunks=chunk_count)
+    if args.chunk_strategy == "compare" and (args.mode != "offline-ir" or not args.in_memory):
+        print(
+            "--chunk-strategy compare requires --mode offline-ir --in-memory.",
+            file=sys.stderr,
+        )
+        return 2
 
-        if args.mode == "offline-ir":
+    pc_chunk_cfg = ChunkingConfig(
+        parent_child_enabled=True,
+        parent_max_tokens=args.parent_max_tokens,
+        child_max_tokens=args.child_max_tokens,
+        child_overlap_tokens=args.child_overlap_tokens,
+    )
+
+    if args.chunk_strategy == "compare":
+        seed_docs = hf_docs if hf_docs else load_directory(args.corpus_dir)
+        shared_dense = FastEmbedDenseEmbedder(model_name=settings.dense_embedding_model)
+        shared_sparse = FastEmbedSparseEmbedder(model_name=settings.sparse_embedding_model)
+        flat_store = QdrantHybridStore.from_settings(
+            settings,
+            collection_name=f"{settings.qdrant_collection}_flat",
+            dense_embedder=shared_dense,
+            sparse_embedder=shared_sparse,
+            in_memory=True,
+        )
+        pc_store = QdrantHybridStore.from_settings(
+            settings,
+            collection_name=f"{settings.qdrant_collection}_parent_child",
+            dense_embedder=shared_dense,
+            sparse_embedder=shared_sparse,
+            in_memory=True,
+        )
+        try:
+            flat_chunks = await _seed_in_memory_store(flat_store, seed_docs)
+            pc_chunks = await _seed_in_memory_store(pc_store, seed_docs, chunk_config=pc_chunk_cfg)
+            logger.info(
+                "benchmark_parent_child_compare_seeded",
+                docs=len(seed_docs),
+                flat_chunks=flat_chunks,
+                parent_child_chunks=pc_chunks,
+            )
             reranker = FastEmbedCrossEncoderReranker(model_name=settings.reranker_model)
-            report = await run_offline_ir_benchmark(
+            report = await run_parent_child_ablation_benchmark(
                 queries,
-                store=store,
+                flat_store=flat_store,
+                parent_child_store=pc_store,
                 reranker=reranker,
                 strategies=strategies,
-                configs=args.configs,
                 fixed_top_k=args.fixed_top_k,
                 dataset_source=dataset_source,
             )
-        else:
-            workflow = AdaptiveRAGWorkflow.from_settings(
-                settings,
-                strategies=strategies,
-                store=store,
-            )
-            report = await run_live_ablation_benchmark(
-                queries,
-                workflow=workflow,
-                configs=args.configs,
-                fixed_top_k=args.fixed_top_k,
-                max_cost_usd=args.max_cost_usd,
-                with_ragas=args.with_ragas,
-                dataset_source=dataset_source,
-            )
-    finally:
-        await store.close()
+        finally:
+            await flat_store.close()
+            await pc_store.close()
+    else:
+        use_pc = args.chunk_strategy == "parent_child"
+        store = QdrantHybridStore.from_settings(settings, in_memory=args.in_memory)
+        try:
+            if args.in_memory:
+                seed_docs = hf_docs if hf_docs else load_directory(args.corpus_dir)
+                chunk_count = await _seed_in_memory_store(
+                    store,
+                    seed_docs,
+                    chunk_config=pc_chunk_cfg if use_pc else None,
+                )
+                logger.info(
+                    "benchmark_in_memory_seeded",
+                    docs=len(seed_docs),
+                    chunks=chunk_count,
+                    chunk_strategy=args.chunk_strategy,
+                )
+
+            if args.mode == "offline-ir":
+                reranker = FastEmbedCrossEncoderReranker(model_name=settings.reranker_model)
+                report = await run_offline_ir_benchmark(
+                    queries,
+                    store=store,
+                    reranker=reranker,
+                    strategies=strategies,
+                    configs=args.configs,
+                    fixed_top_k=args.fixed_top_k,
+                    enable_parent_child=use_pc,
+                    dataset_source=dataset_source,
+                )
+            else:
+                live_settings = (
+                    settings.model_copy(update={"enable_parent_child_retrieval": True})
+                    if use_pc
+                    else settings
+                )
+                workflow = AdaptiveRAGWorkflow.from_settings(
+                    live_settings,
+                    strategies=strategies,
+                    store=store,
+                )
+                report = await run_live_ablation_benchmark(
+                    queries,
+                    workflow=workflow,
+                    configs=args.configs,
+                    fixed_top_k=args.fixed_top_k,
+                    max_cost_usd=args.max_cost_usd,
+                    with_ragas=args.with_ragas,
+                    dataset_source=dataset_source,
+                )
+        finally:
+            await store.close()
 
     artifacts = save_benchmark_artifacts(report, args.output_dir)
     markdown = render_markdown_report(report)

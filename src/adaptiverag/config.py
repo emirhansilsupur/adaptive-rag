@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     qdrant_api_key: SecretStr | None = None
     qdrant_collection: str = "adaptiverag_docs"
 
+    # --- Hierarchical Parent-Child (Small-to-Big) Chunking & Retrieval ---
+    enable_parent_child_retrieval: bool = False
+    parent_max_tokens: int = Field(default=1000, ge=128, le=8192)
+    child_max_tokens: int = Field(default=256, ge=64, le=2048)
+    child_overlap_tokens: int = Field(default=40, ge=0, le=512)
+
     # --- Web Fallback ---
     tavily_api_key: SecretStr | None = None
     web_fallback_enabled: bool = True
@@ -186,6 +192,20 @@ class Settings(BaseSettings):
             return "production"
         cleaned = str(value).strip()
         return cleaned or "production"
+
+    @model_validator(mode="after")
+    def _validate_parent_child_bounds(self) -> Settings:
+        if self.child_overlap_tokens >= self.child_max_tokens:
+            raise ValueError(
+                f"child_overlap_tokens ({self.child_overlap_tokens}) must be < "
+                f"child_max_tokens ({self.child_max_tokens})"
+            )
+        if self.child_max_tokens >= self.parent_max_tokens:
+            raise ValueError(
+                f"child_max_tokens ({self.child_max_tokens}) must be < "
+                f"parent_max_tokens ({self.parent_max_tokens})"
+            )
+        return self
 
 
 def load_strategies(path: Path | str = Path("configs/strategies.yaml")) -> StrategiesConfig:

@@ -39,6 +39,13 @@ class AblationConfig(BaseModel):
     enable_confidence_gating: bool = True
     enable_web_fallback: bool = True
     enable_citation_validation: bool = True
+    enable_parent_child: bool | None = Field(
+        default=None,
+        description=(
+            "Override runtime small-to-big parent expansion (None defers to "
+            "Settings.enable_parent_child_retrieval)."
+        ),
+    )
     doc_ids: list[str] | None = None
     language_filter: str | None = None
 

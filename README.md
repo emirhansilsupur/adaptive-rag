@@ -72,7 +72,7 @@ flowchart TD
 | **1. Query Classification & Strategy Matrix** | Structured `QueryPlan` routes into `conversational` (zero retrieval), `factual` (sparse-leaning single-query, strict `k=2..5`), or `analytical` (2–4 concurrent sub-queries, permissive `k=4..10`). Tunable without code edits in [`configs/strategies.yaml`](configs/strategies.yaml). |
 | **2. Native Qdrant Hybrid Search** | Single collection with Named Vectors: local multilingual dense (`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, 768d) + sparse lexical (`Qdrant/bm25`) with server-side `Modifier.IDF`, parallel `Prefetch`, and `FusionQuery(Fusion.RRF)`. |
 | **3. Cross-Encoder Reranking (`$0` ONNX)** | Local `BAAI/bge-reranker-v2-m3-int8` (TR + EN cross-lingual support) with numerically stable sigmoid calibration $\sigma(z) \in [0, 1]$ and `asyncio.to_thread` offloading so the FastAPI event loop never blocks. |
-| **4. 3-Stage Dynamic Top-K Cutoff** | Replaces static `top_k` with: **(1)** Relevance floor $s_i \ge \tau_{\min}$, **(2)** Relative drop & elbow gap $s_i \ge \alpha \cdot s_1 \land (s_{i-1} - s_i) \le \delta_{\text{gap}}$, and **(3)** `[rerank_min_k, rerank_max_k]` + `max_context_tokens` guard. |
+| **4. 3-Stage Dynamic Top-K & Parent-Child Retrieval** | Replaces static `top_k` with: **(1)** Relevance floor $s_i \ge \tau_{\min}$, **(2)** Relative drop & elbow gap $s_i \ge \alpha \cdot s_1 \land (s_{i-1} - s_i) \le \delta_{\text{gap}}$, and **(3)** `[rerank_min_k, rerank_max_k]` + `max_context_tokens` guard. Includes opt-in **Hierarchical Parent-Child (Small-to-Big)** indexing (`<=256`-tok child vectors → deduplicated `<=1000`-tok parent sections with recall-preserving token budget fallback). |
 | **5. Multi-Signal Confidence + CRAG** | Computes $C_{\text{det}} = 0.50\,S_{\text{top1}} + 0.30\,S_{\text{mean}} + 0.20\,S_{\text{cov}}$. Auto-passes `HIGH` ($\ge 0.72$) and auto-routes `LOW` ($< 0.38$) at `$0` LLM cost; invokes the lightweight CRAG grader *only* inside the ambiguous band $[0.38, 0.72)$. |
 | **6. Web Search Fallback & Honest Abstention** | `FallbackRetriever` protocol backed by **Tavily** (primary) and **DuckDuckGo** (zero-key fallback), mapping web snippets into `[W1]..[Wn]` `EvidenceChunk`s. If local + web evidence still cannot ground the query, returns an honest TR/EN abstention. |
 | **7. Two-Tier Citation Validation** | **Tier-1 (`0 ms`, `$0`):** Deterministic regex check catching phantom IDs (`[C9]`) and uncited factual sentences. **Tier-2:** Claim-level entailment (`SUPPORTED` / `PARTIALLY_SUPPORTED` / `UNSUPPORTED` / `CONTRADICTED`). Triggers at most 1 `regenerate_strict` repair pass when `claim_support_rate < 0.85`. |
@@ -134,6 +134,9 @@ make up
 
 # Chunk and idempotently index all documents (UUIDv5 chunk IDs -> zero duplicates on re-run)
 make ingest
+
+# Optional: index with Hierarchical Parent-Child (Small-to-Big: 256-tok children -> 1000-tok parents)
+# uv run python -m adaptiverag.ingestion.indexer --parent-child --recreate
 ```
 
 ### 5. Launch FastAPI Backend & React Glass-Box Studio
@@ -371,6 +374,23 @@ Measured locally on **all 66 queries** in [`data/eval/golden_set.jsonl`](data/ev
 - **Why Multi-Hop Analytical Queries Need Live Agentic Decomposition:** In `$0` offline mode (where LLM `decompose_queries` is disabled), single-query `adaptive_dynamic_k` drops `analytical` Recall from `92.6%` to `70.4%` and trips $\tau_{\min}$ on 2/7 compound Turkish cross-document queries, because no individual chunk covers two distinct subsystems at once. This directly motivates AdaptiveRAG's full LangGraph path (`--mode live`), which decomposes analytical queries into 2–4 atomic sub-queries before hybrid retrieval and reranking.
 - **CPU vs. GPU Latency Trade-Off:** Qdrant Hybrid RRF retrieval runs in `10.9 ms` p50, while local CPU-only ONNX cross-encoder inference over 20 candidates takes `6.2 s` p50 on Apple Silicon CPU; deploying ONNX Runtime with GPU/CoreML execution or tightening `fusion_limit` brings reranking into the sub-200 ms range.
 
+### Measured Parent-Child (Small-to-Big) vs. Flat Chunking Ablation (`$0` Local ONNX)
+
+To verify whether indexing fine-grained child passages (`child_max_tokens=256`, `overlap=40`) and deduplicating/expanding selected hits into cohesive H1/H2 parent sections (`parent_max_tokens=1000`) outperforms flat structure-aware chunking (`512` tokens), AdaptiveRAG provides a head-to-head comparison harness (`make eval-parent-child`). Measured locally across **all 66 queries** in [`data/eval/golden_set.jsonl`](data/eval/golden_set.jsonl) on the same 10 corpus documents (`62` flat chunks vs. `74` child chunks) using real local ONNX weights and isolated per-index scoring (run `pc_ablation_154441cd`, `$0.00` LLM API spend):
+
+| Config | Recall@k | Precision@k | MRR | NDCG@k | Analytical Fact Cov | Overall Fact Cov | Avg `k` | Avg Ctx Tok | Cold Rerank p50 / p95 (ms) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `flat_hybrid_rerank` *(512 tok)* | **97.1%** | 63.3% | **0.978** | **0.955** | 64.3% | 55.4% | 5.00 | 1,084 | 5,250.2 / 6,180.0 |
+| `parent_child_hybrid_rerank` *(256→1000)* | **97.1%** | 67.6% (`+4.3 pp`) | **0.978** | **0.955** | **74.0%** (`+9.7 pp`) | **59.6%** (`+4.2 pp`) | 4.12 | 1,184 | **4,210.6 / 4,846.7** (`-19.8%`) |
+| `flat_adaptive_dynamic_k` *(512 tok)* | 88.4% | 87.3% | 0.946 | 0.891 | 54.5% | 51.4% | 1.51 | **345** | — *(reuses index scores)* |
+| `parent_child_adaptive_dynamic_k` *(256→1000)* | **88.8%** | **89.1%** (`+1.8 pp`) | **0.967** (`+0.021`) | **0.900** | **62.4%** (`+7.9 pp`) | **54.6%** (`+3.2 pp`) | **1.38** | 411 | — *(reuses index scores)* |
+
+#### Parent-Child Engineering Findings
+
+- **Higher Context Completeness Without Fragmented Citations:** On multi-aspect `analytical` queries, expanding matched child hits into deduplicated parent sections raises deterministic key-fact coverage by **`+9.7 pp`** in static rerank (`64.3%` → **`74.0%`**) and **`+7.9 pp`** under Dynamic Top-K (`54.5%` → **`62.4%`**), while deduplicating sibling hits into fewer passages (`Avg k` `5.00` → `4.12` and `1.51` → **`1.38`**). On `fact_en_03` (Scalar vs. Binary Quantization), `parent_child_adaptive_dynamic_k` lifted key-fact coverage from `50%` (`k=2`) to **`100%` in a single `[C1]` parent passage**; on `anal_en_01` and `anal_tr_04`, coverage jumped from `66.7%`/`50.0%` to **`100%`**.
+- **Stronger Turkish Cross-Lingual Retrieval & Fewer False Abstentions:** Because compact `<=256`-token child chunks prevent dense/cross-encoder score dilution across multi-topic sections, Turkish slice performance under Dynamic Top-K rose from `79.4%` → **`82.4%` Recall**, `0.882` → **`0.941` MRR** (`+0.059`), and `0.815` → **`0.851` NDCG**, rescuing Turkish cross-lingual analytical query `anal_tr_05` from false abstention (`conf 0.0 → 0.450`) and cutting analytical false-abstention rate in half (`11.1%` → **`5.6%`**, lifting out-of-corpus gate precision from `87.5%` to **`93.3%`** at `100%` recall).
+- **19.8% Faster Cold Cross-Encoder Reranking & Honest Token Trade-Off:** Scoring shorter child chunks cut cold CPU ONNX cross-encoder latency from `5,250 ms` → **`4,211 ms` p50** (`-19.8%`) and `6,180 ms` → **`4,847 ms` p95** (`-21.6%`). The honest trade-off is a modest `+66` average context tokens (`345` → `411` tok under Dynamic Top-K—still **`-62.1%` leaner** than static `flat_hybrid_rerank`), so Parent-Child is exposed as an opt-in production switch (`ENABLE_PARENT_CHILD_RETRIEVAL=true` or per-request `ablation.enable_parent_child`) ideal for long technical, legal, and financial documents.
+
 ### Measured Live 4-Way Agentic & RAGAS Ablation Results
 
 Measured live end-to-end across **all 4 LangGraph ablation presets** on a deterministic **20-query proportional stratified slice** (`--limit 20 --stratified` from [`data/eval/golden_set.jsonl`](data/eval/golden_set.jsonl): `8` factual + `5` analytical + `2` conversational + `3` web-fallback + `2` unanswerable; `12 EN + 8 TR` spanning all `10/10` corpus docs and both TR→EN / EN→TR cross-lingual directions; `62` indexed chunks in-memory Qdrant). Executed completely **cold (`LLM_CACHE_ENABLED=false`)** to eliminate cache-order bias across presets (run `live_980103d1`, `0` errors, budget cap not triggered):
@@ -410,6 +430,9 @@ Measured live end-to-end across **all 4 LangGraph ablation presets** on a determ
 # 1. Zero-API-cost offline IR ablation (in-memory Qdrant seeded from data/raw, local ONNX models)
 uv run python -m eval.run_benchmark --mode offline-ir --in-memory
 
+# 1b. Zero-API-cost head-to-head Flat (512 tok) vs. Parent-Child (256->1000 tok) IR ablation
+make eval-parent-child
+
 # 2. Full 4-way live Agentic ablation (strict FinOps budget cap + SQLite cache)
 uv run python -m eval.run_benchmark --mode live --in-memory --max-cost-usd 0.50
 
@@ -445,7 +468,7 @@ adaptiverag/
 │   ├── schemas/                     # Pure Pydantic v2 contracts (query, retrieval, citation, response)
 │   ├── llm/                         # Multi-provider factory, resilient structured output, SQLite cache, CostTracker
 │   ├── ingestion/                   # Markdown/PDF loader, Firecrawl Local web/docs scraper (SSRF-safe), structure-aware chunker, Qdrant indexer
-│   ├── retrieval/                   # FastEmbed Dense/BM25, Async Qdrant Hybrid RRF, Cross-Encoder, Dynamic Top-K, Web Fallback
+│   ├── retrieval/                   # FastEmbed Dense/BM25, Async Qdrant Hybrid RRF, Cross-Encoder, Dynamic Top-K, Parent-Child Expansion, Web Fallback
 │   ├── verification/                # Multi-signal Confidence + CRAG grader, Two-Tier Citation Validator, $0 Input Guardrails (Injection + PII)
 │   ├── graph/                       # LangGraph AgentState, AblationConfig, prompts, 12 async nodes, conditional edges, workflow
 │   ├── observability/               # Structlog logging + Langfuse v5 OTEL tracing, online auto-scoring, feedback & versioned Prompt Management
@@ -478,14 +501,14 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`131` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`141` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy + frontend typecheck/test/build + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 131 offline Python unit & in-memory integration tests ($0 API cost)
+make test       # 141 offline Python unit & in-memory integration tests ($0 API cost)
 make ui-test    # Frontend TypeScript typecheck + 15 Vitest unit tests
 make ui-build   # Production Vite bundle build
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)

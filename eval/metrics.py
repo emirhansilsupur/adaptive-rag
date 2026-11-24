@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
 
 from eval.schemas import (
@@ -108,6 +109,122 @@ def ndcg_at_k(
     return min(1.0, dcg / idcg) if idcg > 0.0 else 0.0
 
 
+_FACT_TOKEN_RE = re.compile(r"[a-z0-9_]+(?:[.:/-][a-z0-9_]+)*")
+_FACT_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "per",
+        "the",
+        "to",
+        "vs",
+        "with",
+        "bir",
+        "bu",
+        "da",
+        "de",
+        "en",
+        "icin",
+        "ile",
+        "ve",
+        "veya",
+    }
+)
+
+
+def _normalize_fact_text(text: str) -> str:
+    lowered = text.lower()
+    tr_map = str.maketrans(
+        {
+            "ü": "u",
+            "ö": "o",
+            "ğ": "g",
+            "ş": "s",
+            "ı": "i",
+            "İ": "i",
+            "ç": "c",
+        }
+    )
+    return lowered.translate(tr_map)
+
+
+def _extract_fact_tokens(text: str) -> list[str]:
+    norm = _normalize_fact_text(text)
+    raw = _FACT_TOKEN_RE.findall(norm)
+    tokens: list[str] = []
+    for tok in raw:
+        # Also break dotted/hyphenated compound tokens into sub-tokens while retaining exact token
+        parts = [tok]
+        if any(sep in tok for sep in (":", "/", "-")):
+            parts.extend(p for p in re.split(r"[:/-]", tok) if p)
+        for piece in parts:
+            if piece in _FACT_STOPWORDS:
+                continue
+            if len(piece) <= 1 and not piece.isdigit():
+                continue
+            tokens.append(piece)
+    return list(dict.fromkeys(tokens))
+
+
+def compute_fact_coverage(
+    passage_texts: Sequence[str],
+    key_facts: Sequence[str],
+    *,
+    token_match_threshold: float = 0.70,
+) -> float | None:
+    """Deterministic $0 passage completeness metric: fraction of key_facts supported by retrieved text."""
+    valid_facts = [fact.strip() for fact in key_facts if fact and fact.strip()]
+    if not valid_facts:
+        return None
+    if not passage_texts:
+        return 0.0
+
+    combined_norm = _normalize_fact_text("\n".join(passage_texts))
+    ctx_tokens = set(_extract_fact_tokens(combined_norm))
+    ctx_alpha_stems = {t[:5] for t in ctx_tokens if len(t) >= 5 and t.isalpha()}
+
+    covered = 0
+    for fact in valid_facts:
+        fact_norm = _normalize_fact_text(fact)
+        if fact_norm in combined_norm:
+            covered += 1
+            continue
+
+        fact_tokens = _extract_fact_tokens(fact)
+        if not fact_tokens:
+            continue
+
+        matched = 0
+        for tok in fact_tokens:
+            if tok in ctx_tokens:
+                matched += 1
+            elif len(tok) >= 5 and tok.isalpha() and tok[:5] in ctx_alpha_stems:
+                # Handles agglutinative Turkish/English inflections without fuzzy-matching numbers
+                matched += 1
+
+        if (matched / len(fact_tokens)) >= token_match_threshold:
+            covered += 1
+
+    return round(covered / len(valid_facts), 6)
+
+
 def compute_ir_scores(
     retrieved_doc_ids: Sequence[str],
     expected_doc_ids: Sequence[str],
@@ -194,6 +311,7 @@ def _summarize_slice(
         mean_precision=_mean_optional([s.precision_at_k for s in ir_records]),
         mean_mrr=_mean_optional([s.mrr_at_k for s in ir_records]),
         mean_ndcg=_mean_optional([s.ndcg_at_k for s in ir_records]),
+        mean_fact_coverage=_mean_optional([r.fact_coverage for r in records]),
         avg_selected_k=round(sum(r.selected_k for r in records) / count, 3),
         avg_context_tokens=round(sum(r.context_tokens for r in records) / count, 2),
         mean_latency_ms=round(sum(r.latency_ms for r in records) / count, 2),
@@ -268,6 +386,7 @@ def aggregate_config_summary(
         mean_mrr=_mean_optional([s.mrr_at_k for s in ir_records]),
         mean_ndcg=_mean_optional([s.ndcg_at_k for s in ir_records]),
         hit_rate=_mean_optional([1.0 if s.hit_at_k else 0.0 for s in ir_records]),
+        mean_fact_coverage=_mean_optional([r.fact_coverage for r in records]),
         routing_accuracy=_mean_optional(routing_flags),
         fallback_precision=round(fb_prec, 6) if fb_prec is not None else None,
         fallback_recall=round(fb_rec, 6) if fb_rec is not None else None,
@@ -319,14 +438,15 @@ def render_markdown_report(report: BenchmarkReport) -> str:
         "",
         "## 1. Ablation Scorecard Overview",
         "",
-        "| Config | Recall@k | Precision@k | MRR | NDCG@k | Routing Acc | Citation Prec | Claim Support | Avg k | Avg Ctx Tok | p50 / p95 (ms) | Cost (USD) |",
-        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        "| Config | Recall@k | Precision@k | MRR | NDCG@k | Fact Cov | Routing Acc | Citation Prec | Claim Support | Avg k | Avg Ctx Tok | p50 / p95 (ms) | Cost (USD) |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ]
 
     for s in report.summaries:
         lines.append(
             f"| `{s.config_name}` | {_fmt_pct(s.mean_recall)} | {_fmt_pct(s.mean_precision)} | "
-            f"{_fmt_float(s.mean_mrr)} | {_fmt_float(s.mean_ndcg)} | {_fmt_pct(s.routing_accuracy)} | "
+            f"{_fmt_float(s.mean_mrr)} | {_fmt_float(s.mean_ndcg)} | {_fmt_pct(s.mean_fact_coverage)} | "
+            f"{_fmt_pct(s.routing_accuracy)} | "
             f"{_fmt_pct(s.mean_citation_precision)} | {_fmt_pct(s.mean_claim_support_rate)} | "
             f"{s.avg_selected_k:.2f} | {s.avg_context_tokens:.0f} | "
             f"{s.latency_p50_ms:.1f} / {s.latency_p95_ms:.1f} | ${s.total_cost_usd:.5f} |"

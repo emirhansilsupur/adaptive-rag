@@ -196,6 +196,9 @@ describe("GlassBoxInspector", () => {
             rerank_score: 0.97,
             matched_sub_queries: ["What is RRF?"],
             token_count: 14,
+            parent_id: "parent-rrf",
+            expanded_to_parent: true,
+            matched_child_ids: ["ch1", "ch2"],
           },
         ],
         dynamic_k_decision: {
@@ -206,6 +209,9 @@ describe("GlassBoxInspector", () => {
           cutoff_score: 0.97,
           total_context_tokens: 14,
           dropped_chunk_ids: [],
+          parent_expansion_applied: true,
+          collapsed_child_count: 2,
+          expanded_parent_count: 1,
         },
         confidence: {
           top1_score: 0.97,
@@ -274,6 +280,7 @@ describe("GlassBoxInspector", () => {
     );
 
     expect(screen.getByText("Qdrant Hybrid Guide")).toBeInTheDocument();
+    expect(screen.getByText(/Parent Section \(2 child\)/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /https:\/\/docs\.qdrant\.tech\/concepts\/hybrid-queries\//,

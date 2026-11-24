@@ -149,6 +149,13 @@ class IngestRequest(BaseModel):
     )
     max_tokens: int = Field(default=512, ge=64, le=4096)
     overlap_tokens: int = Field(default=64, ge=0, le=512)
+    parent_child: bool | None = Field(
+        default=None,
+        description="Enable hierarchical Parent-Child (Small-to-Big) chunking (defaults to server setting).",
+    )
+    parent_max_tokens: int | None = Field(default=None, ge=128, le=8192)
+    child_max_tokens: int | None = Field(default=None, ge=64, le=2048)
+    child_overlap_tokens: int | None = Field(default=None, ge=0, le=512)
     batch_size: int = Field(default=64, ge=1, le=512)
 
     @model_validator(mode="after")
@@ -156,6 +163,24 @@ class IngestRequest(BaseModel):
         if self.overlap_tokens >= self.max_tokens:
             raise ValueError(
                 f"overlap_tokens ({self.overlap_tokens}) must be < max_tokens ({self.max_tokens})"
+            )
+        if (
+            self.child_max_tokens is not None
+            and self.parent_max_tokens is not None
+            and self.child_max_tokens >= self.parent_max_tokens
+        ):
+            raise ValueError(
+                f"child_max_tokens ({self.child_max_tokens}) must be < "
+                f"parent_max_tokens ({self.parent_max_tokens})"
+            )
+        if (
+            self.child_overlap_tokens is not None
+            and self.child_max_tokens is not None
+            and self.child_overlap_tokens >= self.child_max_tokens
+        ):
+            raise ValueError(
+                f"child_overlap_tokens ({self.child_overlap_tokens}) must be < "
+                f"child_max_tokens ({self.child_max_tokens})"
             )
 
         if self.urls is not None:
@@ -206,6 +231,8 @@ class IngestResponse(BaseModel):
     collection_created: bool = False
     elapsed_ms: float = Field(ge=0.0)
     source_urls: list[str] = Field(default_factory=list)
+    parent_child_enabled: bool = False
+    unique_parents_created: int = Field(default=0, ge=0)
 
 
 class IndexedDocumentInfo(BaseModel):
@@ -299,6 +326,7 @@ class HealthResponse(BaseModel):
     firecrawl: dict[str, Any] = Field(default_factory=dict)
     langfuse: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
+    parent_child_retrieval: dict[str, Any] = Field(default_factory=dict)
     llm_configured: bool
     llm_error: str | None = None
     llm_provider: str

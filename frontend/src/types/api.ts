@@ -27,6 +27,7 @@ export interface AblationConfig {
   enable_confidence_gating: boolean;
   enable_web_fallback: boolean;
   enable_citation_validation: boolean;
+  enable_parent_child?: boolean | null;
   language_filter: "en" | "tr" | null;
 }
 
@@ -88,6 +89,11 @@ export interface EvidenceChunk {
   rerank_score: number | null;
   matched_sub_queries: string[];
   token_count: number;
+  parent_id?: string | null;
+  parent_section_path?: string | null;
+  parent_token_count?: number | null;
+  expanded_to_parent?: boolean;
+  matched_child_ids?: string[];
 }
 
 export interface DynamicKDecision {
@@ -98,6 +104,9 @@ export interface DynamicKDecision {
   cutoff_score: number;
   total_context_tokens: number;
   dropped_chunk_ids: string[];
+  parent_expansion_applied?: boolean;
+  collapsed_child_count?: number;
+  expanded_parent_count?: number;
 }
 
 export interface ConfidenceAssessment {
@@ -228,6 +237,13 @@ export interface SecurityHealthInfo {
   pii_mode?: "off" | "redact" | "block";
 }
 
+export interface ParentChildHealthInfo {
+  enabled?: boolean;
+  parent_max_tokens?: number;
+  child_max_tokens?: number;
+  child_overlap_tokens?: number;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   version: string;
@@ -235,6 +251,7 @@ export interface HealthResponse {
   firecrawl: FirecrawlHealthInfo;
   langfuse?: LangfuseHealthInfo;
   security?: SecurityHealthInfo;
+  parent_child_retrieval?: ParentChildHealthInfo;
   llm_configured: boolean;
   llm_error: string | null;
   llm_provider: string;

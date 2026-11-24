@@ -31,6 +31,7 @@ from adaptiverag.observability.prompts import PromptManager, ResolvedPrompt
 from adaptiverag.observability.tracing import LangfuseObservability
 from adaptiverag.retrieval.dynamic_k import assign_citation_ids, select_dynamic_top_k
 from adaptiverag.retrieval.fallback import FallbackRetriever
+from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.retrieval.reranker import Reranker
 from adaptiverag.schemas.citation import CitationReport
@@ -487,18 +488,41 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 dropped_chunk_ids=[c.chunk_id for c in ranked[k:]],
             )
 
+        use_parent_child = (
+            ablation.enable_parent_child
+            if ablation.enable_parent_child is not None
+            else runtime.settings.enable_parent_child_retrieval
+        )
+        if use_parent_child and selected:
+            selected, expanded_decision = expand_to_parent_chunks(
+                selected,
+                max_context_tokens=plan.strategy.max_context_tokens,
+                decision=decision,
+            )
+            if expanded_decision is not None:
+                decision = expanded_decision
+
         labeled = assign_citation_ids(selected, prefix="C", start_index=1)
+        parent_suffix = (
+            f", expanded {decision.collapsed_child_count} child->{decision.expanded_parent_count} parent"
+            if decision.parent_expansion_applied
+            else ""
+        )
         event = NodeTraceEvent(
             node="rerank_and_select_k",
             latency_ms=_elapsed_ms(started),
             summary=(
                 f"Selected {len(labeled)}/{len(candidates)} chunks "
                 f"(reason={decision.cutoff_reason}, top={decision.top_score:.3f}, "
-                f"tokens={decision.total_context_tokens})"
+                f"tokens={decision.total_context_tokens}{parent_suffix})"
             ),
             metadata={
                 "rerank_enabled": ablation.enable_rerank,
                 "dynamic_k_enabled": ablation.enable_dynamic_k,
+                "parent_child_enabled": use_parent_child,
+                "parent_expansion_applied": decision.parent_expansion_applied,
+                "collapsed_child_count": decision.collapsed_child_count,
+                "expanded_parent_count": decision.expanded_parent_count,
                 "cutoff_reason": decision.cutoff_reason,
                 "selected_count": decision.selected_count,
                 "candidate_count": decision.candidate_count,

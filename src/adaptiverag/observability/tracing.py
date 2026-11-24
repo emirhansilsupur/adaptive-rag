@@ -504,6 +504,9 @@ class LangfuseObservability:
                     "rerank_score": ch.rerank_score,
                     "fusion_score": ch.fusion_score,
                     "token_count": ch.token_count,
+                    "expanded_to_parent": ch.expanded_to_parent,
+                    "parent_id": ch.parent_id,
+                    "matched_child_count": len(ch.matched_child_ids),
                 }
                 for ch in answer.evidence_chunks
             ]

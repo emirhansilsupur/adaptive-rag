@@ -80,6 +80,11 @@ def _point_to_evidence(
     metadata: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     source_url = metadata.get("source_url") or metadata.get("url")
 
+    raw_parent_id = payload.get("parent_id")
+    raw_parent_text = payload.get("parent_text")
+    raw_parent_section = payload.get("parent_section_path")
+    raw_parent_tokens = payload.get("parent_token_count")
+
     return EvidenceChunk(
         chunk_id=str(payload.get("chunk_id") or point.id),
         text=str(payload.get("text", "")),
@@ -94,6 +99,10 @@ def _point_to_evidence(
         fusion_score=fusion_score,
         matched_sub_queries=[query],
         token_count=int(payload.get("token_count", 0)),
+        parent_id=str(raw_parent_id) if raw_parent_id else None,
+        parent_text=str(raw_parent_text) if raw_parent_text else None,
+        parent_section_path=str(raw_parent_section) if raw_parent_section else None,
+        parent_token_count=int(raw_parent_tokens) if raw_parent_tokens is not None else None,
     )
 
 
@@ -201,7 +210,7 @@ class QdrantHybridStore:
 
         # Keyword payload indexes accelerate Filterable HNSW on server Qdrant.
         if not self._is_local_mode:
-            for field_name in ("doc_id", "language"):
+            for field_name in ("doc_id", "language", "parent_id"):
                 await self._client.create_payload_index(
                     collection_name=self._collection_name,
                     field_name=field_name,
@@ -268,6 +277,13 @@ class QdrantHybridStore:
                     "language": chunk.metadata.get("language", "en"),
                     "metadata": chunk.metadata,
                 }
+                if chunk.parent_id is not None:
+                    payload["parent_id"] = chunk.parent_id
+                    payload["parent_text"] = chunk.parent_text
+                    payload["parent_section_path"] = chunk.parent_section_path
+                    payload["parent_token_count"] = chunk.parent_token_count
+                    payload["child_index"] = chunk.child_index
+                    payload["child_count"] = chunk.child_count
                 points.append(
                     models.PointStruct(
                         id=chunk.chunk_id,

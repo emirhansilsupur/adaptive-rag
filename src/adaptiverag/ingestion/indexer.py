@@ -33,6 +33,8 @@ class IndexingReport(BaseModel):
     collection_created: bool = False
     elapsed_seconds: float = Field(ge=0.0)
     source_urls: list[str] = Field(default_factory=list)
+    parent_child_enabled: bool = False
+    unique_parents_created: int = Field(default=0, ge=0)
 
 
 async def index_documents(
@@ -65,6 +67,7 @@ async def index_documents(
         if isinstance(doc.metadata.get("source_url"), str) and doc.metadata["source_url"].strip()
     ]
 
+    unique_parents = len({c.parent_id for c in chunks if c.parent_id})
     report = IndexingReport(
         data_dir=source,
         collection_name=store.collection_name,
@@ -75,6 +78,8 @@ async def index_documents(
         collection_created=created,
         elapsed_seconds=elapsed,
         source_urls=source_urls,
+        parent_child_enabled=bool(chunk_config.parent_child_enabled) if chunk_config else False,
+        unique_parents_created=unique_parents,
     )
     logger.info("corpus_indexing_complete", **report.model_dump())
     return report
@@ -225,6 +230,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Token overlap between consecutive chunks in the same section (default: 64).",
     )
     parser.add_argument(
+        "--parent-child",
+        action="store_true",
+        default=None,
+        help="Enable hierarchical Parent-Child (Small-to-Big) chunking (defaults to ENABLE_PARENT_CHILD_RETRIEVAL).",
+    )
+    parser.add_argument(
+        "--parent-max-tokens",
+        type=int,
+        default=None,
+        help="Maximum tokens per parent passage when --parent-child is enabled (default: 1000).",
+    )
+    parser.add_argument(
+        "--child-max-tokens",
+        type=int,
+        default=None,
+        help="Maximum tokens per indexed child chunk when --parent-child is enabled (default: 256).",
+    )
+    parser.add_argument(
+        "--child-overlap-tokens",
+        type=int,
+        default=None,
+        help="Token overlap between sibling child chunks (default: 40).",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=64,
@@ -241,9 +270,30 @@ async def _run_cli(args: argparse.Namespace) -> IndexingReport:
     configure_logging(settings.log_level)
 
     store = QdrantHybridStore.from_settings(settings, collection_name=args.collection)
+    use_parent_child = (
+        args.parent_child
+        if args.parent_child is not None
+        else settings.enable_parent_child_retrieval
+    )
     chunk_cfg = ChunkingConfig(
         max_tokens=args.max_tokens,
         overlap_tokens=args.overlap_tokens,
+        parent_child_enabled=use_parent_child,
+        parent_max_tokens=(
+            args.parent_max_tokens
+            if args.parent_max_tokens is not None
+            else settings.parent_max_tokens
+        ),
+        child_max_tokens=(
+            args.child_max_tokens
+            if args.child_max_tokens is not None
+            else settings.child_max_tokens
+        ),
+        child_overlap_tokens=(
+            args.child_overlap_tokens
+            if args.child_overlap_tokens is not None
+            else settings.child_overlap_tokens
+        ),
     )
     firecrawl_client: FirecrawlClient | None = None
     try:

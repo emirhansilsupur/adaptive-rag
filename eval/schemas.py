@@ -84,6 +84,7 @@ class QueryEvalRecord(BaseModel):
     selected_k: int = Field(default=0, ge=0)
     context_tokens: int = Field(default=0, ge=0)
     ir_scores: IRScores | None = None
+    fact_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     confidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
     confidence_level: str | None = None
     fallback_used: bool = False
@@ -113,6 +114,7 @@ class StratumSummary(BaseModel):
     mean_precision: float | None = Field(default=None, ge=0.0, le=1.0)
     mean_mrr: float | None = Field(default=None, ge=0.0, le=1.0)
     mean_ndcg: float | None = Field(default=None, ge=0.0, le=1.0)
+    mean_fact_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     avg_selected_k: float = Field(default=0.0, ge=0.0)
     avg_context_tokens: float = Field(default=0.0, ge=0.0)
     mean_latency_ms: float = Field(default=0.0, ge=0.0)
@@ -135,6 +137,7 @@ class ConfigBenchmarkSummary(BaseModel):
     mean_mrr: float | None = Field(default=None, ge=0.0, le=1.0)
     mean_ndcg: float | None = Field(default=None, ge=0.0, le=1.0)
     hit_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    mean_fact_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # Agentic control & grounding metrics
     routing_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)

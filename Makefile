@@ -1,4 +1,4 @@
-.PHONY: install up up-full up-prod docker-build down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval eval-langfuse prompts-list prompts-sync
+.PHONY: install up up-full up-prod docker-build down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval eval-parent-child eval-langfuse prompts-list prompts-sync
 
 install:
 	uv sync --extra ui --extra eval --group dev
@@ -60,6 +60,9 @@ ci: lint typecheck ui-test ui-build
 
 eval:
 	uv run python -m eval.run_benchmark
+
+eval-parent-child:
+	uv run python -m eval.run_benchmark --mode offline-ir --in-memory --chunk-strategy compare --output-dir eval/reports/parent_child
 
 eval-langfuse:
 	uv run python -m eval.run_benchmark --mode offline-ir --in-memory --langfuse-sync
