@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     child_max_tokens: int = Field(default=256, ge=64, le=2048)
     child_overlap_tokens: int = Field(default=40, ge=0, le=512)
 
+    # --- Adaptive PDF Parsing & 2-Tier OCR (LiteParse + OCRia-nano-1 + Vision-LLM) ---
+    pdf_ocr_mode: Literal["auto", "ocria_nano", "vision_llm", "off"] = "auto"
+    pdf_ocr_auto_pull: bool = True
+    pdf_ocr_model_dir: Path = Path(".adaptiverag_cache/liteparse")
+    pdf_ocr_vision_fallback_enabled: bool = True
+    pdf_ocr_vision_model: str = "google/gemini-2.5-flash"
+    pdf_ocr_dpi: int = Field(default=200, ge=72, le=400)
+    pdf_ocr_max_pages: int = Field(default=25, ge=1, le=500)
+    pdf_ocr_min_chars: int = Field(default=32, ge=1, le=500)
+
     # --- Web Fallback ---
     tavily_api_key: SecretStr | None = None
     web_fallback_enabled: bool = True

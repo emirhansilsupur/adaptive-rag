@@ -41,6 +41,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:${PATH}" \
     STATIC_UI_DIR="/app/frontend/dist" \
     FASTEMBED_CACHE_PATH="/app/.adaptiverag_cache/fastembed" \
+    LITEPARSE_MODEL_DIR="/app/.adaptiverag_cache/liteparse" \
     LLM_CACHE_PATH="/app/.adaptiverag_cache/llm_cache.sqlite"
 
 # 1. Install locked production dependencies first for optimal Docker layer caching
@@ -59,16 +60,18 @@ COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 # 4. Optional build-time ONNX warmup for zero-cold-start / air-gapped production deployments
 #    Enable via: `docker build --build-arg PRELOAD_MODELS=true -t adaptiverag:latest .`
 ARG PRELOAD_MODELS="false"
-RUN mkdir -p /app/.adaptiverag_cache/fastembed \
+RUN mkdir -p /app/.adaptiverag_cache/fastembed /app/.adaptiverag_cache/liteparse \
     && if [ "$PRELOAD_MODELS" = "true" ]; then \
         /app/.venv/bin/python -c "\
 from adaptiverag.config import Settings; \
 from fastembed import SparseTextEmbedding, TextEmbedding; \
 from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+from liteparse import models as lp_models; \
 s = Settings(); \
 TextEmbedding(model_name=s.dense_embedding_model, cache_dir='/app/.adaptiverag_cache/fastembed'); \
 SparseTextEmbedding(model_name=s.sparse_embedding_model, cache_dir='/app/.adaptiverag_cache/fastembed'); \
-TextCrossEncoder(model_name=s.reranker_model, cache_dir='/app/.adaptiverag_cache/fastembed')"; \
+TextCrossEncoder(model_name=s.reranker_model, cache_dir='/app/.adaptiverag_cache/fastembed'); \
+lp_models.pull('ocria-nano', quiet=True)"; \
     fi
 
 # 5. Run as an unprivileged non-root system user

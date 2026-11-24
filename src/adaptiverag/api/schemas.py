@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from adaptiverag.graph.state import AblationConfig
+from adaptiverag.ingestion.pdf_parser import PdfOcrMode
 from adaptiverag.schemas.query import ChatMessage
 
 AblationPreset = Literal["full", "adaptive_routing", "hybrid_rerank", "naive_dense"]
@@ -160,6 +161,10 @@ class IngestRequest(BaseModel):
     parent_max_tokens: int | None = Field(default=None, ge=128, le=8192)
     child_max_tokens: int | None = Field(default=None, ge=64, le=2048)
     child_overlap_tokens: int | None = Field(default=None, ge=0, le=512)
+    ocr_mode: PdfOcrMode | None = Field(
+        default=None,
+        description="Optional PDF OCR routing override ('auto', 'ocria_nano', 'vision_llm', 'off').",
+    )
     batch_size: int = Field(default=64, ge=1, le=512)
 
     @model_validator(mode="after")
@@ -237,6 +242,8 @@ class IngestResponse(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
     parent_child_enabled: bool = False
     unique_parents_created: int = Field(default=0, ge=0)
+    ocr_pages_processed: int = Field(default=0, ge=0)
+    ocr_backends_used: list[str] = Field(default_factory=list)
 
 
 class IndexedDocumentInfo(BaseModel):
@@ -332,6 +339,7 @@ class HealthResponse(BaseModel):
     langfuse: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
     parent_child_retrieval: dict[str, Any] = Field(default_factory=dict)
+    pdf_ocr: dict[str, Any] = Field(default_factory=dict)
     llm_configured: bool
     llm_error: str | None = None
     llm_provider: str

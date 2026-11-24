@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-162%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-168%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -30,7 +30,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `162` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `168` `$0` CI tests</sub> |
 
 ---
 
@@ -89,7 +89,8 @@ flowchart TD
 | **6. Web Fallback & Abstention** | `FallbackRetriever` (**Tavily** primary → **DuckDuckGo** zero-key backup) yielding `[W1]..[Wn]` chunks, or language-matched abstention. | Prevents fabrication on fresh or out-of-domain queries (`100%` OOC caught). |
 | **7. Two-Tier Citation Audit** | **Tier-1 (`0 ms`, `$0`):** Regex check for phantom IDs & uncited claims. **Tier-2:** Claim entailment (`SUPPORTED` / `CONTRADICTED`) + max `1` `regenerate_strict` pass. | Enforces verifiable `[Cn]` / `[Wn]` grounding (`100%` citation precision). |
 | **8. FinOps & Langfuse v5 OTEL** | Tiered routing (`qwen3-30b-a3b` + `deepseek-v3.2`), WAL `SQLiteLLMCache`, isolated per-request `CostTracker` (`HTTP 402`), and versioned Prompt Management. | Predictable sub-millicent query cost with full trace-to-prompt lineage. |
-| **9. Multi-Layer Guardrails** | Constant-time `API_AUTH_KEY`, per-IP rate limiter, `$0` EN/TR injection & PII screening, `<evidence>` isolation, and fail-closed async SSRF/path sandboxing. | Hardened single-container deployment serving FastAPI + React SPA on port `8000`. |
+| **9. Adaptive 2-Tier PDF & OCR** | `LiteParse` Rust/PDFium layout Markdown (`~3 ms/page`, `$0`) → Tier-1 process-isolated `OCRia-nano-1` ONNX + `TableNet` (`$0`) → Tier-2 multimodal `Vision-LLM` fallback. | Preserves `#` headings, `\|...\|` tables, and `EN`/`TR` diacritics across digital & scanned PDFs without PyTorch bloat. |
+| **10. Multi-Layer Guardrails** | Constant-time `API_AUTH_KEY`, per-IP rate limiter, `$0` EN/TR injection & PII screening, `<evidence>` isolation, and fail-closed async SSRF/path sandboxing. | Hardened single-container deployment serving FastAPI + React SPA on port `8000`. |
 
 <details>
 <summary><strong>Mathematical Formulation (3-Stage Dynamic Top-K &amp; Multi-Signal Confidence)</strong></summary>
@@ -123,7 +124,7 @@ The React 19 + TypeScript + Tailwind CSS v4 workbench (`make ui` on `:5173`, or 
   - **`CRAG`:** Linear confidence calibration meter with `0.38` / `0.72` gate markers and 5-signal breakdown.
   - **`Evidence`:** Local/Web filter, `Parent Section` lineage badges, clickable Firecrawl/Web URLs, and citation-click pulse highlight.
   - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards.
-- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads, 1-click `data/raw` sync, live **Firecrawl Local** URL scraping & recursive docs crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and searchable document inventory (`Flat` vs `Small→Big` badges) with 2-step deletion.
+- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto 2-Tier`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` sync, live **Firecrawl Local** URL scraping & recursive docs crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and searchable document inventory (`Flat` vs `Small→Big` badges) with 2-step deletion.
 - **Side-by-Side Ablation Arena:** Executes any two presets concurrently over SSE (`Promise.allSettled`), computing a live **5-cell `A → B Ablation Delta` ledger** across context tokens, selected `k`, CRAG confidence, Citation Audit (`Fail → Pass`), and latency/cost.
 
 <p align="center">
@@ -336,11 +337,11 @@ make eval-langfuse  # Publish golden_set.jsonl + 4-way offline IR ablation to Ex
 
 | Endpoint | Method | Purpose |
 | :--- | :---: | :--- |
-| `/v1/health` | `GET` | Non-crashing Qdrant, Firecrawl Local, Langfuse, security/guardrail, and model readiness telemetry |
+| `/v1/health` | `GET` | Non-crashing Qdrant, Firecrawl Local, Langfuse, PDF/OCR (`liteparse` / `ocria-nano`), security/guardrail, and model readiness telemetry |
 | `/v1/documents` | `GET` | Metadata-projected Qdrant document inventory (`local`/`web`, `flat`/`parent_child`, chunks, tokens, URLs) |
 | `/v1/documents/{doc_id}` | `DELETE` | Remove all Qdrant points for `doc_id` and return updated collection count |
-| `/v1/ingest` | `POST` | Zero-gap idempotent indexing of sandboxed `corpus_dir`, inline `documents`, `urls`, or `crawl_url` (`parent_child` optional) |
-| `/v1/ingest/upload` | `POST` | Multipart `.md` / `.txt` / `.pdf` upload with off-thread chunking and crash-safe Qdrant upsert |
+| `/v1/ingest` | `POST` | Zero-gap idempotent indexing of sandboxed `corpus_dir`, inline `documents`, `urls`, or `crawl_url` (`parent_child` & `ocr_mode` optional) |
+| `/v1/ingest/upload` | `POST` | Multipart `.md` / `.txt` / `.pdf` upload with Adaptive 2-Tier OCR (`ocr_mode`), off-thread chunking, and crash-safe Qdrant upsert |
 | `/v1/query` | `POST` | Synchronous `FinalAnswer` JSON with isolated `max_cost_usd` cap, `trace_id`, and ablation overrides |
 | `/v1/query/stream` | `POST` | SSE stream (`event: node_update` per LangGraph step → `event: final_answer`) |
 | `/v1/feedback` | `POST` | Correlate human reviewer score (`0.0–1.0` + comment) to `trace_id` |
@@ -379,7 +380,7 @@ adaptiverag/
 ├── src/adaptiverag/
 │   ├── schemas/               # Pydantic v2 contracts (query, retrieval, citation, response)
 │   ├── llm/                   # Provider factory, structured output, WAL SQLite cache, CostTracker
-│   ├── ingestion/             # MD/PDF loader, SSRF-safe Firecrawl client, flat & parent-child chunker, indexer
+│   ├── ingestion/             # LiteParse 2-Tier PDF/OCR parser, SSRF-safe Firecrawl client, flat & parent-child chunker, indexer
 │   ├── retrieval/             # FastEmbed ONNX, Async Qdrant RRF, Cross-Encoder, Dynamic-K, Parent-Child, Web Fallback
 │   ├── verification/          # Multi-signal Confidence + CRAG, Two-Tier Citation Audit, $0 Guardrails
 │   ├── graph/                 # Bounded cyclic LangGraph StateGraph (12 async nodes, conditional edges, presets)
@@ -387,7 +388,7 @@ adaptiverag/
 │   └── api/                   # FastAPI lifespan, ASGI auth/rate-limit middleware, SPA serving, REST + SSE routes
 ├── frontend/                  # React 19 + TypeScript + Tailwind CSS v4 Glass-Box Studio & Ablation Arena
 ├── eval/                      # Offline IR + Parent-Child + Live/RAGAS + Langfuse Experiments runner
-├── tests/                     # 146 deterministic $0 unit & in-memory Qdrant integration tests
+├── tests/                     # 151 deterministic $0 unit & in-memory Qdrant integration tests
 ├── Dockerfile                 # Multi-stage build (Node 22 SPA -> non-root Python 3.12 FastAPI runtime)
 ├── docker-compose.yml         # Qdrant + optional app (prod) & observability (Langfuse v4) profiles
 └── LICENSE                    # MIT License
@@ -397,12 +398,12 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `162` automated tests (`146` backend pytest + `16` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `168` automated tests (`151` backend pytest + `17` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
-make test       # 146 offline Python unit & in-memory Qdrant integration tests ($0)
-make ui-test    # Frontend TypeScript check + 16 Vitest tests
+make test       # 151 offline Python unit & in-memory Qdrant integration tests ($0)
+make ui-test    # Frontend TypeScript check + 17 Vitest tests
 make lint       # ruff check + ruff format --check
 make typecheck  # mypy strict check across src/ and eval/
 ```

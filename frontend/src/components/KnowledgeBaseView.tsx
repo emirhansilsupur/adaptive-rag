@@ -24,6 +24,7 @@ import type {
   HealthResponse,
   IndexedDocumentInfo,
   IngestResponse,
+  PdfOcrMode,
 } from "../types/api";
 
 interface KnowledgeBaseViewProps {
@@ -85,6 +86,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const [recreateCollection, setRecreateCollection] = useState(false);
   const [parentChildChunking, setParentChildChunking] = useState<boolean>(
     () => Boolean(health?.parent_child_retrieval?.enabled)
+  );
+  const [pdfOcrMode, setPdfOcrMode] = useState<PdfOcrMode>(
+    () => health?.pdf_ocr?.default_mode ?? "auto"
   );
   const [uploading, setUploading] = useState(false);
   const [indexingLocal, setIndexingLocal] = useState(false);
@@ -170,14 +174,23 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       const res: IngestResponse = await uploadFiles(apiUrl, queuedFiles, {
         recreateCollection,
         parentChild: parentChildChunking,
+        ocrMode: pdfOcrMode,
       });
       setQueuedFiles([]);
       const parentSuffix = res.parent_child_enabled
         ? ` · ${res.unique_parents_created ?? 0} parent sections`
         : "";
+      const ocrSuffix =
+        (res.ocr_pages_processed ?? 0) > 0
+          ? ` · ${res.ocr_pages_processed} OCR page(s)${
+              res.ocr_backends_used && res.ocr_backends_used.length > 0
+                ? ` [${res.ocr_backends_used.join("+")}]`
+                : ""
+            }`
+          : "";
       setUploadFeedback({
         kind: "success",
-        message: `Indexed ${res.documents_processed} uploaded file(s) → ${res.chunks_created} chunks${parentSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
+        message: `Indexed ${res.documents_processed} uploaded file(s) → ${res.chunks_created} chunks${parentSuffix}${ocrSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
       });
       await onRefreshAll();
     } catch (err) {
@@ -197,13 +210,22 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
       const res = await ingestPayload(apiUrl, {
         recreate_collection: recreateCollection,
         parent_child: parentChildChunking,
+        ocr_mode: pdfOcrMode,
       });
       const parentSuffix = res.parent_child_enabled
         ? ` · ${res.unique_parents_created ?? 0} parent sections`
         : "";
+      const ocrSuffix =
+        (res.ocr_pages_processed ?? 0) > 0
+          ? ` · ${res.ocr_pages_processed} OCR page(s)${
+              res.ocr_backends_used && res.ocr_backends_used.length > 0
+                ? ` [${res.ocr_backends_used.join("+")}]`
+                : ""
+            }`
+          : "";
       setUploadFeedback({
         kind: "success",
-        message: `Indexed local corpus (${res.source}): ${res.documents_processed} docs → ${res.chunks_created} chunks${parentSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
+        message: `Indexed local corpus (${res.source}): ${res.documents_processed} docs → ${res.chunks_created} chunks${parentSuffix}${ocrSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
       });
       await onRefreshAll();
     } catch (err) {
@@ -457,7 +479,44 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
             )}
 
-            <div className="mt-4 space-y-2 border-t border-[var(--border-subtle)] pt-3">
+            <div className="mt-4 space-y-2.5 border-t border-[var(--border-subtle)] pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-[var(--text-secondary)]">PDF OCR</span>
+                  {health?.pdf_ocr?.ocria_nano_installed && (
+                    <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-muted)]">
+                      OCRia-nano ready
+                    </span>
+                  )}
+                </div>
+                <div
+                  role="group"
+                  aria-label="PDF OCR mode"
+                  className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]"
+                >
+                  {(
+                    [
+                      ["auto", "Auto 2-Tier"],
+                      ["ocria_nano", "OCRia-nano"],
+                      ["vision_llm", "Vision LLM"],
+                      ["off", "Off"],
+                    ] as const
+                  ).map(([modeVal, modeLabel]) => (
+                    <button
+                      key={modeVal}
+                      type="button"
+                      onClick={() => setPdfOcrMode(modeVal)}
+                      className={`rounded px-2 py-0.5 font-medium transition cursor-pointer ${
+                        pdfOcrMode === modeVal
+                          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      }`}
+                    >
+                      {modeLabel}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <InlineSwitch
                 label="Hierarchical Parent-Child chunking (256 → 1000 tok)"
                 checked={parentChildChunking}

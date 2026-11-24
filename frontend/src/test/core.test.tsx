@@ -322,6 +322,11 @@ describe("KnowledgeBaseView", () => {
           version: "0.1.0",
           qdrant: { status: "ok", collection: "adaptiverag_docs", points_count: 15 },
           firecrawl: { status: "ok", base_url: "http://localhost:3002" },
+          pdf_ocr: {
+            parser: "liteparse",
+            default_mode: "auto",
+            ocria_nano_installed: true,
+          },
           llm_configured: true,
           llm_error: null,
           llm_provider: "openrouter",
@@ -376,6 +381,10 @@ describe("KnowledgeBaseView", () => {
 
     expect(screen.getByText("Qdrant Hybrid Guide")).toBeInTheDocument();
     expect(screen.getByText("Small→Big")).toBeInTheDocument();
+    expect(screen.getByText("OCRia-nano ready")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Auto 2-Tier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "OCRia-nano" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Vision LLM" })).toBeInTheDocument();
     expect(
       screen.getByLabelText(/Hierarchical Parent-Child chunking/i)
     ).toBeInTheDocument();
@@ -384,6 +393,58 @@ describe("KnowledgeBaseView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Web" }));
     expect(screen.queryByText("Qdrant Hybrid Guide")).not.toBeInTheDocument();
     expect(screen.getByText("Firecrawl Local Quickstart")).toBeInTheDocument();
+  });
+
+  it("sends selected PDF OCR mode when re-indexing local corpus and displays OCR telemetry", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          collection: "adaptiverag_docs",
+          source: "data/raw",
+          documents_processed: 3,
+          chunks_created: 14,
+          points_upserted: 14,
+          total_collection_points: 73,
+          collection_created: false,
+          elapsed_ms: 412,
+          source_urls: [],
+          parent_child_enabled: false,
+          unique_parents_created: 0,
+          ocr_pages_processed: 2,
+          ocr_backends_used: ["ocria-nano"],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    try {
+      render(
+        <KnowledgeBaseView
+          apiUrl="http://localhost:8000"
+          health={null}
+          documentsData={null}
+          documentsLoading={false}
+          documentsError={null}
+          onRefreshAll={vi.fn(async () => {})}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "OCRia-nano" }));
+      fireEvent.click(screen.getByRole("button", { name: /Index data\/raw/i }));
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+      const [, reqInit] = fetchSpy.mock.calls[0];
+      const sentBody = JSON.parse(String(reqInit?.body));
+      expect(sentBody.ocr_mode).toBe("ocria_nano");
+
+      expect(
+        await screen.findByText(/2 OCR page\(s\) \[ocria-nano\]/i)
+      ).toBeInTheDocument();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 

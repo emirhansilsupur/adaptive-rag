@@ -9,6 +9,7 @@ import type {
   HealthResponse,
   IngestRequest,
   IngestResponse,
+  PdfOcrMode,
   PresetSelection,
   QueryRequest,
   SseErrorPayload,
@@ -306,6 +307,7 @@ export async function uploadFiles(
     maxTokens?: number;
     overlapTokens?: number;
     parentChild?: boolean;
+    ocrMode?: PdfOcrMode;
   }
 ): Promise<IngestResponse> {
   const form = new FormData();
@@ -321,6 +323,9 @@ export async function uploadFiles(
   }
   if (options?.parentChild !== undefined) {
     form.append("parent_child", String(options.parentChild));
+  }
+  if (options?.ocrMode !== undefined) {
+    form.append("ocr_mode", options.ocrMode);
   }
 
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/ingest/upload`, {

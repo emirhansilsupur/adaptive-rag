@@ -44,9 +44,10 @@ from adaptiverag.ingestion.indexer import (
 )
 from adaptiverag.ingestion.loader import (
     LoadedDocument,
+    aload_document_bytes,
     detect_document_language,
-    load_document_bytes,
 )
+from adaptiverag.ingestion.pdf_parser import PdfOcrMode, health_pdf_ocr_summary
 from adaptiverag.ingestion.web_loader import (
     FirecrawlError,
     FirecrawlUnavailableError,
@@ -165,6 +166,7 @@ async def health_check(
         "child_max_tokens": settings.child_max_tokens,
         "child_overlap_tokens": settings.child_overlap_tokens,
     }
+    pdf_ocr_info = await asyncio.to_thread(health_pdf_ocr_summary, settings)
 
     return HealthResponse(
         status=overall_status,
@@ -173,6 +175,7 @@ async def health_check(
         langfuse=langfuse_info,
         security=security_info,
         parent_child_retrieval=parent_child_info,
+        pdf_ocr=pdf_ocr_info,
         llm_configured=llm_ok,
         llm_error=llm_error,
         llm_provider=settings.llm_provider,
@@ -360,6 +363,8 @@ def _report_to_ingest_response(report: Any) -> IngestResponse:
         source_urls=report.source_urls,
         parent_child_enabled=report.parent_child_enabled,
         unique_parents_created=report.unique_parents_created,
+        ocr_pages_processed=report.ocr_pages_processed,
+        ocr_backends_used=report.ocr_backends_used,
     )
 
 
@@ -488,13 +493,30 @@ async def ingest_documents(
             detail=f"Corpus directory not found: {raw_target}",
         )
 
-    report = await index_corpus(
-        data_dir=resolved_dir,
-        store=container.store,
-        chunk_config=chunk_cfg,
-        recreate=payload.recreate_collection,
-        batch_size=payload.batch_size,
-    )
+    ingest_tracker = CostTracker(max_cost_usd=container.settings.max_run_cost_usd)
+    try:
+        report = await index_corpus(
+            data_dir=resolved_dir,
+            store=container.store,
+            chunk_config=chunk_cfg,
+            recreate=payload.recreate_collection,
+            batch_size=payload.batch_size,
+            ocr_mode=payload.ocr_mode,
+            vision_ocr_fn=container.vision_ocr_fn,
+            settings=container.settings,
+            cost_tracker=ingest_tracker,
+        )
+    except BudgetExceededError as exc:
+        logger.warning("ingest_corpus_budget_exceeded", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     return _report_to_ingest_response(report)
 
 
@@ -513,6 +535,7 @@ async def upload_and_ingest_files(
     max_tokens: int = Form(default=512, ge=64, le=4096),
     overlap_tokens: int = Form(default=64, ge=0, le=512),
     parent_child: bool | None = Form(default=None),
+    ocr_mode: PdfOcrMode | None = Form(default=None),  # noqa: B008
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> IngestResponse:
     """Parse uploaded Markdown, plain text, or PDF files and upsert chunks into Qdrant."""
@@ -533,6 +556,7 @@ async def upload_and_ingest_files(
         )
 
     started = time.perf_counter()
+    upload_tracker = CostTracker(max_cost_usd=container.settings.max_run_cost_usd)
     loaded_docs: list[LoadedDocument] = []
     for upload in files:
         filename = upload.filename or "untitled"
@@ -547,8 +571,21 @@ async def upload_and_ingest_files(
                 ),
             )
         try:
-            doc = await asyncio.to_thread(load_document_bytes, filename, raw)
+            doc = await aload_document_bytes(
+                filename,
+                raw,
+                ocr_mode=ocr_mode,
+                vision_ocr_fn=container.vision_ocr_fn,
+                settings=container.settings,
+                cost_tracker=upload_tracker,
+            )
             loaded_docs.append(doc)
+        except BudgetExceededError as exc:
+            logger.warning("upload_ocr_budget_exceeded", filename=filename, error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=str(exc),
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

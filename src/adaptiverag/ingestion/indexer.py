@@ -11,10 +11,12 @@ from pathlib import Path
 import structlog
 from pydantic import BaseModel, Field
 
-from adaptiverag.config import get_settings
+from adaptiverag.config import Settings, get_settings
 from adaptiverag.ingestion.chunker import ChunkingConfig, chunk_documents
-from adaptiverag.ingestion.loader import LoadedDocument, load_directory
+from adaptiverag.ingestion.loader import LoadedDocument, aload_directory
+from adaptiverag.ingestion.pdf_parser import PdfOcrMode, VisionOcrFn
 from adaptiverag.ingestion.web_loader import FirecrawlClient
+from adaptiverag.llm.cost import CostTracker
 from adaptiverag.observability.tracing import configure_logging
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 
@@ -35,6 +37,8 @@ class IndexingReport(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
     parent_child_enabled: bool = False
     unique_parents_created: int = Field(default=0, ge=0)
+    ocr_pages_processed: int = Field(default=0, ge=0)
+    ocr_backends_used: list[str] = Field(default_factory=list)
 
 
 async def index_documents(
@@ -68,6 +72,16 @@ async def index_documents(
     ]
 
     unique_parents = len({c.parent_id for c in chunks if c.parent_id})
+    ocr_pages_total = sum(int(doc.metadata.get("ocr_pages", 0) or 0) for doc in doc_list)
+    backends_seen: list[str] = []
+    for doc in doc_list:
+        raw_backends = doc.metadata.get("ocr_backends_used")
+        if isinstance(raw_backends, list):
+            for b in raw_backends:
+                b_str = str(b).strip()
+                if b_str and b_str not in backends_seen:
+                    backends_seen.append(b_str)
+
     report = IndexingReport(
         data_dir=source,
         collection_name=store.collection_name,
@@ -80,6 +94,8 @@ async def index_documents(
         source_urls=source_urls,
         parent_child_enabled=bool(chunk_config.parent_child_enabled) if chunk_config else False,
         unique_parents_created=unique_parents,
+        ocr_pages_processed=ocr_pages_total,
+        ocr_backends_used=backends_seen,
     )
     logger.info("corpus_indexing_complete", **report.model_dump())
     return report
@@ -92,10 +108,20 @@ async def index_corpus(
     chunk_config: ChunkingConfig | None = None,
     recreate: bool = False,
     batch_size: int = 64,
+    ocr_mode: PdfOcrMode | None = None,
+    vision_ocr_fn: VisionOcrFn | None = None,
+    settings: Settings | None = None,
+    cost_tracker: CostTracker | None = None,
 ) -> IndexingReport:
     """Load, structure-chunk, embed (Dense + BM25), and upsert a local corpus into Qdrant."""
     started = time.perf_counter()
-    docs = await asyncio.to_thread(load_directory, data_dir)
+    docs = await aload_directory(
+        data_dir,
+        ocr_mode=ocr_mode,
+        vision_ocr_fn=vision_ocr_fn,
+        settings=settings,
+        cost_tracker=cost_tracker,
+    )
     return await index_documents(
         docs,
         store,
@@ -254,6 +280,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Token overlap between sibling child chunks (default: 40).",
     )
     parser.add_argument(
+        "--ocr-mode",
+        choices=["auto", "ocria_nano", "vision_llm", "off"],
+        default=None,
+        help="PDF OCR routing mode override (default: PDF_OCR_MODE from settings).",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=64,
@@ -346,6 +378,9 @@ async def _run_cli(args: argparse.Namespace) -> IndexingReport:
             chunk_config=chunk_cfg,
             recreate=args.recreate,
             batch_size=args.batch_size,
+            ocr_mode=args.ocr_mode,
+            settings=settings,
+            cost_tracker=CostTracker(max_cost_usd=settings.max_run_cost_usd),
         )
     finally:
         if firecrawl_client is not None:

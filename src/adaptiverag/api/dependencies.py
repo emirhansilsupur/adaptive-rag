@@ -9,6 +9,7 @@ from fastapi import Request
 
 from adaptiverag.config import Settings, StrategiesConfig, get_settings, load_strategies
 from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
+from adaptiverag.ingestion.pdf_parser import VisionOcrFn
 from adaptiverag.ingestion.web_loader import FirecrawlClient
 from adaptiverag.observability.prompts import PromptManager
 from adaptiverag.observability.tracing import LangfuseObservability
@@ -28,6 +29,7 @@ class AppContainer:
     firecrawl_client: FirecrawlClient | None = None
     observability: LangfuseObservability | None = None
     prompt_manager: PromptManager | None = None
+    vision_ocr_fn: VisionOcrFn | None = None
     owns_store: bool = True
     owns_firecrawl: bool = True
     _workflow_lock: Lock = field(default_factory=Lock, repr=False)

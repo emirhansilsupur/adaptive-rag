@@ -16,6 +16,7 @@ export type AblationPreset =
   | "naive_dense";
 
 export type PresetSelection = AblationPreset | "custom";
+export type PdfOcrMode = "auto" | "ocria_nano" | "vision_llm" | "off";
 
 export interface AblationConfig {
   retrieval_mode: "hybrid" | "dense_only" | "sparse_only";
@@ -244,6 +245,18 @@ export interface ParentChildHealthInfo {
   child_overlap_tokens?: number;
 }
 
+export interface PdfOcrHealthInfo {
+  parser?: string;
+  default_mode?: PdfOcrMode;
+  ocria_nano_installed?: boolean;
+  auto_pull_enabled?: boolean;
+  vision_fallback_enabled?: boolean;
+  vision_llm_configured?: boolean;
+  vision_model?: string;
+  dpi?: number;
+  max_ocr_pages?: number;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   version: string;
@@ -252,6 +265,7 @@ export interface HealthResponse {
   langfuse?: LangfuseHealthInfo;
   security?: SecurityHealthInfo;
   parent_child_retrieval?: ParentChildHealthInfo;
+  pdf_ocr?: PdfOcrHealthInfo;
   llm_configured: boolean;
   llm_error: string | null;
   llm_provider: string;
@@ -281,6 +295,7 @@ export interface IngestRequest {
   parent_max_tokens?: number;
   child_max_tokens?: number;
   child_overlap_tokens?: number;
+  ocr_mode?: PdfOcrMode | null;
   batch_size?: number;
 }
 
@@ -296,6 +311,8 @@ export interface IngestResponse {
   source_urls: string[];
   parent_child_enabled?: boolean;
   unique_parents_created?: number;
+  ocr_pages_processed?: number;
+  ocr_backends_used?: string[];
 }
 
 export interface IndexedDocumentInfo {

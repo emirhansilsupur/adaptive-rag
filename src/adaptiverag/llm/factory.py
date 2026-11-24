@@ -36,10 +36,18 @@ def _require_secret(secret: SecretStr | None, env_var: str) -> str:
     return secret.get_secret_value()
 
 
-def create_chat_model(settings: Settings, tier: ModelTier = ModelTier.FAST) -> BaseChatModel:
+def create_chat_model(
+    settings: Settings,
+    tier: ModelTier = ModelTier.FAST,
+    *,
+    model_override: str | None = None,
+) -> BaseChatModel:
     """Instantiate a chat model according to settings.llm_provider and tier."""
+    cleaned_override = model_override.strip() if model_override else ""
     model_name = (
-        settings.llm_fast_model if tier == ModelTier.FAST else settings.llm_generation_model
+        cleaned_override
+        if cleaned_override
+        else (settings.llm_fast_model if tier == ModelTier.FAST else settings.llm_generation_model)
     )
     provider = settings.llm_provider
 
