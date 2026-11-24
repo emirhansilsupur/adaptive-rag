@@ -5,9 +5,23 @@ build-backend = "hatchling.build"
 [project]
 name = "adaptiverag"
 version = "0.1.0"
-description = "Query-aware Agentic RAG engine with native Qdrant hybrid search, dynamic top-k, cross-encoder reranking, multi-signal confidence gating, web fallback, and two-tier citation validation."
+description = "Production-grade, query-aware Agentic RAG engine with verifiable citations, native Qdrant hybrid search, local ONNX reranking, 3-stage dynamic top-k, CRAG gating, and Langfuse v5 OTEL observability."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+authors = [{ name = "Emirhan Silsüpür", email = "sr.emirhn@gmail.com" }]
+keywords = [
+    "rag",
+    "agentic-rag",
+    "langgraph",
+    "qdrant",
+    "hybrid-search",
+    "reranking",
+    "crag",
+    "langfuse",
+    "opentelemetry",
+    "fastapi",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "fastembed>=0.6.0",
@@ -46,6 +60,11 @@ providers = [
     "langchain-anthropic>=0.3.0",
     "langchain-google-genai>=2.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/emirhansilsupur/adaptive-rag"
+Repository = "https://github.com/emirhansilsupur/adaptive-rag"
+Issues = "https://github.com/emirhansilsupur/adaptive-rag/issues"
 
 [dependency-groups]
 dev = [

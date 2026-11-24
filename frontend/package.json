@@ -1,5 +1,7 @@
 {
   "name": "adaptiverag-studio",
+  "description": "Glass-Box Engineering Workbench & Side-by-Side Ablation Arena for AdaptiveRAG.",
+  "license": "MIT",
   "private": true,
   "version": "0.1.0",
   "type": "module",

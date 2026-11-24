@@ -99,11 +99,21 @@ def create_app(
     application = FastAPI(
         title="AdaptiveRAG API",
         version="0.1.0",
+        summary="Production-grade, query-aware Agentic RAG engine with verifiable citations and glass-box observability.",
         description=(
-            "Query-aware Agentic RAG engine with native Qdrant hybrid search (Dense + BM25 RRF), "
-            "cross-encoder reranking, 3-stage dynamic top-k, multi-signal confidence + CRAG gating, "
-            "web fallback, deterministic input guardrails, and two-tier citation validation."
+            "Domain-agnostic Agentic RAG engine featuring native Qdrant hybrid search (Dense + BM25 RRF), "
+            "local ONNX cross-encoder reranking, 3-stage dynamic top-k & hierarchical parent-child retrieval, "
+            "multi-signal CRAG confidence gating, web fallback, multi-layer safety guardrails, "
+            "two-tier citation auditing, and Langfuse v5 OpenTelemetry observability."
         ),
+        contact={
+            "name": "Emirhan Silsüpür",
+            "url": "https://github.com/emirhansilsupur/adaptive-rag",
+        },
+        license_info={
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT",
+        },
         lifespan=lifespan,
     )
     if container is not None:
