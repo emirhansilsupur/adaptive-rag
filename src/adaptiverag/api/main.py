@@ -4,26 +4,70 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from adaptiverag.api.dependencies import AppContainer, create_app_container
 from adaptiverag.api.routes import router as v1_router
-from adaptiverag.config import get_settings
+from adaptiverag.api.security import (
+    ApiSecurityMiddleware,
+    SlidingWindowRateLimiter,
+    parse_cors_origins,
+)
+from adaptiverag.config import Settings, get_settings
 from adaptiverag.observability.tracing import configure_logging
 
 logger = structlog.get_logger(__name__)
 
+_SERVICE_METADATA: dict[str, Any] = {
+    "service": "AdaptiveRAG",
+    "version": "0.1.0",
+    "docs": "/docs",
+    "endpoints": [
+        "GET /v1/health",
+        "POST /v1/query",
+        "POST /v1/query/stream",
+        "POST /v1/feedback",
+        "POST /v1/ingest",
+        "POST /v1/ingest/upload",
+        "GET /v1/documents",
+        "DELETE /v1/documents/{doc_id}",
+    ],
+}
 
-def create_app(container: AppContainer | None = None) -> FastAPI:
+
+def _resolve_static_ui_root(
+    settings: Settings,
+    explicit_dir: Path | str | None,
+) -> Path | None:
+    """Return the resolved built SPA directory when enabled and containing ``index.html``."""
+    candidate_dir = Path(explicit_dir) if explicit_dir is not None else settings.static_ui_dir
+    if not settings.serve_static_ui or candidate_dir is None:
+        return None
+    resolved = candidate_dir.resolve()
+    if (resolved / "index.html").is_file():
+        return resolved
+    logger.warning("static_ui_dir_missing_index", static_ui_dir=str(resolved))
+    return None
+
+
+def create_app(
+    container: AppContainer | None = None,
+    *,
+    static_ui_dir: Path | str | None = None,
+    rate_limiter: SlidingWindowRateLimiter | None = None,
+) -> FastAPI:
     """Create and configure the AdaptiveRAG FastAPI application.
 
     Passing a pre-built ``container`` enables deterministic dependency injection in tests
     without connecting to live Qdrant or external LLM APIs.
     """
+    active_settings = container.settings if container is not None else get_settings()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -42,6 +86,9 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
             mode="managed_lifespan",
             collection=managed_container.store.collection_name,
             llm_provider=settings.llm_provider,
+            api_auth_enabled=bool(settings.api_auth_key),
+            rate_limit_enabled=settings.rate_limit_enabled,
+            guardrails_enabled=settings.guardrails_enabled,
         )
         try:
             yield
@@ -55,40 +102,94 @@ def create_app(container: AppContainer | None = None) -> FastAPI:
         description=(
             "Query-aware Agentic RAG engine with native Qdrant hybrid search (Dense + BM25 RRF), "
             "cross-encoder reranking, 3-stage dynamic top-k, multi-signal confidence + CRAG gating, "
-            "web fallback, and two-tier citation validation."
+            "web fallback, deterministic input guardrails, and two-tier citation validation."
         ),
         lifespan=lifespan,
     )
     if container is not None:
         application.state.container = container
 
+    # Configure optional API Key Auth & Per-IP Sliding-Window Rate Limiting.
+    # Added BEFORE CORSMiddleware so CORS runs outermost and attaches CORS headers even on 401/429.
+    api_key_value = (
+        active_settings.api_auth_key.get_secret_value()
+        if active_settings.api_auth_key is not None
+        else None
+    )
+    effective_limiter = rate_limiter
+    if effective_limiter is None and active_settings.rate_limit_enabled:
+        effective_limiter = SlidingWindowRateLimiter(
+            max_requests=active_settings.rate_limit_requests_per_minute,
+            window_seconds=60.0,
+        )
+    if api_key_value or effective_limiter is not None:
+        application.add_middleware(
+            ApiSecurityMiddleware,
+            api_key=api_key_value,
+            rate_limiter=effective_limiter,
+            trust_proxy_headers=active_settings.rate_limit_trust_proxy_headers,
+        )
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=parse_cors_origins(active_settings.cors_allow_origins),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=[
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+            "Retry-After",
+            "X-Guardrail-PII-Redacted",
+            "X-Guardrail-Status",
+        ],
     )
 
     application.include_router(v1_router)
 
-    @application.get("/", tags=["Meta"], summary="API service metadata")
-    async def root() -> dict[str, Any]:
-        return {
-            "service": "AdaptiveRAG",
-            "version": "0.1.0",
-            "docs": "/docs",
-            "endpoints": [
-                "GET /v1/health",
-                "POST /v1/query",
-                "POST /v1/query/stream",
-                "POST /v1/feedback",
-                "POST /v1/ingest",
-                "POST /v1/ingest/upload",
-                "GET /v1/documents",
-                "DELETE /v1/documents/{doc_id}",
-            ],
-        }
+    @application.get("/api/meta", tags=["Meta"], summary="API service metadata")
+    async def api_meta() -> dict[str, Any]:
+        return dict(_SERVICE_METADATA)
+
+    static_root = _resolve_static_ui_root(active_settings, static_ui_dir)
+    if static_root is not None:
+        index_html = static_root / "index.html"
+
+        @application.get("/", include_in_schema=False)
+        async def serve_spa_index() -> FileResponse:
+            return FileResponse(index_html)
+
+        @application.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa_assets_or_fallback(full_path: str) -> FileResponse:
+            # Never shadow unknown API routes with HTML.
+            if full_path == "v1" or full_path.startswith("v1/"):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+            candidate = (static_root / full_path).resolve()
+            if not candidate.is_relative_to(static_root):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+            if candidate.is_file():
+                headers = (
+                    {"Cache-Control": "public, max-age=31536000, immutable"}
+                    if full_path.startswith("assets/")
+                    else None
+                )
+                return FileResponse(candidate, headers=headers)
+
+            # Return 404 for missing static bundle assets rather than HTML.
+            if full_path.startswith("assets/"):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+
+            return FileResponse(index_html)
+
+        logger.info("static_spa_mounted", static_ui_dir=str(static_root))
+    else:
+
+        @application.get("/", tags=["Meta"], summary="API service metadata")
+        async def root() -> dict[str, Any]:
+            return dict(_SERVICE_METADATA)
 
     return application
 

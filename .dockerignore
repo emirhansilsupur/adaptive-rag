@@ -1,0 +1,42 @@
+# Git & IDE metadata
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Python environments & caches
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.cache
+
+# Local runtime state & secrets (never bake into image layers)
+.env
+.env.*
+!.env.example
+.adaptiverag_cache
+qdrant_storage
+eval/reports
+*.sqlite
+*.sqlite3
+*.db
+
+# Frontend build artifacts & local dependencies (rebuilt cleanly in Stage 1)
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Non-runtime docs, tests & legacy UI
+docs/
+tests/
+ui/
+eval/
+data/eval/

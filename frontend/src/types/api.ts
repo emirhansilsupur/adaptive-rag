@@ -219,12 +219,22 @@ export interface FirecrawlHealthInfo {
   http_status?: number;
 }
 
+export interface SecurityHealthInfo {
+  api_key_auth_enabled?: boolean;
+  rate_limit_enabled?: boolean;
+  rate_limit_requests_per_minute?: number;
+  guardrails_enabled?: boolean;
+  prompt_injection_protection?: boolean;
+  pii_mode?: "off" | "redact" | "block";
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   version: string;
   qdrant: QdrantHealthInfo;
   firecrawl: FirecrawlHealthInfo;
   langfuse?: LangfuseHealthInfo;
+  security?: SecurityHealthInfo;
   llm_configured: boolean;
   llm_error: string | null;
   llm_provider: string;

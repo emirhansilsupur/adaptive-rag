@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from adaptiverag.api.dependencies import AppContainer, get_container
@@ -43,6 +53,11 @@ from adaptiverag.ingestion.web_loader import (
 )
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.schemas.response import FinalAnswer
+from adaptiverag.verification.guardrails import (
+    GuardrailDecision,
+    InputGuardrailConfig,
+    screen_query_input,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -57,6 +72,34 @@ def _resolve_workflow_or_503(container: AppContainer) -> Any:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+def _screen_query_or_400(payload: QueryRequest, container: AppContainer) -> GuardrailDecision:
+    """Apply $0 deterministic prompt-injection and PII guardrails before invoking LLMs."""
+    settings = container.settings
+    cfg = InputGuardrailConfig(
+        enabled=settings.guardrails_enabled,
+        block_prompt_injection=settings.guardrails_block_prompt_injection,
+        pii_mode=settings.guardrails_pii_mode,
+    )
+    decision = screen_query_input(payload.query, payload.chat_history, config=cfg)
+    if not decision.allowed:
+        logger.warning(
+            "input_guardrail_blocked",
+            rules=decision.triggered_rules,
+            pii_types=decision.pii_types,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=decision.blocked_reason or "Request blocked by input safety guardrails.",
+            headers={"X-Guardrail-Status": "blocked"},
+        )
+    if decision.redacted:
+        logger.info(
+            "input_guardrail_pii_redacted",
+            pii_counts={finding.entity_type: finding.count for finding in decision.pii_findings},
+        )
+    return decision
 
 
 @router.get("/health", response_model=HealthResponse, summary="Check API, Qdrant, and LLM health")
@@ -102,11 +145,25 @@ async def health_check(
     langfuse_info = container.get_observability().health_summary()
     langfuse_info["prompt_management"] = container.get_prompt_manager().health_summary()
 
+    security_info = {
+        "api_key_auth_enabled": bool(
+            settings.api_auth_key and settings.api_auth_key.get_secret_value().strip()
+        ),
+        "rate_limit_enabled": settings.rate_limit_enabled,
+        "rate_limit_requests_per_minute": settings.rate_limit_requests_per_minute,
+        "guardrails_enabled": settings.guardrails_enabled,
+        "prompt_injection_protection": (
+            settings.guardrails_enabled and settings.guardrails_block_prompt_injection
+        ),
+        "pii_mode": settings.guardrails_pii_mode if settings.guardrails_enabled else "off",
+    }
+
     return HealthResponse(
         status=overall_status,
         qdrant=qdrant_info,
         firecrawl=firecrawl_info,
         langfuse=langfuse_info,
+        security=security_info,
         llm_configured=llm_ok,
         llm_error=llm_error,
         llm_provider=settings.llm_provider,
@@ -126,9 +183,14 @@ async def health_check(
 @router.post("/query", response_model=FinalAnswer, summary="Run AdaptiveRAG query (batch JSON)")
 async def run_query(
     payload: QueryRequest,
+    response: Response,
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> FinalAnswer:
     """Execute the full AdaptiveRAG agentic pipeline and return a Glass-Box FinalAnswer."""
+    guardrail = _screen_query_or_400(payload, container)
+    if guardrail.redacted:
+        response.headers["X-Guardrail-PII-Redacted"] = ",".join(guardrail.pii_types)
+
     workflow = _resolve_workflow_or_503(container)
     ablation = payload.resolve_ablation()
     request_tracker = (
@@ -137,8 +199,8 @@ async def run_query(
 
     try:
         answer: FinalAnswer = await workflow.arun(
-            payload.query,
-            chat_history=payload.chat_history,
+            guardrail.sanitized_query,
+            chat_history=guardrail.sanitized_history,
             ablation=ablation,
             cost_tracker=request_tracker,
             session_id=payload.session_id,
@@ -164,6 +226,7 @@ async def stream_query(
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> EventSourceResponse:
     """Stream live ``node_update`` events followed by the complete ``final_answer`` over SSE."""
+    guardrail = _screen_query_or_400(payload, container)
     workflow = _resolve_workflow_or_503(container)
     ablation = payload.resolve_ablation()
     request_tracker = (
@@ -173,8 +236,8 @@ async def stream_query(
     async def event_generator() -> AsyncIterator[ServerSentEvent]:
         try:
             async for item in workflow.astream_events(
-                payload.query,
-                chat_history=payload.chat_history,
+                guardrail.sanitized_query,
+                chat_history=guardrail.sanitized_history,
                 ablation=ablation,
                 cost_tracker=request_tracker,
                 session_id=payload.session_id,
@@ -218,12 +281,16 @@ async def stream_query(
                 ),
             )
 
+    sse_headers: dict[str, str] = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    if guardrail.redacted:
+        sse_headers["X-Guardrail-PII-Redacted"] = ",".join(guardrail.pii_types)
+
     return EventSourceResponse(
         event_generator(),
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers=sse_headers,
     )
 
 

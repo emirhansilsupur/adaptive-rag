@@ -128,9 +128,40 @@ class Settings(BaseSettings):
     langfuse_prompt_label: str = "production"
     langfuse_prompt_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
 
+    # --- Production API Security, Rate Limiting & Static SPA Serving ---
+    api_auth_key: SecretStr | None = None
+    cors_allow_origins: str = "*"
+    rate_limit_enabled: bool = False
+    rate_limit_requests_per_minute: int = Field(default=60, ge=1, le=10000)
+    rate_limit_trust_proxy_headers: bool = False
+    serve_static_ui: bool = True
+    static_ui_dir: Path | None = None
+
+    # --- Input Safety Guardrails ($0 deterministic screening before LLM calls) ---
+    guardrails_enabled: bool = True
+    guardrails_block_prompt_injection: bool = True
+    guardrails_pii_mode: Literal["off", "redact", "block"] = "redact"
+
     # --- Paths & Logging ---
     strategies_config_path: Path = Path("configs/strategies.yaml")
     log_level: str = "INFO"
+
+    @field_validator("api_auth_key", mode="before")
+    @classmethod
+    def _normalize_api_auth_key(cls, value: str | SecretStr | None) -> str | SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        cleaned = raw.strip()
+        return value if (cleaned and isinstance(value, SecretStr)) else (cleaned or None)
+
+    @field_validator("static_ui_dir", mode="before")
+    @classmethod
+    def _normalize_static_ui_dir(cls, value: str | Path | None) -> Path | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return Path(cleaned) if cleaned else None
 
     @field_validator("firecrawl_local_url", mode="before")
     @classmethod

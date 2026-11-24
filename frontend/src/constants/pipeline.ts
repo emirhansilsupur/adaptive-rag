@@ -318,6 +318,8 @@ export const COMPARE_DEMO_QUERIES: CompareDemoItem[] = [
   },
 ];
 
+const rawViteApiUrl = import.meta.env.VITE_API_URL as string | undefined;
+
 export const DEFAULT_API_URL = (
-  import.meta.env.VITE_API_URL || "http://localhost:8000"
+  rawViteApiUrl !== undefined ? rawViteApiUrl : "http://localhost:8000"
 ).replace(/\/+$/, "");

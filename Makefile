@@ -1,4 +1,4 @@
-.PHONY: install up up-full down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval eval-langfuse prompts-list prompts-sync
+.PHONY: install up up-full up-prod docker-build down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval eval-langfuse prompts-list prompts-sync
 
 install:
 	uv sync --extra ui --extra eval --group dev
@@ -10,8 +10,14 @@ up:
 up-full:
 	docker compose --profile observability up -d
 
+up-prod:
+	docker compose --profile app up --build -d
+
+docker-build:
+	docker build -t adaptiverag:latest .
+
 down:
-	docker compose --profile observability down
+	docker compose --profile observability --profile app down
 
 ingest:
 	uv run python -m adaptiverag.ingestion.indexer

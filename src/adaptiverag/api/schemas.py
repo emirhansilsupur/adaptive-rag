@@ -298,6 +298,7 @@ class HealthResponse(BaseModel):
     qdrant: dict[str, Any]
     firecrawl: dict[str, Any] = Field(default_factory=dict)
     langfuse: dict[str, Any] = Field(default_factory=dict)
+    security: dict[str, Any] = Field(default_factory=dict)
     llm_configured: bool
     llm_error: str | None = None
     llm_provider: str

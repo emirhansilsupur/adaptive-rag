@@ -77,6 +77,7 @@ flowchart TD
 | **6. Web Search Fallback & Honest Abstention** | `FallbackRetriever` protocol backed by **Tavily** (primary) and **DuckDuckGo** (zero-key fallback), mapping web snippets into `[W1]..[Wn]` `EvidenceChunk`s. If local + web evidence still cannot ground the query, returns an honest TR/EN abstention. |
 | **7. Two-Tier Citation Validation** | **Tier-1 (`0 ms`, `$0`):** Deterministic regex check catching phantom IDs (`[C9]`) and uncited factual sentences. **Tier-2:** Claim-level entailment (`SUPPORTED` / `PARTIALLY_SUPPORTED` / `UNSUPPORTED` / `CONTRADICTED`). Triggers at most 1 `regenerate_strict` repair pass when `claim_support_rate < 0.85`. |
 | **8. Closed-Loop LLMOps & FinOps** | Tiered LLM routing (`qwen/qwen3-30b-a3b-instruct-2507` + `deepseek/deepseek-v3.2` via OpenRouter, swappable to OpenAI / Gemini / Anthropic / Ollama), local `SQLiteLLMCache`, hard `CostTracker` cap (`HTTP 402`), and **Langfuse v5 OTEL** deep tracing, automated online quality scoring, `POST /v1/feedback` human-in-the-loop loop, versioned **Prompt Management** (with zero-downtime local fallback), and Datasets & Experiments benchmark sync. |
+| **9. Production Security & Guardrails** | Pure ASGI security middleware (zero SSE buffering) with optional constant-time `API_AUTH_KEY` (`X-API-Key` / `Bearer`), per-IP sliding-window rate limiting (`HTTP 429` + `Retry-After`), `$0` deterministic EN+TR prompt-injection/exfiltration screening, checksum-validated PII & secret redaction (API keys, email, phone, Luhn credit cards, Turkish TCKN), and a non-root multi-stage `Dockerfile` serving FastAPI + built React SPA on one port. |
 
 ---
 
@@ -149,6 +150,27 @@ make ui
 # React + TypeScript Glass-Box Studio available at http://localhost:5173
 # (Optional legacy Streamlit UI: `make ui-legacy` at http://localhost:8501)
 ```
+
+### 6. Single-Container Production Deployment & Guardrails
+
+For containerised or cloud deployments, the multi-stage [`Dockerfile`](Dockerfile) builds the React 19 Glass-Box Studio SPA in Stage 1 (`node:22-alpine`, configured with `VITE_API_URL=""` for same-origin requests) and serves both `/v1/*` API endpoints and the static SPA from a hardened, non-root `python:3.12-slim` container on port `8000`:
+
+```bash
+# Build & launch Qdrant + FastAPI + Built React 19 Studio together on http://localhost:8000
+make up-prod
+
+# Or build the standalone production image directly
+make docker-build
+```
+
+Production security and `$0` input guardrails are configured via environment variables (see [`.env.example`](.env.example)):
+
+| Control | Env Vars | Behavior |
+| :--- | :--- | :--- |
+| **API Key Auth** | `API_AUTH_KEY` | Optional constant-time (`hmac.compare_digest`) auth via `X-API-Key` or `Authorization: Bearer` protecting `/v1/*` while keeping `/v1/health` and SPA assets public |
+| **Rate Limiting** | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_TRUST_PROXY_HEADERS` | Thread-safe per-IP sliding-window limiter emitting `X-RateLimit-*` headers and `HTTP 429` + `Retry-After` without buffering SSE streams |
+| **Prompt-Injection Guardrail** | `GUARDRAILS_ENABLED`, `GUARDRAILS_BLOCK_PROMPT_INJECTION` | `$0` sub-millisecond EN+TR screening (NFKC + zero-width normalized) blocking instruction override, jailbreak, delimiter spoofing, and system-prompt exfiltration at `HTTP 400` before LLM execution |
+| **PII & Secret Protection** | `GUARDRAILS_PII_MODE=redact\|block\|off` | Masks or blocks API keys (`sk-or-v1-*`, `sk-*`, `pk/sk-lf-*`, `ghp_*`, `AKIA*`), emails, phone numbers, Luhn-verified cards, and checksum-verified Turkish TCKN before payloads reach external LLM providers (`X-Guardrail-PII-Redacted` telemetry header) |
 
 ---
 
@@ -424,10 +446,10 @@ adaptiverag/
 │   ├── llm/                         # Multi-provider factory, resilient structured output, SQLite cache, CostTracker
 │   ├── ingestion/                   # Markdown/PDF loader, Firecrawl Local web/docs scraper (SSRF-safe), structure-aware chunker, Qdrant indexer
 │   ├── retrieval/                   # FastEmbed Dense/BM25, Async Qdrant Hybrid RRF, Cross-Encoder, Dynamic Top-K, Web Fallback
-│   ├── verification/                # Multi-signal Confidence + CRAG grader, Two-Tier Citation Validator
+│   ├── verification/                # Multi-signal Confidence + CRAG grader, Two-Tier Citation Validator, $0 Input Guardrails (Injection + PII)
 │   ├── graph/                       # LangGraph AgentState, AblationConfig, prompts, 12 async nodes, conditional edges, workflow
 │   ├── observability/               # Structlog logging + Langfuse v5 OTEL tracing, online auto-scoring, feedback & versioned Prompt Management
-│   └── api/                         # FastAPI app, lifespan container, REST + SSE streaming + /v1/feedback routes
+│   └── api/                         # FastAPI app, lifespan container, ASGI auth/rate-limit middleware, static SPA serving, REST + SSE routes
 ├── frontend/
 │   ├── src/
 │   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, CompareArena, LivePipelineTracker, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
@@ -446,8 +468,9 @@ adaptiverag/
 ├── tests/
 │   ├── unit/                        # Deterministic $0 unit, graph, API, citation & eval tests
 │   └── integration/                 # In-memory Qdrant native Dense + BM25 RRF hybrid search tests
-├── docker-compose.yml               # Qdrant + optional Langfuse observability profile
-├── Makefile                         # install, up, ingest, api, ui, test, lint, typecheck, ci, eval
+├── Dockerfile                       # Multi-stage production build (Node 22 SPA builder -> non-root Python 3.12 + uv FastAPI runtime)
+├── docker-compose.yml               # Qdrant + optional app (single-container prod) & observability (Langfuse v4) profiles
+├── Makefile                         # install, up, up-full, up-prod, docker-build, ingest, api, ui, test, lint, typecheck, ci, eval
 └── pyproject.toml                   # uv project config, ruff, mypy, pytest settings
 ```
 
@@ -455,14 +478,14 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`114` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`131` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy + frontend typecheck/test/build + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 114 offline Python unit & in-memory integration tests ($0 API cost)
+make test       # 131 offline Python unit & in-memory integration tests ($0 API cost)
 make ui-test    # Frontend TypeScript typecheck + 15 Vitest unit tests
 make ui-build   # Production Vite bundle build
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)

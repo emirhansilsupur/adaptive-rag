@@ -15,6 +15,35 @@ services:
       retries: 5
 
   # ============================================================================
+  # Optional Single-Container Production App (FastAPI + Built React 19 Studio)
+  # Run with: `make up-prod` (or `docker compose --profile app up --build -d`)
+  # Serves both REST/SSE API (/v1/*) and React Studio UI on http://localhost:8000
+  # ============================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: adaptiverag:latest
+    container_name: adaptiverag-app
+    profiles: ["app"]
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      STATIC_UI_DIR: /app/frontend/dist
+      FASTEMBED_CACHE_PATH: /app/.adaptiverag_cache/fastembed
+      LLM_CACHE_PATH: /app/.adaptiverag_cache/llm_cache.sqlite
+    volumes:
+      - adaptiverag_cache:/app/.adaptiverag_cache
+
+  # ============================================================================
   # Optional Self-Hosted Langfuse v4 Stack (required for Langfuse Python SDK v5)
   # Run with: `make up-full` (or `docker compose --profile observability up -d`)
   # Note: For zero-RAM local dev, Langfuse Cloud Free Tier (https://cloud.langfuse.com)
@@ -168,6 +197,7 @@ services:
 
 volumes:
   qdrant_data:
+  adaptiverag_cache:
   langfuse_pgdata:
   langfuse_clickhouse_data:
   langfuse_minio_data:

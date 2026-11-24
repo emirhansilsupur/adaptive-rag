@@ -494,8 +494,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </label>
               <div className="mt-1 flex gap-1">
                 <input
-                  type="url"
+                  type="text"
                   value={apiInput}
+                  placeholder="Same-origin (or http://localhost:8000)"
                   onChange={(e) => setApiInput(e.target.value)}
                   className="min-w-0 flex-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[10.5px] text-[var(--text-primary)] focus:border-blue-500 focus:outline-none"
                 />
@@ -556,6 +557,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       : `Local (${health.langfuse?.prompt_management?.managed_prompts ?? 8})`}
                   </dd>
                 </div>
+                {health.security && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-[var(--text-muted)]">Guardrails</dt>
+                    <dd className="truncate text-[var(--text-primary)]">
+                      {health.security.guardrails_enabled
+                        ? `On (PII: ${health.security.pii_mode ?? "redact"})`
+                        : "Off"}
+                      {health.security.api_key_auth_enabled ? " · Auth" : ""}
+                      {health.security.rate_limit_enabled ? " · RL" : ""}
+                    </dd>
+                  </div>
+                )}
               </dl>
             ) : (
               <p className="text-[10.5px] text-rose-400">

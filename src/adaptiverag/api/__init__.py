@@ -10,15 +10,18 @@ from adaptiverag.api.schemas import (
     InlineDocument,
     QueryRequest,
 )
+from adaptiverag.api.security import ApiSecurityMiddleware, SlidingWindowRateLimiter
 
 __all__ = [
     "AblationPreset",
+    "ApiSecurityMiddleware",
     "AppContainer",
     "HealthResponse",
     "IngestRequest",
     "IngestResponse",
     "InlineDocument",
     "QueryRequest",
+    "SlidingWindowRateLimiter",
     "app",
     "create_app",
     "create_app_container",

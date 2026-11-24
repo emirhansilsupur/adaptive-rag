@@ -128,7 +128,8 @@ export default function App() {
   // API & Health & Knowledge Base state
   const [apiUrl, setApiUrl] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_API_URL_KEY) || DEFAULT_API_URL;
+      const saved = localStorage.getItem(STORAGE_API_URL_KEY);
+      return saved !== null ? saved : DEFAULT_API_URL;
     } catch {
       return DEFAULT_API_URL;
     }
