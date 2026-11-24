@@ -27,6 +27,7 @@ from adaptiverag.observability.prompts import (
 from adaptiverag.schemas.citation import CitationReport, ClaimVerdict
 from adaptiverag.schemas.query import ChatMessage, QueryType
 from adaptiverag.schemas.retrieval import ConfidenceAssessment, EvidenceChunk, SourceType
+from adaptiverag.verification.guardrails import sanitize_untrusted_passage
 
 _TR_DIACRITICS_RE = re.compile(r"[çğıöşüÇĞİÖŞÜ]")
 _TR_HINT_WORDS = {
@@ -44,7 +45,8 @@ _TR_HINT_WORDS = {
     "tesekkur",
 }
 
-_CONTEXT_CHUNK_CHAR_LIMIT = 2400
+# Accommodates full 1000-token Parent-Child passages (~4,000-5,000 chars) without clipping H3/H4 facts.
+_CONTEXT_CHUNK_CHAR_LIMIT = 6000
 
 
 def _resolve_system_prompt(
@@ -105,11 +107,15 @@ def format_evidence_context(chunks: Sequence[EvidenceChunk]) -> str:
         if chunk.source_type == SourceType.WEB and chunk.url:
             header_parts.append(chunk.url)
         header = " | ".join(header_parts) if header_parts else chunk.doc_id
-        body = chunk.text.strip()
+        body = sanitize_untrusted_passage(chunk.text.strip())
         if len(body) > _CONTEXT_CHUNK_CHAR_LIMIT:
             body = body[:_CONTEXT_CHUNK_CHAR_LIMIT].rstrip() + "..."
         source_tag = "WEB" if chunk.source_type == SourceType.WEB else "LOCAL"
-        blocks.append(f"[{label}] ({source_tag} | {header})\n{body}")
+        blocks.append(
+            f'<evidence id="{label}" source="{source_tag}" header="{header}">\n'
+            f"[{label}] ({source_tag} | {header})\n{body}\n"
+            f"</evidence>"
+        )
 
     return "\n\n---\n\n".join(blocks)
 

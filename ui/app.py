@@ -19,6 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 DEFAULT_API_URL = os.environ.get("ADAPTIVERAG_API_URL", "http://localhost:8000").rstrip("/")
+DEFAULT_API_KEY = os.environ.get("ADAPTIVERAG_API_KEY", "").strip()
 
 NODE_METADATA: dict[str, tuple[str, str, str]] = {
     "classify_and_plan": ("🧭", "Classify & Plan", "#2563EB"),
@@ -107,11 +108,21 @@ def iter_sse_events(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]
         yield event_name, parsed
 
 
-def fetch_health(api_base_url: str) -> tuple[dict[str, Any] | None, str | None]:
+def build_auth_headers(api_key: str = "") -> dict[str, str]:
+    """Build optional X-API-Key header dictionary when API_AUTH_KEY is configured."""
+    cleaned = api_key.strip()
+    return {"X-API-Key": cleaned} if cleaned else {}
+
+
+def fetch_health(
+    api_base_url: str,
+    *,
+    api_key: str = "",
+) -> tuple[dict[str, Any] | None, str | None]:
     """Fetch GET /v1/health from the FastAPI backend."""
     url = f"{api_base_url.rstrip('/')}/v1/health"
     try:
-        with httpx.Client(timeout=8.0) as client:
+        with httpx.Client(timeout=8.0, headers=build_auth_headers(api_key)) as client:
             resp = client.get(url)
             resp.raise_for_status()
             return dict(resp.json()), None
@@ -166,19 +177,26 @@ def trigger_ingest(
     api_base_url: str,
     *,
     recreate_collection: bool = False,
+    api_key: str = "",
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Trigger POST /v1/ingest for the default local corpus (data/raw)."""
-    return trigger_ingest_payload(api_base_url, {"recreate_collection": recreate_collection})
+    return trigger_ingest_payload(
+        api_base_url,
+        {"recreate_collection": recreate_collection},
+        api_key=api_key,
+    )
 
 
 def trigger_ingest_payload(
     api_base_url: str,
     payload: dict[str, Any],
+    *,
+    api_key: str = "",
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Send an arbitrary POST /v1/ingest request (local corpus, inline docs, or Firecrawl URLs)."""
     url = f"{api_base_url.rstrip('/')}/v1/ingest"
     try:
-        with httpx.Client(timeout=240.0) as client:
+        with httpx.Client(timeout=240.0, headers=build_auth_headers(api_key)) as client:
             resp = client.post(url, json=payload)
             if resp.status_code >= 400:
                 detail = resp.text
@@ -197,12 +215,14 @@ def trigger_ingest_payload(
 def stream_query_events(
     api_base_url: str,
     payload: dict[str, Any],
+    *,
+    api_key: str = "",
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Stream SSE events from POST /v1/query/stream."""
     url = f"{api_base_url.rstrip('/')}/v1/query/stream"
     timeout = httpx.Timeout(180.0, connect=10.0)
     with (
-        httpx.Client(timeout=timeout) as client,
+        httpx.Client(timeout=timeout, headers=build_auth_headers(api_key)) as client,
         client.stream("POST", url, json=payload) as response,
     ):
         if response.status_code >= 400:
@@ -211,10 +231,18 @@ def stream_query_events(
         yield from iter_sse_events(response.iter_lines())
 
 
-def run_query_batch(api_base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+def run_query_batch(
+    api_base_url: str,
+    payload: dict[str, Any],
+    *,
+    api_key: str = "",
+) -> dict[str, Any]:
     """Execute non-streaming POST /v1/query and return FinalAnswer dict."""
     url = f"{api_base_url.rstrip('/')}/v1/query"
-    with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+    with httpx.Client(
+        timeout=httpx.Timeout(180.0, connect=10.0),
+        headers=build_auth_headers(api_key),
+    ) as client:
         resp = client.post(url, json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(f"API returned HTTP {resp.status_code}: {resp.text}")
@@ -758,10 +786,18 @@ def render_sidebar() -> dict[str, Any]:
         ).rstrip("/")
         st.session_state["api_url"] = api_url
 
+        api_key = st.text_input(
+            "API Key (X-API-Key, optional)",
+            value=st.session_state.get("api_key", DEFAULT_API_KEY),
+            type="password",
+            help="Set when backend API_AUTH_KEY is enabled.",
+        ).strip()
+        st.session_state["api_key"] = api_key
+
         if st.button("↻ Refresh Backend Health", width="stretch") or (
             "health_cache" not in st.session_state
         ):
-            st.session_state["health_cache"] = fetch_health(api_url)
+            st.session_state["health_cache"] = fetch_health(api_url, api_key=api_key)
 
         health_placeholder = st.empty()
         health_data, health_err = st.session_state["health_cache"]
@@ -836,6 +872,7 @@ def render_sidebar() -> dict[str, Any]:
                 ingest_res, ingest_err = trigger_ingest(
                     api_url,
                     recreate_collection=recreate_col,
+                    api_key=api_key,
                 )
             if ingest_err:
                 st.error(f"Ingest failed: {ingest_err}")
@@ -846,7 +883,7 @@ def render_sidebar() -> dict[str, Any]:
                     f"({ingest_res['total_collection_points']} total points, "
                     f"{ingest_res['elapsed_ms']:.0f} ms)."
                 )
-                st.session_state["health_cache"] = fetch_health(api_url)
+                st.session_state["health_cache"] = fetch_health(api_url, api_key=api_key)
                 _render_sidebar_health(health_placeholder, *st.session_state["health_cache"])
 
         with st.expander("🌐 Index Web URL / Docs Site (Firecrawl Local)", expanded=False):
@@ -931,7 +968,11 @@ def render_sidebar() -> dict[str, Any]:
                         else "Scraping URL(s) via Firecrawl Local & indexing into Qdrant..."
                     )
                     with st.spinner(spinner_msg):
-                        web_res, web_err = trigger_ingest_payload(api_url, web_payload)
+                        web_res, web_err = trigger_ingest_payload(
+                            api_url,
+                            web_payload,
+                            api_key=api_key,
+                        )
                     if web_err:
                         st.error(f"Web ingest failed: {web_err}")
                     elif web_res:
@@ -946,7 +987,7 @@ def render_sidebar() -> dict[str, Any]:
                             st.caption("Indexed URLs:")
                             for u in indexed_urls[:10]:
                                 st.markdown(f"- [{u}]({u})")
-                        st.session_state["health_cache"] = fetch_health(api_url)
+                        st.session_state["health_cache"] = fetch_health(api_url, api_key=api_key)
                 _render_sidebar_health(health_placeholder, *st.session_state["health_cache"])
 
         st.divider()
@@ -963,6 +1004,7 @@ def render_sidebar() -> dict[str, Any]:
 
     return {
         "api_url": api_url,
+        "api_key": api_key,
         "preset": preset,
         "custom_ablation": custom_ablation,
         "use_streaming": use_streaming,
@@ -994,7 +1036,11 @@ def execute_user_query(query: str, config: dict[str, Any]) -> None:
         if config["use_streaming"]:
             with st.status("Running AdaptiveRAG agentic pipeline...", expanded=True) as status_box:
                 try:
-                    for event_name, event_data in stream_query_events(config["api_url"], payload):
+                    for event_name, event_data in stream_query_events(
+                        config["api_url"],
+                        payload,
+                        api_key=config.get("api_key", ""),
+                    ):
                         if event_name == "node_update":
                             node_key = str(event_data.get("node", "unknown"))
                             icon, pretty, _ = NODE_METADATA.get(
@@ -1031,7 +1077,11 @@ def execute_user_query(query: str, config: dict[str, Any]) -> None:
         else:
             with st.spinner("Running AdaptiveRAG pipeline..."):
                 try:
-                    final_result = run_query_batch(config["api_url"], payload)
+                    final_result = run_query_batch(
+                        config["api_url"],
+                        payload,
+                        api_key=config.get("api_key", ""),
+                    )
                 except Exception as exc:
                     st.error(str(exc))
                     return

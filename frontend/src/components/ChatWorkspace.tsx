@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
+  ArrowRight,
   ArrowUp,
   Check,
   ExternalLink,
   FileText,
   Globe,
-  Microscope,
-  Sparkles,
+  PanelRightOpen,
   Square,
   ThumbsDown,
   ThumbsUp,
@@ -66,12 +66,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [commentingTurnId, setCommentingTurnId] = useState<string | null>(null);
   const [pendingScore, setPendingScore] = useState<0 | 1>(0);
   const [commentDraft, setCommentDraft] = useState("");
-  const [submittingFeedbackTurnId, setSubmittingFeedbackTurnId] = useState<string | null>(null);
-  const [feedbackErrorByTurn, setFeedbackErrorByTurn] = useState<Record<string, string>>({});
+  const [submittingFeedbackTurnId, setSubmittingFeedbackTurnId] =
+    useState<string | null>(null);
+  const [feedbackErrorByTurn, setFeedbackErrorByTurn] = useState<
+    Record<string, string>
+  >({});
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleFeedbackSubmit = async (turnId: string, score: 0 | 1, comment?: string) => {
+  const handleFeedbackSubmit = async (
+    turnId: string,
+    score: 0 | 1,
+    comment?: string
+  ) => {
     if (!onSubmitFeedback || submittingFeedbackTurnId) return;
     setSubmittingFeedbackTurnId(turnId);
     setFeedbackErrorByTurn((prev) => {
@@ -93,12 +100,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     }
   };
 
-  // Auto-scroll smoothly when new turns or live steps arrive
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [turns.length, isRunning, liveSteps.length]);
 
-  // Auto-resize composer textarea
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -125,112 +130,118 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-[var(--bg-canvas)]">
       {/* Scrollable Conversation Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-7">
+      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto max-w-3xl">
           {!hasContent ? (
-            /* Empty Welcome Canvas */
-            <div className="py-8 sm:py-12">
-              <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1 text-[11px] font-medium text-blue-600 dark:text-blue-300">
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>
-                  Query-Aware Agentic RAG · Hybrid RRF · Dynamic Top-K · CRAG · Citation Audit
-                </span>
+            /* Understated Engineering Empty State */
+            <div className="py-6 sm:py-12">
+              <div className="font-mono text-[10.5px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
+                AdaptiveRAG · Query-Aware Retrieval Engine
               </div>
 
-              <h1 className="mt-4 text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl">
-                Inspect every retrieval & grounding decision in real time.
+              <h1 className="mt-2.5 text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+                Traceable retrieval and citation-audited synthesis.
               </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--text-secondary)]">
-                Ask technical questions in <strong>English</strong> or <strong>Turkish</strong>.
-                Watch LangGraph nodes execute live over SSE, click inline{" "}
-                <code className="rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-xs text-blue-500 dark:text-blue-300">
-                  [C1]
+              <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-secondary)]">
+                Run queries in English or Turkish against Qdrant Hybrid Search (Dense +
+                BM25 RRF). Inspect node latencies, Dynamic Top-K cutoffs, CRAG confidence
+                gates, and{" "}
+                <code className="rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.2 font-mono text-[11px] font-semibold text-sky-600 dark:text-sky-300">
+                  C1
                 </code>{" "}
-                citations to highlight exact evidence chunks, and audit every claim.
+                evidence entailment in the right pane.
               </p>
 
-              {/* Quick Demo Query Cards */}
-              <div className="mt-7">
-                <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  Quick Bilingual Demo Queries
+              {/* Hairline Ledger Demo Prompts */}
+              <div className="mt-8">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-mono text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                    Sample Evaluation Queries
+                  </span>
+                  <span className="font-mono text-[10.5px] text-[var(--text-muted)]">
+                    Preset: {presetShortLabel}
+                  </span>
                 </div>
-                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+
+                <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
                   {DEMO_QUERIES.map((demo) => (
                     <button
                       key={demo.id}
                       type="button"
                       onClick={() => onSubmitQuery(demo.query)}
-                      className="group flex flex-col justify-between rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-3.5 text-left transition hover:border-blue-500/45 hover:bg-[var(--bg-elevated)]/60 cursor-pointer"
+                      className="group flex w-full items-start justify-between gap-4 px-4 py-3 text-left transition hover:bg-[var(--bg-elevated)]/65 cursor-pointer"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-[var(--text-primary)] group-hover:text-blue-500 dark:group-hover:text-blue-400">
-                          {demo.title}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <span className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-secondary)]">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-[var(--text-primary)]">
+                            {demo.title}
+                          </span>
+                          <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-secondary)]">
                             {demo.category}
                           </span>
-                          <span className="rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-blue-600 dark:text-blue-300">
+                          <span className="font-mono text-[9.5px] font-medium text-[var(--text-muted)]">
                             {demo.lang}
                           </span>
                         </div>
+                        <p className="mt-1 line-clamp-1 text-xs text-[var(--text-secondary)]">
+                          {demo.query}
+                        </p>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-                        {demo.query}
-                      </p>
+                      <ArrowRight className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:translate-x-0.5 group-hover:text-[var(--text-primary)] group-hover:opacity-100" />
                     </button>
                   ))}
                 </div>
               </div>
             </div>
           ) : (
-            /* Conversation Thread */
-            <div className="space-y-7 pb-4">
+            /* Editorial Research Log Thread */
+            <div className="space-y-8 pb-4">
               {turns.map((turn, idx) => {
                 const isSelected = idx === selectedTurnIndex;
                 const chunks = turn.result.evidence_chunks || [];
                 return (
-                  <article key={turn.id} className="space-y-4">
-                    {/* User Query Bubble */}
-                    <div className="flex justify-end">
-                      <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-blue-500/25 bg-blue-600/12 px-4 py-2.5 text-sm leading-relaxed text-[var(--text-primary)]">
+                  <article key={turn.id} className="space-y-3">
+                    {/* User Query Header (no speech bubble) */}
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-muted)] tabular-nums">
+                        #{String(idx + 1).padStart(2, "0")}
+                      </span>
+                      <h2 className="text-[15px] font-medium leading-snug tracking-tight text-[var(--text-primary)]">
                         {turn.query}
-                      </div>
+                      </h2>
                     </div>
 
-                    {/* Assistant Response Card */}
+                    {/* Response Surface */}
                     <div
                       onClick={() => onInspectTurn(idx)}
-                      className={`rounded-2xl border p-4 sm:p-5 transition-colors ${
+                      className={`rounded-lg border p-4 sm:p-5 transition-colors ${
                         isSelected
-                          ? "border-blue-500/40 bg-[var(--bg-panel)] shadow-xs"
-                          : "border-[var(--border-subtle)] bg-[var(--bg-panel)]/85 hover:border-[var(--border-strong)]"
+                          ? "border-[var(--border-strong)] bg-[var(--bg-surface)]"
+                          : "border-[var(--border-subtle)] bg-[var(--bg-surface)]/75 hover:border-[var(--border-strong)]"
                       }`}
                     >
-                      {/* Collapsible Completed LangGraph Pipeline Summary */}
-                      <LivePipelineTracker
-                        mode="completed"
-                        steps={turn.result.trace || []}
-                        totalLatencyMs={turn.result.total_latency_ms}
-                        onOpenInspector={() => onInspectTurn(idx, "trace")}
-                      />
-
-                      {/* Telemetry Pill Ribbon */}
-                      <div className="mb-3.5">
+                      {/* Execution Trace + Telemetry Header */}
+                      <div className="mb-4 border-b border-[var(--border-subtle)] pb-3">
+                        <LivePipelineTracker
+                          mode="completed"
+                          steps={turn.result.trace || []}
+                          totalLatencyMs={turn.result.total_latency_ms}
+                          onOpenInspector={() => onInspectTurn(idx, "trace")}
+                        />
                         <AnswerTelemetryBar
                           result={turn.result}
                           onBadgeClick={(tab) => onInspectTurn(idx, tab)}
                         />
                       </div>
 
-                      {/* Markdown Answer with Clickable Inline Citations */}
+                      {/* Grounded Markdown Answer */}
                       <MarkdownWithCitations
                         content={turn.result.answer}
                         evidenceChunks={chunks}
                         onCitationClick={(cid) => onCitationClick(idx, cid)}
                       />
 
-                      {/* Bottom Sources & Inspector Bar */}
+                      {/* Sources & Actions Footer */}
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3">
                         <div className="flex flex-wrap items-center gap-1.5">
                           {chunks.slice(0, 6).map((ch, cIdx) => {
@@ -245,19 +256,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                   onCitationClick(idx, cid);
                                 }}
                                 title={`${ch.title || ch.doc_id}${ch.url ? ` (${ch.url})` : ""}`}
-                                className="inline-flex max-w-[200px] items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/70 px-2 py-1 text-[11px] text-[var(--text-secondary)] transition hover:border-blue-500/40 hover:text-[var(--text-primary)] cursor-pointer"
+                                className="inline-flex max-w-[190px] items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-2 py-0.5 text-[11px] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
                               >
                                 <span
-                                  className={`shrink-0 font-mono text-[10px] font-bold ${
-                                    isWeb ? "text-purple-400" : "text-teal-400"
+                                  className={`shrink-0 font-mono text-[10px] font-semibold ${
+                                    isWeb
+                                      ? "text-amber-600 dark:text-amber-300"
+                                      : "text-sky-600 dark:text-sky-300"
                                   }`}
                                 >
-                                  [{cid}]
+                                  {cid}
                                 </span>
                                 {isWeb ? (
-                                  <Globe className="h-3 w-3 shrink-0 text-purple-400" />
+                                  <Globe className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
                                 ) : (
-                                  <FileText className="h-3 w-3 shrink-0 text-teal-400" />
+                                  <FileText className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
                                 )}
                                 <span className="truncate">
                                   {ch.title || ch.doc_id || "Source"}
@@ -275,7 +288,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                 e.stopPropagation();
                                 onInspectTurn(idx, "evidence");
                               }}
-                              className="rounded-lg px-2 py-1 text-[11px] font-medium text-blue-500 hover:underline cursor-pointer"
+                              className="rounded px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
                             >
                               +{chunks.length - 6} more
                             </button>
@@ -285,27 +298,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                         <div className="flex shrink-0 items-center gap-1.5">
                           {onSubmitFeedback && turn.result.trace_id && (
                             <div
-                              className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5"
+                              className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <button
                                 type="button"
                                 aria-label="Mark answer helpful"
-                                title="Helpful (records +1 score)"
+                                title="Helpful (+1 score)"
                                 disabled={submittingFeedbackTurnId === turn.id}
                                 onClick={() => void handleFeedbackSubmit(turn.id, 1)}
-                                className={`inline-flex items-center justify-center rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
+                                className={`inline-flex items-center justify-center rounded p-1 transition cursor-pointer disabled:opacity-50 ${
                                   turn.feedback?.score === 1
-                                    ? "bg-emerald-500/20 text-emerald-500 dark:text-emerald-300"
-                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-emerald-500"
+                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                                 }`}
                               >
-                                <ThumbsUp className="h-3.5 w-3.5" />
+                                <ThumbsUp className="h-3 w-3" />
                               </button>
                               <button
                                 type="button"
                                 aria-label="Mark answer unhelpful"
-                                title="Needs improvement (records 0 score with optional note)"
+                                title="Needs improvement (0 score + optional note)"
                                 disabled={submittingFeedbackTurnId === turn.id}
                                 onClick={() => {
                                   setCommentingTurnId((curr) =>
@@ -314,20 +327,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                   setPendingScore(0);
                                   setCommentDraft(turn.feedback?.comment ?? "");
                                 }}
-                                className={`inline-flex items-center justify-center rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
-                                  turn.feedback?.score === 0 || commentingTurnId === turn.id
-                                    ? "bg-rose-500/20 text-rose-500 dark:text-rose-300"
-                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-rose-500"
+                                className={`inline-flex items-center justify-center rounded p-1 transition cursor-pointer disabled:opacity-50 ${
+                                  turn.feedback?.score === 0 ||
+                                  commentingTurnId === turn.id
+                                    ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
+                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                                 }`}
                               >
-                                <ThumbsDown className="h-3.5 w-3.5" />
+                                <ThumbsDown className="h-3 w-3" />
                               </button>
                             </div>
                           )}
 
                           {turn.feedback && (
                             <span
-                              className="hidden items-center gap-1 rounded-md bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)] sm:inline-flex"
+                              className="hidden items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)] sm:inline-flex"
                               title={
                                 turn.feedback.comment
                                   ? `Feedback note: ${turn.feedback.comment}`
@@ -336,7 +350,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             >
                               <Check className="h-2.5 w-2.5 text-emerald-500" />
                               <span>
-                                {turn.feedback.persistedToLangfuse ? "Langfuse" : "Recorded"}
+                                {turn.feedback.persistedToLangfuse ? "langfuse" : "saved"}
                               </span>
                             </span>
                           )}
@@ -347,13 +361,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               e.stopPropagation();
                               onInspectTurn(idx, "trace");
                             }}
-                            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition cursor-pointer ${
+                            className={`inline-flex shrink-0 items-center gap-1 rounded border px-2 py-0.5 font-mono text-[10.5px] font-medium transition cursor-pointer ${
                               isSelected
-                                ? "bg-blue-500/15 text-blue-500 dark:text-blue-300"
-                                : "text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                                ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                                : "border-transparent text-[var(--text-muted)] hover:border-[var(--border-subtle)] hover:text-[var(--text-primary)]"
                             }`}
                           >
-                            <Microscope className="h-3.5 w-3.5" />
+                            <PanelRightOpen className="h-3 w-3" />
                             <span>{isSelected ? "Inspecting" : `Inspect #${idx + 1}`}</span>
                           </button>
                         </div>
@@ -362,7 +376,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       {commentingTurnId === turn.id && (
                         <div
                           onClick={(e) => e.stopPropagation()}
-                          className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/65 p-2.5"
+                          className="mt-2.5 flex flex-wrap items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-2"
                         >
                           <input
                             type="text"
@@ -379,7 +393,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               }
                             }}
                             placeholder="Optional note: missing citation, stale source, wrong route..."
-                            className="min-w-[200px] flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-blue-500 focus:outline-none"
+                            className="min-w-[200px] flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
                           />
                           <button
                             type="button"
@@ -391,9 +405,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                                 commentDraft.trim() || undefined
                               )
                             }
-                            className="rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                            className="rounded bg-[var(--cta-bg)] px-2.5 py-1 text-[11px] font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-50 cursor-pointer"
                           >
-                            {submittingFeedbackTurnId === turn.id ? "Saving..." : "Send Feedback"}
+                            {submittingFeedbackTurnId === turn.id
+                              ? "Saving..."
+                              : "Send Feedback"}
                           </button>
                           <button
                             type="button"
@@ -401,7 +417,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               setCommentingTurnId(null);
                               setCommentDraft("");
                             }}
-                            className="rounded-lg px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                            className="rounded px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
                           >
                             Cancel
                           </button>
@@ -420,24 +436,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
               {/* Active Streaming Turn */}
               {isRunning && pendingQuery && (
-                <article className="space-y-4">
-                  <div className="flex justify-end">
-                    <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-blue-500/25 bg-blue-600/12 px-4 py-2.5 text-sm leading-relaxed text-[var(--text-primary)]">
+                <article className="space-y-3">
+                  <div className="flex items-baseline gap-2.5">
+                    <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-muted)] tabular-nums">
+                      #{String(turns.length + 1).padStart(2, "0")}
+                    </span>
+                    <h2 className="text-[15px] font-medium leading-snug tracking-tight text-[var(--text-primary)]">
                       {pendingQuery}
-                    </div>
+                    </h2>
                   </div>
-                  <div className="rounded-2xl border border-blue-500/35 bg-[var(--bg-panel)] p-4 sm:p-5">
+                  <div className="rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-4 sm:p-5">
                     <LivePipelineTracker
                       mode="streaming"
                       steps={liveSteps}
                       liveUsage={liveUsage}
                     />
-                    <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--text-muted)]">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
                       <span>
                         {useStreaming
-                          ? "Streaming live LangGraph state transitions over SSE..."
-                          : "Running full AdaptiveRAG batch pipeline..."}
+                          ? "Streaming LangGraph state events over SSE..."
+                          : "Executing AdaptiveRAG batch pipeline..."}
                       </span>
                     </div>
                   </div>
@@ -446,10 +465,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
               {/* Stream Error Banner */}
               {streamError && !isRunning && (
-                <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/35 bg-rose-500/10 px-4 py-3 text-xs text-rose-600 dark:text-rose-300">
-                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="flex items-start gap-2.5 rounded-lg border border-rose-500/35 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-600 dark:text-rose-300">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <div>
-                    <div className="font-semibold">Query Execution Failed</div>
+                    <div className="font-medium">Execution Failed</div>
                     <p className="mt-0.5 opacity-90">{streamError}</p>
                   </div>
                 </div>
@@ -462,9 +481,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       </div>
 
       {/* Bottom Sticky Composer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/90 px-4 py-3 backdrop-blur sm:px-7">
+      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-4 py-3 backdrop-blur sm:px-8">
         <div className="mx-auto max-w-3xl">
-          <div className="relative flex items-end gap-2 rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-3.5 py-2.5 shadow-xs focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/15">
+          <div className="relative flex items-end gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 transition focus-within:border-[var(--text-muted)]">
             <textarea
               ref={textareaRef}
               rows={1}
@@ -472,48 +491,53 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isRunning}
-              placeholder="Ask a technical question in English or Turkish... (Enter to send, Shift+Enter for newline)"
-              className="max-h-40 flex-1 resize-none bg-transparent py-1 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
+              placeholder="Ask a technical question in English or Turkish..."
+              className={`max-h-40 flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60 ${
+                input.includes("\n") || input.length > 90
+                  ? "overflow-y-auto"
+                  : "overflow-hidden"
+              }`}
             />
             {isRunning ? (
               <button
                 type="button"
                 onClick={onStopStream}
                 title="Stop generation"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
               >
-                <Square className="h-3.5 w-3.5 fill-current" />
+                <Square className="h-3 w-3 fill-current" />
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!input.trim()}
-                title="Send query"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-500 disabled:opacity-35 cursor-pointer"
+                title="Submit query"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--cta-bg)] text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-25 cursor-pointer"
               >
-                <ArrowUp className="h-4 w-4" />
+                <ArrowUp className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
-          <div className="mt-1.5 flex items-center justify-between px-1 text-[10.5px] text-[var(--text-muted)]">
+          <div className="mt-1.5 flex items-center justify-between px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
             <div className="flex items-center gap-2">
-              <span>
-                Mode: <strong className="text-[var(--text-secondary)]">{presetShortLabel}</strong>
-              </span>
+              <span>preset:{presetShortLabel.toLowerCase().replace(/\s+/g, "-")}</span>
               <span>·</span>
-              <span>{useStreaming ? "SSE Stream" : "Batch JSON"}</span>
+              <span>{useStreaming ? "sse" : "batch"}</span>
               {budgetCapLabel && (
                 <>
                   <span>·</span>
-                  <span className="font-mono text-blue-400">Cap {budgetCapLabel}</span>
+                  <span>cap:{budgetCapLabel}</span>
                 </>
               )}
             </div>
-            <span className="hidden sm:inline">
-              Click any <code className="font-mono">[C1]</code> badge to inspect source chunk
-            </span>
+            <div className="hidden items-center gap-1.5 sm:flex">
+              <span>Submit</span>
+              <kbd className="ar-kbd">↵</kbd>
+              <span className="ml-1">Newline</span>
+              <kbd className="ar-kbd">⇧↵</kbd>
+            </div>
           </div>
         </div>
       </div>

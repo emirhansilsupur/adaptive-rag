@@ -12,15 +12,18 @@ from adaptiverag.verification.confidence import (
     compute_deterministic_confidence,
 )
 from adaptiverag.verification.guardrails import (
+    GuardrailBlockedError,
     GuardrailDecision,
     InputGuardrailConfig,
     PiiFinding,
     detect_prompt_injection,
+    sanitize_untrusted_passage,
     screen_query_input,
 )
 
 __all__ = [
     "DeterministicConfidenceSignals",
+    "GuardrailBlockedError",
     "GuardrailDecision",
     "InputGuardrailConfig",
     "PiiFinding",
@@ -29,6 +32,7 @@ __all__ = [
     "detect_prompt_injection",
     "extract_citations",
     "find_uncited_factual_sentences",
+    "sanitize_untrusted_passage",
     "screen_query_input",
     "validate_citations",
     "validate_citations_structural",

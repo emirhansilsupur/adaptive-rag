@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
@@ -201,9 +202,12 @@ async def run_query(
 
     workflow = _resolve_workflow_or_503(container)
     ablation = payload.resolve_ablation()
-    request_tracker = (
-        CostTracker(max_cost_usd=payload.max_cost_usd) if payload.max_cost_usd is not None else None
+    effective_max_cost = (
+        payload.max_cost_usd
+        if payload.max_cost_usd is not None
+        else container.settings.max_run_cost_usd
     )
+    request_tracker = CostTracker(max_cost_usd=effective_max_cost)
 
     try:
         answer: FinalAnswer = await workflow.arun(
@@ -214,6 +218,7 @@ async def run_query(
             session_id=payload.session_id,
             user_id=payload.user_id,
             preset_name=payload.resolve_preset_label(),
+            pre_screened=True,
         )
         return answer
     except BudgetExceededError as exc:
@@ -237,9 +242,12 @@ async def stream_query(
     guardrail = _screen_query_or_400(payload, container)
     workflow = _resolve_workflow_or_503(container)
     ablation = payload.resolve_ablation()
-    request_tracker = (
-        CostTracker(max_cost_usd=payload.max_cost_usd) if payload.max_cost_usd is not None else None
+    effective_max_cost = (
+        payload.max_cost_usd
+        if payload.max_cost_usd is not None
+        else container.settings.max_run_cost_usd
     )
+    request_tracker = CostTracker(max_cost_usd=effective_max_cost)
 
     async def event_generator() -> AsyncIterator[ServerSentEvent]:
         try:
@@ -251,6 +259,7 @@ async def stream_query(
                 session_id=payload.session_id,
                 user_id=payload.user_id,
                 preset_name=payload.resolve_preset_label(),
+                pre_screened=True,
             ):
                 if await http_request.is_disconnected():
                     logger.info("sse_client_disconnected")
@@ -453,15 +462,34 @@ async def ingest_documents(
 
         return _report_to_ingest_response(report)
 
-    data_dir = Path(payload.corpus_dir) if payload.corpus_dir else Path("data/raw")
-    if not data_dir.is_dir():
+    allowed_root = container.settings.allowed_corpus_root.resolve()
+    raw_target = (
+        Path(payload.corpus_dir)
+        if payload.corpus_dir is not None
+        else (container.settings.allowed_corpus_root / "raw")
+    )
+    resolved_dir = raw_target.resolve()
+    if not resolved_dir.is_relative_to(allowed_root):
+        logger.warning(
+            "api_ingest_corpus_dir_blocked",
+            requested_dir=str(raw_target),
+            allowed_root=str(allowed_root),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Corpus directory must reside inside the configured allowed corpus root "
+                f"('{container.settings.allowed_corpus_root}')."
+            ),
+        )
+    if not resolved_dir.is_dir():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Corpus directory not found: {data_dir}",
+            detail=f"Corpus directory not found: {raw_target}",
         )
 
     report = await index_corpus(
-        data_dir=data_dir,
+        data_dir=resolved_dir,
         store=container.store,
         chunk_config=chunk_cfg,
         recreate=payload.recreate_collection,
@@ -519,7 +547,8 @@ async def upload_and_ingest_files(
                 ),
             )
         try:
-            loaded_docs.append(load_document_bytes(filename, raw))
+            doc = await asyncio.to_thread(load_document_bytes, filename, raw)
+            loaded_docs.append(doc)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -621,7 +650,8 @@ async def submit_feedback(
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> FeedbackResponse:
     """Record thumbs-up/down feedback on a trace_id and forward to Langfuse when enabled."""
-    outcome = container.get_observability().record_user_feedback(
+    outcome = await asyncio.to_thread(
+        container.get_observability().record_user_feedback,
         trace_id=payload.trace_id,
         score=payload.score,
         comment=payload.comment,

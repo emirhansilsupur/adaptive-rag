@@ -756,6 +756,7 @@ def test_langfuse_dataset_sync_and_experiment_publish() -> None:
                 ndcg_at_k=1.0,
                 hit_at_k=True,
             ),
+            fact_coverage=1.0,
             confidence_score=0.93,
             confidence_level="high",
             citation_precision=1.0,
@@ -795,6 +796,7 @@ def test_langfuse_dataset_sync_and_experiment_publish() -> None:
         mean_mrr=1.0,
         mean_ndcg=1.0,
         hit_rate=1.0,
+        mean_fact_coverage=1.0,
         routing_accuracy=1.0,
         mean_citation_precision=1.0,
         mean_claim_support_rate=1.0,
@@ -841,7 +843,13 @@ def test_langfuse_dataset_sync_and_experiment_publish() -> None:
     exp_payload = fake_client.experiments[0]
     assert exp_payload["run_name"] == "v0.1-ablation::full"
     assert len(exp_payload["item_results"]) == 2
+    item_eval_names = {ev.name for ev in build_record_evaluations(records[0])}
+    assert "fact_coverage" in item_eval_names
     run_eval_names = {ev.name for ev in exp_payload["run_evaluations"]}
-    assert {"avg_mrr", "ragas_faithfulness", "total_cost_usd", "routing_accuracy"}.issubset(
-        run_eval_names
-    )
+    assert {
+        "avg_mrr",
+        "avg_fact_coverage",
+        "ragas_faithfulness",
+        "total_cost_usd",
+        "routing_accuracy",
+    }.issubset(run_eval_names)

@@ -34,7 +34,8 @@ from adaptiverag.schemas.retrieval import (
 logger = structlog.get_logger(__name__)
 
 _CRAG_MAX_CHUNKS_IN_PROMPT = 6
-_CRAG_EXCERPT_CHAR_LIMIT = 500
+_CRAG_EXCERPT_CHAR_LIMIT = 2400
+_CRAG_PARENT_EXCERPT_CHAR_LIMIT = 4500
 
 _CRAG_SYSTEM_PROMPT = DEFAULT_PROMPTS[PROMPT_CRAG_GRADER].template
 
@@ -146,8 +147,13 @@ def _build_crag_user_prompt(
         header = " | ".join(p for p in (chunk.title, chunk.section_path) if p)
         score = _chunk_score(chunk)
         excerpt = chunk.text.strip()
-        if len(excerpt) > _CRAG_EXCERPT_CHAR_LIMIT:
-            excerpt = excerpt[:_CRAG_EXCERPT_CHAR_LIMIT].rstrip() + "..."
+        char_cap = (
+            _CRAG_PARENT_EXCERPT_CHAR_LIMIT
+            if chunk.expanded_to_parent
+            else _CRAG_EXCERPT_CHAR_LIMIT
+        )
+        if len(excerpt) > char_cap:
+            excerpt = excerpt[:char_cap].rstrip() + "..."
         lines.append(f"[{label}] ({header or chunk.doc_id}, score={score:.2f})\n{excerpt}")
 
     return "\n".join(lines)
@@ -282,7 +288,7 @@ async def assess_retrieval_confidence(
     # Ambiguous band [low_threshold, high_threshold): invoke CRAG grader if enabled
     if config.enable_crag_grader_in_ambiguous_band and fast_model is not None:
         resolved_prompt = (
-            prompt_manager.resolve(PROMPT_CRAG_GRADER)
+            await prompt_manager.aresolve(PROMPT_CRAG_GRADER)
             if prompt_manager is not None
             else ResolvedPrompt(
                 name=PROMPT_CRAG_GRADER,

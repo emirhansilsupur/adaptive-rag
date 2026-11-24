@@ -5,7 +5,13 @@ import { ChatWorkspace } from "../components/ChatWorkspace";
 import { GlassBoxInspector } from "../components/GlassBoxInspector";
 import { KnowledgeBaseView } from "../components/KnowledgeBaseView";
 import { MarkdownWithCitations } from "../components/MarkdownWithCitations";
-import { buildQueryPayload, buildWebIngestPayload, parseUrlLines } from "../lib/api";
+import {
+  buildAuthHeaders,
+  buildQueryPayload,
+  buildWebIngestPayload,
+  parseUrlLines,
+  setStudioApiKey,
+} from "../lib/api";
 import { splitTextWithCitations } from "../lib/citations";
 import { SseStreamParser } from "../lib/sse";
 import { DEFAULT_CUSTOM_ABLATION } from "../constants/pipeline";
@@ -67,10 +73,27 @@ describe("API payload helpers", () => {
       crawlUrl: "https://docs.qdrant.tech/",
       crawlLimit: 6,
       crawlMaxDepth: 2,
+      parentChild: true,
     });
     expect(crawl.crawl_url).toBe("https://docs.qdrant.tech/");
     expect(crawl.crawl_limit).toBe(6);
     expect(crawl.crawl_max_depth).toBe(2);
+    expect(crawl.parent_child).toBe(true);
+  });
+
+  it("attaches X-API-Key header when studio API key is configured", () => {
+    setStudioApiKey("  prod-secret-42  ");
+    try {
+      expect(buildAuthHeaders({ Accept: "application/json" })).toEqual({
+        Accept: "application/json",
+        "X-API-Key": "prod-secret-42",
+      });
+    } finally {
+      setStudioApiKey("");
+    }
+    expect(buildAuthHeaders({ Accept: "application/json" })).toEqual({
+      Accept: "application/json",
+    });
   });
 
   it("builds query payloads for preset vs custom ablation", () => {
@@ -324,6 +347,7 @@ describe("KnowledgeBaseView", () => {
               source_origin: "local",
               doc_type: "markdown",
               language: "en",
+              chunk_strategy: "parent_child",
               chunk_count: 10,
               total_tokens: 1800,
               source_url: null,
@@ -351,6 +375,10 @@ describe("KnowledgeBaseView", () => {
     );
 
     expect(screen.getByText("Qdrant Hybrid Guide")).toBeInTheDocument();
+    expect(screen.getByText("Small→Big")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Hierarchical Parent-Child chunking/i)
+    ).toBeInTheDocument();
     expect(screen.getByText("Firecrawl Local Quickstart")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Web" }));

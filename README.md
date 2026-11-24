@@ -1,6 +1,6 @@
 # AdaptiveRAG
 
-> **Query-aware Agentic RAG engine** built with **LangGraph**, **Pydantic v2**, **Qdrant** (native Dense + BM25 Hybrid Search & RRF), local **FastEmbed ONNX** multilingual embeddings & cross-encoder reranking (**TR + EN**), 3-stage Dynamic Top-K selection, multi-signal CRAG confidence gating, web search fallback, two-tier citation validation, **Langfuse v5 OpenTelemetry Observability & Evaluation**, FastAPI SSE streaming, and a **React + TypeScript 3-Pane Glass-Box Studio**.
+> **Query-aware Agentic RAG engine** built with **LangGraph**, **Pydantic v2**, **Qdrant** (native Dense + BM25 Hybrid Search & RRF), local **FastEmbed ONNX** multilingual embeddings & cross-encoder reranking (**TR + EN**), 3-stage Dynamic Top-K & **Hierarchical Parent-Child (Small-to-Big)** retrieval, multi-signal CRAG confidence gating, web search fallback, two-tier citation validation, **Langfuse v5 OpenTelemetry Observability & Prompt Management**, `$0` multi-layer safety guardrails, FastAPI SSE streaming, and a **React 19 Glass-Box Engineering Workbench & Ablation Arena**.
 
 [![CI](https://github.com/emirhansilsupur/Adaptive-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/emirhansilsupur/Adaptive-RAG/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
@@ -8,14 +8,14 @@
 ![Qdrant](https://img.shields.io/badge/Vector%20DB-Qdrant%20Hybrid%20RRF-DC244C)
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
-![React Studio](https://img.shields.io/badge/UI-React%2019%20Glass--Box%20Studio-2563EB?logo=react&logoColor=white)
+![React Studio](https://img.shields.io/badge/UI-React%2019%20Glass--Box%20Studio-18181B?logo=react&logoColor=61DAFB)
 ![Pydantic v2](https://img.shields.io/badge/Schemas-Pydantic%20v2-E92063)
 
 <p align="center">
-  <img src="docs/assets/studio-glass-box.png" alt="AdaptiveRAG React 19 Glass-Box Studio showing a live 7-node LangGraph trace, inline citations, Langfuse trace link, and Dynamic Top-K sigmoid score cutoff chart" width="100%" />
+  <img src="docs/assets/studio-glass-box.png" alt="AdaptiveRAG React 19 Glass-Box Studio showing a 7-step LangGraph execution trace, proportional latency strip, inline citations, Langfuse trace link, and Dynamic Top-K cross-encoder cutoff chart" width="100%" />
 </p>
 <p align="center">
-  <em><strong>React 19 3-Pane Glass-Box Studio</strong> executing a live analytical comparison: 7-node LangGraph SSE pipeline, clickable <code>[C1]</code>–<code>[C6]</code> inline citations, CRAG confidence (<code>0.92 HIGH</code>), 100% Two-Tier Citation Audit, <code>Langfuse ↗</code> trace deep link, and calibrated sigmoid Dynamic Top-K cutoff (<code>6 / 34</code> chunks via <code>relative_drop</code>).</em>
+  <em><strong>React 19 3-Pane Glass-Box Studio</strong> executing a live analytical comparison: 7-step LangGraph SSE trace with proportional node latency bar, clickable <code>[C1]</code>–<code>[C6]</code> inline citations, <code>CRAG 0.92 (HIGH)</code>, <code>Audit 100%</code>, <code>Langfuse ↗</code> trace deep link, and calibrated Cross-Encoder Dynamic Top-K cutoff (<code>6 / 34</code> chunks via <code>relative_drop</code>).</em>
 </p>
 
 ---
@@ -72,12 +72,12 @@ flowchart TD
 | **1. Query Classification & Strategy Matrix** | Structured `QueryPlan` routes into `conversational` (zero retrieval), `factual` (sparse-leaning single-query, strict `k=2..5`), or `analytical` (2–4 concurrent sub-queries, permissive `k=4..10`). Tunable without code edits in [`configs/strategies.yaml`](configs/strategies.yaml). |
 | **2. Native Qdrant Hybrid Search** | Single collection with Named Vectors: local multilingual dense (`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, 768d) + sparse lexical (`Qdrant/bm25`) with server-side `Modifier.IDF`, parallel `Prefetch`, and `FusionQuery(Fusion.RRF)`. |
 | **3. Cross-Encoder Reranking (`$0` ONNX)** | Local `BAAI/bge-reranker-v2-m3-int8` (TR + EN cross-lingual support) with numerically stable sigmoid calibration $\sigma(z) \in [0, 1]$ and `asyncio.to_thread` offloading so the FastAPI event loop never blocks. |
-| **4. 3-Stage Dynamic Top-K & Parent-Child Retrieval** | Replaces static `top_k` with: **(1)** Relevance floor $s_i \ge \tau_{\min}$, **(2)** Relative drop & elbow gap $s_i \ge \alpha \cdot s_1 \land (s_{i-1} - s_i) \le \delta_{\text{gap}}$, and **(3)** `[rerank_min_k, rerank_max_k]` + `max_context_tokens` guard. Includes opt-in **Hierarchical Parent-Child (Small-to-Big)** indexing (`<=256`-tok child vectors → deduplicated `<=1000`-tok parent sections with recall-preserving token budget fallback). |
+| **4. 3-Stage Dynamic Top-K & Parent-Child Retrieval** | Replaces static `top_k` with: **(1)** Relevance floor $s_i \ge \tau_{\min}$, **(2)** Relative drop & elbow gap $s_i \ge \alpha \cdot s_1 \land (s_{i-1} - s_i) \le \delta_{\text{gap}}$, and **(3)** `[rerank_min_k, rerank_max_k]` + `max_context_tokens` guard. Includes opt-in **Hierarchical Parent-Child (Small-to-Big)** indexing (`<=256`-tok child vectors → deduplicated `<=1000`-tok parent sections with full `6,000`-char synthesis/entailment alignment and recall-preserving token budget fallback). |
 | **5. Multi-Signal Confidence + CRAG** | Computes $C_{\text{det}} = 0.50\,S_{\text{top1}} + 0.30\,S_{\text{mean}} + 0.20\,S_{\text{cov}}$. Auto-passes `HIGH` ($\ge 0.72$) and auto-routes `LOW` ($< 0.38$) at `$0` LLM cost; invokes the lightweight CRAG grader *only* inside the ambiguous band $[0.38, 0.72)$. |
-| **6. Web Search Fallback & Honest Abstention** | `FallbackRetriever` protocol backed by **Tavily** (primary) and **DuckDuckGo** (zero-key fallback), mapping web snippets into `[W1]..[Wn]` `EvidenceChunk`s. If local + web evidence still cannot ground the query, returns an honest TR/EN abstention. |
+| **6. Web Search Fallback & Honest Abstention** | `FallbackRetriever` protocol backed by **Tavily** (primary) and **DuckDuckGo** (zero-key fallback), mapping web snippets into sanitized `[W1]..[Wn]` `EvidenceChunk`s. If local + web evidence still cannot ground the query, returns an honest TR/EN abstention. |
 | **7. Two-Tier Citation Validation** | **Tier-1 (`0 ms`, `$0`):** Deterministic regex check catching phantom IDs (`[C9]`) and uncited factual sentences. **Tier-2:** Claim-level entailment (`SUPPORTED` / `PARTIALLY_SUPPORTED` / `UNSUPPORTED` / `CONTRADICTED`). Triggers at most 1 `regenerate_strict` repair pass when `claim_support_rate < 0.85`. |
-| **8. Closed-Loop LLMOps & FinOps** | Tiered LLM routing (`qwen/qwen3-30b-a3b-instruct-2507` + `deepseek/deepseek-v3.2` via OpenRouter, swappable to OpenAI / Gemini / Anthropic / Ollama), local `SQLiteLLMCache`, hard `CostTracker` cap (`HTTP 402`), and **Langfuse v5 OTEL** deep tracing, automated online quality scoring, `POST /v1/feedback` human-in-the-loop loop, versioned **Prompt Management** (with zero-downtime local fallback), and Datasets & Experiments benchmark sync. |
-| **9. Production Security & Guardrails** | Pure ASGI security middleware (zero SSE buffering) with optional constant-time `API_AUTH_KEY` (`X-API-Key` / `Bearer`), per-IP sliding-window rate limiting (`HTTP 429` + `Retry-After`), `$0` deterministic EN+TR prompt-injection/exfiltration screening, checksum-validated PII & secret redaction (API keys, email, phone, Luhn credit cards, Turkish TCKN), and a non-root multi-stage `Dockerfile` serving FastAPI + built React SPA on one port. |
+| **8. Closed-Loop LLMOps & FinOps** | Tiered LLM routing (`qwen/qwen3-30b-a3b-instruct-2507` + `deepseek/deepseek-v3.2` via OpenRouter, swappable to OpenAI / Gemini / Anthropic / Ollama), async WAL-backed `SQLiteLLMCache`, isolated per-request `CostTracker` cap (`HTTP 402`), and **Langfuse v5 OTEL** deep tracing, automated online quality scoring, `POST /v1/feedback` human-in-the-loop loop, versioned **Prompt Management** (with zero-downtime local fallback), and Datasets & Experiments benchmark sync. |
+| **9. Production Security & Multi-Layer Guardrails** | Pure ASGI security middleware (zero SSE buffering) with optional constant-time `API_AUTH_KEY` (`X-API-Key` / `Bearer`), per-IP sliding-window rate limiting (`HTTP 429` + `Retry-After`), `$0` EN+TR direct prompt-injection screening (`HTTP 400`), indirect prompt-injection passage sanitization + `<evidence>` XML isolation, checksum-validated PII & secret redaction (API keys, email, phone, Luhn cards, Turkish TCKN), `ALLOWED_CORPUS_ROOT` path-traversal sandboxing (`HTTP 403`), fail-closed async DNS + post-redirect SSRF validation, and a non-root multi-stage `Dockerfile` serving FastAPI + React 19 SPA on one port. |
 
 ---
 
@@ -162,18 +162,19 @@ For containerised or cloud deployments, the multi-stage [`Dockerfile`](Dockerfil
 # Build & launch Qdrant + FastAPI + Built React 19 Studio together on http://localhost:8000
 make up-prod
 
-# Or build the standalone production image directly
+# Or build the standalone production image directly (pass --build-arg PRELOAD_MODELS=true for air-gapped ONNX baking)
 make docker-build
 ```
 
-Production security and `$0` input guardrails are configured via environment variables (see [`.env.example`](.env.example)):
+Production security and `$0` input/retrieval guardrails are configured via environment variables (see [`.env.example`](.env.example)):
 
 | Control | Env Vars | Behavior |
 | :--- | :--- | :--- |
-| **API Key Auth** | `API_AUTH_KEY` | Optional constant-time (`hmac.compare_digest`) auth via `X-API-Key` or `Authorization: Bearer` protecting `/v1/*` while keeping `/v1/health` and SPA assets public |
+| **API Key Auth** | `API_AUTH_KEY` | Optional constant-time (`hmac.compare_digest`) auth via `X-API-Key` or `Authorization: Bearer` protecting `/v1/*` while keeping `/v1/health` and SPA assets public (supported directly in the React Studio sidebar) |
 | **Rate Limiting** | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_TRUST_PROXY_HEADERS` | Thread-safe per-IP sliding-window limiter emitting `X-RateLimit-*` headers and `HTTP 429` + `Retry-After` without buffering SSE streams |
-| **Prompt-Injection Guardrail** | `GUARDRAILS_ENABLED`, `GUARDRAILS_BLOCK_PROMPT_INJECTION` | `$0` sub-millisecond EN+TR screening (NFKC + zero-width normalized) blocking instruction override, jailbreak, delimiter spoofing, and system-prompt exfiltration at `HTTP 400` before LLM execution |
+| **Direct & Indirect Injection Guardrails** | `GUARDRAILS_ENABLED`, `GUARDRAILS_BLOCK_PROMPT_INJECTION` | `$0` sub-millisecond EN+TR screening (NFKC + zero-width normalized) blocking override, jailbreak, delimiter spoofing, and system-prompt exfiltration (`HTTP 400`), paired with `sanitize_untrusted_passage` + `<evidence>` XML isolation for untrusted web/scraped passages |
 | **PII & Secret Protection** | `GUARDRAILS_PII_MODE=redact\|block\|off` | Masks or blocks API keys (`sk-or-v1-*`, `sk-*`, `pk/sk-lf-*`, `ghp_*`, `AKIA*`), emails, phone numbers, Luhn-verified cards, and checksum-verified Turkish TCKN before payloads reach external LLM providers (`X-Guardrail-PII-Redacted` telemetry header) |
+| **Corpus & SSRF Sandboxing** | `ALLOWED_CORPUS_ROOT`, `FIRECRAWL_ALLOW_PRIVATE_URLS` | Confines local `/v1/ingest` directory paths to `ALLOWED_CORPUS_ROOT` (`HTTP 403` on path traversal) and enforces fail-closed async DNS + post-redirect canonical URL SSRF validation (`HTTP 422`) |
 
 ---
 
@@ -183,18 +184,18 @@ AdaptiveRAG exposes eight versioned REST/SSE endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
-| `/v1/health` | `GET` | Non-crashing Qdrant status, Firecrawl Local status, Langfuse observability status, LLM readiness, active models, and web fallback providers |
-| `/v1/documents` | `GET` | List all indexed documents in Qdrant grouped by `doc_id` with source origin (`local` / `web`), chunk counts, token totals, and clickable URLs |
+| `/v1/health` | `GET` | Non-crashing Qdrant status, Firecrawl Local status, Langfuse observability status, security/guardrail flags, LLM readiness, active models, and web fallback providers |
+| `/v1/documents` | `GET` | Metadata-projected inventory of indexed Qdrant documents grouped by `doc_id` with source origin (`local` / `web`), `chunk_strategy` (`flat` / `parent_child`), chunk/token counts, and URLs |
 | `/v1/documents/{doc_id}` | `DELETE` | Delete all Qdrant chunks belonging to `doc_id` and return remaining collection points |
-| `/v1/ingest` | `POST` | Idempotently index a local corpus directory (`corpus_dir`), inline documents (`documents`), live URLs (`urls`), or a full docs site crawl (`crawl_url`) via `firecrawl-local` |
-| `/v1/ingest/upload` | `POST` | Multipart file upload for `.md`, `.markdown`, `.txt`, and `.pdf` documents with structure-aware chunking and idempotent Qdrant upsert |
-| `/v1/query` | `POST` | Synchronous full `FinalAnswer` JSON (with `trace_id`, optional `trace_url`, `session_id`, ablation overrides, and `max_cost_usd` cap) |
+| `/v1/ingest` | `POST` | Zero-gap idempotent indexing of a sandboxed local directory (`corpus_dir`), inline `documents`, live `urls`, or recursive `crawl_url` via `firecrawl-local` (supports `parent_child=true`) |
+| `/v1/ingest/upload` | `POST` | Multipart upload for `.md`, `.markdown`, `.txt`, and `.pdf` documents with off-thread parsing/chunking, optional `parent_child` hierarchy, and crash-safe Qdrant upsert |
+| `/v1/query` | `POST` | Synchronous full `FinalAnswer` JSON (with isolated per-request `max_cost_usd` cap, `trace_id`, optional `trace_url`, `session_id`, and ablation overrides) |
 | `/v1/query/stream` | `POST` | Server-Sent Events (`sse-starlette`) streaming `event: node_update` per LangGraph node followed by `event: final_answer` |
-| `/v1/feedback` | `POST` | Record human-in-the-loop answer rating (`score` `0.0–1.0` + optional comment) correlated via `trace_id` and forwarded to Langfuse when enabled |
+| `/v1/feedback` | `POST` | Record human-in-the-loop answer rating (`score` `0.0–1.0` + optional comment) correlated via `trace_id` and forwarded off-thread to Langfuse when enabled |
 
 ### Live URL & Documentation Site Indexing (`firecrawl-local`, `$0` Local Scraping)
 
-AdaptiveRAG supports scraping individual public URLs or recursively crawling entire documentation sites into clean Markdown via [**Firecrawl Local**](https://docs.firecrawl.dev/quickstarts/firecrawl-local) (`firecrawl-local serve` on `http://localhost:3002`, zero Docker/Redis/cloud keys required). Every scraped page is validated against **SSRF guardrails** (blocking `localhost`, private/loopback/cloud-metadata IPs, and non-HTTP(S) schemes), assigned a deterministic URL-based `doc_id` for idempotent re-indexing, split by the structure-aware Markdown chunker, upserted into Qdrant Hybrid Search, and surfaced with clickable source links in the Glass-Box Evidence tab.
+AdaptiveRAG supports scraping individual public URLs or recursively crawling entire documentation sites into clean Markdown via [**Firecrawl Local**](https://docs.firecrawl.dev/quickstarts/firecrawl-local) (`firecrawl-local serve` on `http://localhost:3002`, zero Docker/Redis/cloud keys required). Every target and post-redirect canonical URL is validated against **fail-closed async SSRF guardrails** (blocking `localhost`, private/loopback/link-local/cloud-metadata IPs, DNS resolution failures, and non-HTTP(S) schemes), assigned a deterministic URL-based `doc_id` for zero-gap idempotent re-indexing, split by the structure-aware Markdown chunker, upserted into Qdrant Hybrid Search, and surfaced with clickable source links in the Glass-Box Evidence tab.
 
 ```bash
 # 1. Install & start Firecrawl Local (one-time Rust binary, runs on localhost:3002)
@@ -210,7 +211,7 @@ uv run python -m adaptiverag.ingestion.indexer \
 uv run python -m adaptiverag.ingestion.indexer \
   --crawl-url https://docs.qdrant.tech/concepts/ --crawl-limit 10 --crawl-max-depth 2
 
-# 4. Or trigger live URL / docs crawl over REST API (or the Streamlit sidebar)
+# 4. Or trigger live URL / docs crawl over REST API (or the Knowledge Base view in React Studio)
 curl -s http://localhost:8000/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{
@@ -243,24 +244,24 @@ curl -N http://localhost:8000/v1/query/stream \
   }'
 ```
 
-### Glass-Box Studio Workbench (`frontend/`, React + TypeScript + Vite + Tailwind CSS)
-The primary 3-pane Glass-Box Studio (`make ui` at `http://localhost:5173`) provides a dark/light themed engineering workbench built directly over the FastAPI REST & SSE endpoints:
-- **Left Rail (Sessions & Controls):** `localStorage`-persisted research sessions, instant `Workbench` / `Knowledge Base` switcher, live ablation preset selector (`Full`, `Adaptive Routing`, `Hybrid + Rerank`, `Naive Dense`, or granular `Custom` switches), per-request USD cost cap, and live API/Qdrant/Firecrawl health status.
-- **Center Chat & Live LangGraph Stepper:** Real-time animated LangGraph node execution track over `/v1/query/stream` (with cancelable `AbortController`), KaTeX math + GitHub-flavored Markdown rendering, **clickable inline `[C1]` / `[W1]` citation pills** that immediately open and highlight the exact source chunk in the right Inspector, **👍 / 👎 human-in-the-loop feedback** with optional reviewer notes (`POST /v1/feedback`), and clickable **Langfuse Trace ↗** deep links when tracing is enabled.
-- **Right Resizable Glass-Box Inspector (`⌘I`):**
-  1. **Trace & Plan:** Query plan, sub-queries, strategy hyperparameters JSON, and proportional LangGraph Latency Waterfall.
-  2. **Dynamic Top-K:** Interactive SVG rerank/fusion bar chart with $\tau_{\min}$ threshold indicator and click-to-jump bars.
-  3. **Confidence & CRAG:** Semicircular confidence gauge, CRAG grade & action badges, and 5-signal breakdown ($S_{\text{top1}}$, $S_{\text{mean}}$, $S_{\text{cov}}$, $C_{\text{det}}$, final score).
-  4. **Evidence Passages:** Local/Web filter, expandable passage cards with scores, section paths, clickable Firecrawl/Web URLs, and pulse-highlight on inline citation click.
-  5. **Citation Audit:** Tier-1 valid/fabricated IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards with clickable cited IDs.
-- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` file upload (`/v1/ingest/upload`), one-click local corpus re-indexing, live **Firecrawl Local** URL scraper & docs crawler, and a searchable/filterable table of all indexed Qdrant documents with safe 2-step deletion.
-- **Side-by-Side Ablation Arena (`Compare Mode`):** Fire any two presets in parallel over live SSE (default `Naive Dense Baseline` vs. `Full AdaptiveRAG`, with quick-pair chips and 1-click swap), compare real-time **A → B deltas** across context tokens, selected `k`, CRAG confidence, Two-Tier Citation Audit (`Fail → Pass`), latency, and cost, rate either side via `/v1/feedback`, and click any card or `[C1]` badge to focus the Glass-Box Inspector on that exact side.
+### Glass-Box Studio Workbench (`frontend/`, React 19 + TypeScript + Vite + Tailwind CSS v4)
+The primary 3-pane Glass-Box Studio (`make ui` at `http://localhost:5173`) provides a high-contrast `Geist` / `Geist Mono` engineering workbench (Obsidian dark `#09090b` & crisp Paper light `#fafafa` themes) built directly over the FastAPI REST & SSE endpoints:
+- **Left Rail (Navigation, Threads & Pipeline Config):** Instant switcher across **`Workbench`**, **`Ablation Arena`**, and **`Knowledge Base`** (with live Qdrant point count), `localStorage`-persisted research threads, execution preset selector (`Full AdaptiveRAG`, `Adaptive Routing + Dynamic K`, `Hybrid RRF + Rerank`, `Naive Dense Baseline`, or granular `Custom` switches including **`Parent-Child (Small→Big)`**), live SSE trace toggle, per-request USD cost cap, session-scoped **`X-API-Key`** prompt when API auth is active, and real-time runtime telemetry (`Runtime Online`, Qdrant points, Firecrawl, Langfuse, Guardrails).
+- **Center Research Log & Live LangGraph Trace Bar:** Editorial `#01` query turns, real-time SSE node execution tracker (cancelable via `AbortController`) that collapses into a compact single-line trace summary underscored by a **2px proportional multi-segment latency strip**, monospace telemetry strip (`ANALYTICAL / EN`, `CRAG 0.92 (HIGH)`, `Audit 100%`, `ms · tok · $cost`, clickable **`Langfuse ↗`** deep link), KaTeX math + GFM Markdown with monochrome inline `<code>` spans cleanly separated from **clickable sky-blue `[C1]` (corpus) and amber `[W1]` (web) citation badges**, and **👍 / 👎 human-in-the-loop feedback** (`POST /v1/feedback`).
+- **Right Resizable DevTools Inspector (`⌘I`):**
+  1. **`Trace`:** 4-cell Query Plan ledger, standalone/decomposed queries, strategy hyperparameters JSON, and proportional LangGraph Latency Waterfall.
+  2. **`Top-K`:** Hairline KPI ledger (`Selected / Pool`, `Top Score`, `Cutoff Score`, `Context Budget`), cutoff reason + `Small→Big` parent-expansion telemetry, and interactive calibrated Cross-Encoder score chart with $\tau_{\min}$ floor line and click-to-jump bars.
+  3. **`CRAG`:** Linear confidence calibration meter with `0.38` (`LOW`) / `0.72` (`HIGH`) gate markers, CRAG grade & action status, and 5-signal breakdown ($S_{\text{top1}}$, $S_{\text{mean}}$, $S_{\text{cov}}$, $C_{\text{det}}$, final score).
+  4. **`Evidence`:** Local/Web filter, expandable passage cards with `Parent Section` (`Small→Big`) badges, rerank/fusion scores, section paths, clickable Firecrawl/Web URLs, and pulse-highlight on inline citation click.
+  5. **`Audit`:** Tier-1 valid/fabricated IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards (`SUPPORTED` / `PARTIALLY_SUPPORTED` / `UNSUPPORTED` / `CONTRADICTED`) with clickable cited IDs.
+- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` upload (`/v1/ingest/upload`), one-click `data/raw` corpus sync, live **Firecrawl Local** URL scraper & recursive docs crawler, opt-in **`Parent-Child (Small→Big)`** indexing toggle (`256 → 1000` tok), and a searchable/filterable inventory displaying per-document `Flat` vs `Small→Big` strategy badges with 2-step deletion.
+- **Side-by-Side Ablation Arena (`Ablation Arena`):** Fire any two presets in parallel over live SSE (default `Naive Dense Baseline` vs. `Full AdaptiveRAG`, with quick-pair chips and `⇄` swap), inspect a **5-cell `A → B Ablation Delta` ledger** across context tokens, selected `k`, CRAG confidence, Two-Tier Citation Audit (`Fail → Pass`), and latency/cost, rate either side via `/v1/feedback`, and click any card or `[C1]` badge to bind the right Inspector to Side `A` or Side `B`.
 
 <p align="center">
   <img src="docs/assets/studio-compare-arena.png" alt="AdaptiveRAG Side-by-Side Ablation Arena comparing Naive Dense Baseline against Full AdaptiveRAG in parallel over live SSE" width="100%" />
 </p>
 <p align="center">
-  <em><strong>Side-by-Side Ablation Arena (Compare Mode):</strong> Parallel live SSE comparison of <code>Naive Dense Baseline</code> (<code>k=5</code>, <code>Conf 0.66 MEDIUM</code>, <code>Audit 57%</code>, relevant passage buried at <code>[C4]</code>) vs. <code>Full AdaptiveRAG</code> (<code>k=4</code>, <code>Conf 0.90 HIGH</code>, <code>Audit 100% PASS</code>, reranked to <code>[C1]</code>) with automatic A → B delta telemetry.</em>
+  <em><strong>Side-by-Side Ablation Arena:</strong> Parallel live SSE comparison of <code>Naive Dense</code> (<code>k=5 · 809 tok</code>, <code>CRAG 0.66 (MEDIUM)</code>, <code>Audit 57%</code>, relevant passage buried at <code>[C4]</code>) vs. <code>Full Agentic</code> (<code>k=4 · 898 tok</code>, <code>CRAG 0.90 (HIGH)</code>, <code>Audit 100%</code>, reranked to <code>[C1]</code>) with automatic <code>A → B Ablation Delta</code> ledger.</em>
 </p>
 
 *(The legacy Streamlit inspector remains available as an optional Python fallback via `make ui-legacy` on port `8501`.)*
@@ -278,7 +279,7 @@ AdaptiveRAG ships with a vendor-neutral, fail-open **Langfuse v5 OpenTelemetry**
 2. **Human-in-the-Loop Feedback (`POST /v1/feedback` ↔ React Studio):**
    - Clicking **👍 / 👎 (+ optional reviewer note)** on any assistant answer sends `user_feedback` (`1.0` / `0.0`) attached to the exact `trace_id` (persisting to Langfuse when configured and logging cleanly via `structlog` even when Langfuse is off).
 3. **Offline Datasets & Experiments Benchmark Sync (`eval/langfuse_eval.py`):**
-   - Passing `--langfuse-sync` to `eval/run_benchmark.py` idempotently upserts `data/eval/golden_set.jsonl` into a **Langfuse Dataset** (deterministic UUIDv5 item IDs) and publishes all 4 ablation configs + **IR** + **RAGAS** scores as comparable **Langfuse Experiments** at `$0` extra LLM cost.
+   - Passing `--langfuse-sync` to `eval/run_benchmark.py` idempotently upserts `data/eval/golden_set.jsonl` into a **Langfuse Dataset** (deterministic UUIDv5 item IDs) and publishes all ablation configs + **IR** (including `fact_coverage`) + **RAGAS** scores as comparable **Langfuse Experiments** at `$0` extra LLM cost.
 4. **Versioned Prompt Management with Zero-Downtime Local Fallback (`src/adaptiverag/observability/prompts.py`):**
    - All **8 LLM system prompts** (`adaptiverag.router`, `decompose`, `corrective_rewrite`, `crag_grader`, `conversational`, `grounded_synthesis`, `strict_regeneration`, `citation_entailment`) are registered with mustache `{{variable}}` templates and fetched by deployment label (`LANGFUSE_PROMPT_LABEL=production`) with configurable SDK TTL caching (`LANGFUSE_PROMPT_CACHE_TTL_SECONDS=300`).
    - Live Langfuse prompt objects are natively linked to LangChain generation observations (via `langfuse_prompt` metadata) and recorded on both `NodeTraceEvent.metadata["prompt"]` and the root trace's `prompts_used` map, enabling per-prompt-version quality & cost comparisons—while automatically invalidating `SQLiteLLMCache` whenever a prompt version changes and failing open to local canonical templates whenever Langfuse is disabled or unreachable.
@@ -475,7 +476,7 @@ adaptiverag/
 │   └── api/                         # FastAPI app, lifespan container, ASGI auth/rate-limit middleware, static SPA serving, REST + SSE routes
 ├── frontend/
 │   ├── src/
-│   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, CompareArena, LivePipelineTracker, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
+│   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, CompareArena, LivePipelineTracker, AnswerTelemetryBar, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
 │   │   ├── lib/                     # Typed FastAPI + SSE ReadableStream client, Compare delta helpers, citation tokenizer, URL helpers
 │   │   └── test/                    # Vitest + Testing Library unit tests (core + Compare Arena)
 │   └── vite.config.ts               # React 19 + TypeScript + Tailwind CSS v4 + KaTeX math
@@ -501,15 +502,15 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`141` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`146` backend unit & in-memory Qdrant integration tests + `16` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy + frontend typecheck/test/build + offline pytest w/ coverage)
 make ci
 
 # Or run individual gates:
-make test       # 141 offline Python unit & in-memory integration tests ($0 API cost)
-make ui-test    # Frontend TypeScript typecheck + 15 Vitest unit tests
+make test       # 146 offline Python unit & in-memory integration tests ($0 API cost)
+make ui-test    # Frontend TypeScript typecheck + 16 Vitest unit tests
 make ui-build   # Production Vite bundle build
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)
 make typecheck  # mypy static type check (src, eval)

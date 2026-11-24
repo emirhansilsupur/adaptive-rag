@@ -59,10 +59,10 @@ function CitationPill({
       }}
       title={tooltip}
       data-citation-id={citationId}
-      className={`mx-0.5 inline-flex -translate-y-[1px] items-center gap-0.5 rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-semibold leading-none transition-all duration-150 hover:scale-[1.04] focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer ${
+      className={`mx-0.5 inline-flex -translate-y-[1px] items-center gap-0.5 rounded-[4px] border px-1.25 py-0.5 font-mono text-[10px] font-semibold leading-none transition-colors focus:outline-none focus:ring-1 focus:ring-sky-500/50 cursor-pointer ${
         isWeb
-          ? "border-purple-500/40 bg-purple-500/12 text-purple-600 hover:bg-purple-500/22 dark:text-purple-300"
-          : "border-blue-500/40 bg-blue-500/12 text-blue-600 hover:bg-blue-500/22 dark:text-blue-300"
+          ? "border-amber-500/35 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-300"
+          : "border-sky-500/35 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 dark:text-sky-300"
       }`}
     >
       {isWeb && <Globe className="h-2.5 w-2.5 shrink-0" />}
@@ -82,14 +82,26 @@ function injectCitationsInChildren(
       if (segments.length === 1 && segments[0].type === "text") {
         return child;
       }
+      const consumedLeading = new Set<number>();
       return (
         <React.Fragment key={`seg-${idx}`}>
           {segments.map((seg, sIdx) => {
             if (seg.type === "text") {
-              return <React.Fragment key={sIdx}>{seg.value}</React.Fragment>;
+              const val = consumedLeading.has(sIdx) ? seg.value.slice(1) : seg.value;
+              return val ? <React.Fragment key={sIdx}>{val}</React.Fragment> : null;
+            }
+            const nextSeg = segments[sIdx + 1];
+            let gluedPunct = "";
+            if (
+              nextSeg &&
+              nextSeg.type === "text" &&
+              /^[.,;:!?)]/.test(nextSeg.value)
+            ) {
+              gluedPunct = nextSeg.value[0];
+              consumedLeading.add(sIdx + 1);
             }
             return (
-              <span key={sIdx} className="inline-flex items-baseline">
+              <span key={sIdx} className="inline whitespace-nowrap">
                 {seg.ids.map((cid) => (
                   <CitationPill
                     key={cid}
@@ -98,6 +110,7 @@ function injectCitationsInChildren(
                     onClick={onCitationClick}
                   />
                 ))}
+                {gluedPunct}
               </span>
             );
           })}
@@ -149,13 +162,13 @@ function CodeBlock({
   };
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[#0b0f17] text-slate-100">
-      <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-[11px] font-mono text-slate-400">
+    <div className="my-3 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[#0c0c0f] text-zinc-100">
+      <div className="flex items-center justify-between border-b border-white/[0.07] bg-white/[0.02] px-3 py-1.5 font-mono text-[10.5px] text-zinc-400">
         <span>{language || "code"}</span>
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 transition hover:bg-white/10 hover:text-slate-100 cursor-pointer"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-100 cursor-pointer"
         >
           {copied ? (
             <>
@@ -170,7 +183,7 @@ function CodeBlock({
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3.5 text-[12.5px] leading-relaxed">
+      <pre className="overflow-x-auto p-3 text-[12px] leading-relaxed">
         <code className={className}>{rawCode}</code>
       </pre>
     </div>
@@ -225,7 +238,7 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
         return (
           <code
             {...rest}
-            className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[0.83em] text-blue-600 dark:text-blue-300"
+            className="rounded-[4px] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.25 py-0.25 font-mono text-[0.84em] text-[var(--text-primary)]"
           >
             {children}
           </code>

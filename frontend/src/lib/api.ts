@@ -16,6 +16,27 @@ import type {
 } from "../types/api";
 import { SseStreamParser } from "./sse";
 
+let activeStudioApiKey = "";
+
+export function setStudioApiKey(apiKey: string): void {
+  activeStudioApiKey = apiKey.trim();
+}
+
+export function getStudioApiKey(): string {
+  return activeStudioApiKey;
+}
+
+export function buildAuthHeaders(
+  base: Record<string, string> = {},
+  explicitApiKey?: string
+): Record<string, string> {
+  const resolved = (explicitApiKey ?? activeStudioApiKey).trim();
+  if (!resolved) {
+    return base;
+  }
+  return { ...base, "X-API-Key": resolved };
+}
+
 function normalizeBase(apiBaseUrl: string): string {
   return apiBaseUrl.trim().replace(/\/+$/, "");
 }
@@ -89,11 +110,15 @@ export function buildWebIngestPayload(params: {
   crawlMaxDepth?: number;
   onlyMainContent?: boolean;
   recreateCollection?: boolean;
+  parentChild?: boolean;
 }): IngestRequest {
   const payload: IngestRequest = {
     only_main_content: params.onlyMainContent ?? true,
     recreate_collection: params.recreateCollection ?? false,
   };
+  if (params.parentChild !== undefined) {
+    payload.parent_child = params.parentChild;
+  }
   if (params.mode === "crawl") {
     const cleaned = (params.crawlUrl ?? "").trim();
     if (!cleaned) {
@@ -120,7 +145,7 @@ export async function fetchHealth(
 ): Promise<HealthResponse> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/health`, {
     method: "GET",
-    headers: { Accept: "application/json" },
+    headers: buildAuthHeaders({ Accept: "application/json" }),
     signal,
   });
   if (!resp.ok) {
@@ -136,10 +161,10 @@ export async function runQueryBatch(
 ): Promise<FinalAnswer> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/query`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
     signal,
   });
@@ -163,10 +188,10 @@ export async function streamQuery(
 ): Promise<FinalAnswer> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/query/stream`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-    },
+    }),
     body: JSON.stringify(payload),
     signal,
   });
@@ -228,7 +253,7 @@ export async function fetchDocuments(
 ): Promise<DocumentListResponse> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/documents`, {
     method: "GET",
-    headers: { Accept: "application/json" },
+    headers: buildAuthHeaders({ Accept: "application/json" }),
     signal,
   });
   if (!resp.ok) {
@@ -247,7 +272,7 @@ export async function deleteDocument(
     .join("/");
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/documents/${encodedId}`, {
     method: "DELETE",
-    headers: { Accept: "application/json" },
+    headers: buildAuthHeaders({ Accept: "application/json" }),
   });
   if (!resp.ok) {
     throw new Error(await parseErrorDetail(resp));
@@ -261,10 +286,10 @@ export async function ingestPayload(
 ): Promise<IngestResponse> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/ingest`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!resp.ok) {
@@ -280,6 +305,7 @@ export async function uploadFiles(
     recreateCollection?: boolean;
     maxTokens?: number;
     overlapTokens?: number;
+    parentChild?: boolean;
   }
 ): Promise<IngestResponse> {
   const form = new FormData();
@@ -293,9 +319,13 @@ export async function uploadFiles(
   if (options?.overlapTokens !== undefined) {
     form.append("overlap_tokens", String(options.overlapTokens));
   }
+  if (options?.parentChild !== undefined) {
+    form.append("parent_child", String(options.parentChild));
+  }
 
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/ingest/upload`, {
     method: "POST",
+    headers: buildAuthHeaders(),
     body: form,
   });
   if (!resp.ok) {
@@ -310,10 +340,10 @@ export async function submitFeedback(
 ): Promise<FeedbackResponse> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/feedback`, {
     method: "POST",
-    headers: {
+    headers: buildAuthHeaders({
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   if (!resp.ok) {

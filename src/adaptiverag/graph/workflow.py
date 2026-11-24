@@ -30,6 +30,11 @@ from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.retrieval.reranker import FastEmbedCrossEncoderReranker, Reranker
 from adaptiverag.schemas.query import ChatMessage, QueryType
 from adaptiverag.schemas.response import FinalAnswer, NodeTraceEvent, TokenUsage
+from adaptiverag.verification.guardrails import (
+    GuardrailBlockedError,
+    InputGuardrailConfig,
+    screen_query_input,
+)
 
 
 def build_adaptive_rag_graph(
@@ -181,7 +186,9 @@ class AdaptiveRAGWorkflow:
             if cache is not None
             else (SQLiteLLMCache(settings.llm_cache_path) if settings.llm_cache_enabled else None)
         )
-        resolved_cost_tracker = cost_tracker or CostTracker(max_cost_usd=settings.max_run_cost_usd)
+        # Keep runtime.cost_tracker None unless explicitly injected so each run/request
+        # creates its own isolated CostTracker(max_cost_usd=settings.max_run_cost_usd).
+        resolved_cost_tracker = cost_tracker
         resolved_observability = observability or LangfuseObservability.from_settings(settings)
         resolved_prompts = prompt_manager or PromptManager.from_settings(
             settings,
@@ -232,6 +239,35 @@ class AdaptiveRAGWorkflow:
             )
         return self._runtime.observability
 
+    def _resolve_run_cost_tracker(self, cost_tracker: CostTracker | None) -> CostTracker:
+        """Return an isolated per-run CostTracker unless a shared tracker was explicitly supplied."""
+        if cost_tracker is not None:
+            return cost_tracker
+        if self._runtime.cost_tracker is not None:
+            return self._runtime.cost_tracker
+        return CostTracker(max_cost_usd=self._runtime.settings.max_run_cost_usd)
+
+    def _screen_inputs_if_needed(
+        self,
+        query: str,
+        chat_history: Sequence[ChatMessage] | None,
+        *,
+        pre_screened: bool,
+    ) -> tuple[str, list[ChatMessage]]:
+        history_list = list(chat_history) if chat_history else []
+        if pre_screened or not self._runtime.settings.guardrails_enabled:
+            return query, history_list
+        settings = self._runtime.settings
+        cfg = InputGuardrailConfig(
+            enabled=settings.guardrails_enabled,
+            block_prompt_injection=settings.guardrails_block_prompt_injection,
+            pii_mode=settings.guardrails_pii_mode,
+        )
+        decision = screen_query_input(query, history_list, config=cfg)
+        if not decision.allowed:
+            raise GuardrailBlockedError(decision)
+        return decision.sanitized_query, decision.sanitized_history
+
     def _build_run_config(
         self,
         *,
@@ -248,9 +284,8 @@ class AdaptiveRAGWorkflow:
         if trace_handle is not None and trace_handle.callback_handler is not None:
             merged_callbacks.append(trace_handle.callback_handler)
 
-        configurable: dict[str, Any] = {}
-        if cost_tracker is not None:
-            configurable["cost_tracker"] = cost_tracker
+        resolved_tracker = self._resolve_run_cost_tracker(cost_tracker)
+        configurable: dict[str, Any] = {"cost_tracker": resolved_tracker}
 
         config: RunnableConfig = {"recursion_limit": 25}
         if merged_callbacks:
@@ -273,13 +308,17 @@ class AdaptiveRAGWorkflow:
         user_id: str | None = None,
         preset_name: str | None = None,
         trace_tags: Sequence[str] | None = None,
+        pre_screened: bool = False,
     ) -> FinalAnswer:
         """Execute the full AdaptiveRAG graph and return a Glass-Box FinalAnswer."""
         started = time.perf_counter()
+        safe_query, safe_history = self._screen_inputs_if_needed(
+            query, chat_history, pre_screened=pre_screened
+        )
         resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
-            query,
-            chat_history=chat_history,
+            safe_query,
+            chat_history=safe_history,
             ablation=resolved_ablation,
         )
         observability = self._get_observability()
@@ -324,13 +363,17 @@ class AdaptiveRAGWorkflow:
         user_id: str | None = None,
         preset_name: str | None = None,
         trace_tags: Sequence[str] | None = None,
+        pre_screened: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream structured node_update events followed by a final_answer payload (SSE-ready)."""
         started = time.perf_counter()
+        safe_query, safe_history = self._screen_inputs_if_needed(
+            query, chat_history, pre_screened=pre_screened
+        )
         resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
-            query,
-            chat_history=chat_history,
+            safe_query,
+            chat_history=safe_history,
             ablation=resolved_ablation,
         )
         observability = self._get_observability()

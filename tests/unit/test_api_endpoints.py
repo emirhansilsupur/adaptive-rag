@@ -251,6 +251,7 @@ async def _build_test_container(
         qdrant_collection="api_test_docs",
         llm_cache_enabled=True,
         llm_cache_path=tmp_path / "api_cache.sqlite",
+        allowed_corpus_root=tmp_path,
     )
     strategies = load_strategies(Path("configs/strategies.yaml"))
     store = QdrantHybridStore.from_settings(
@@ -532,9 +533,18 @@ async def test_query_batch_full_preset_and_validation(tmp_path: Path) -> None:
             assert trace_by_node["hybrid_retrieve"]["mode"] == "dense_only"
             assert trace_by_node["validate_citations"]["validation_enabled"] is False
 
-            # Whitespace-only query fails Pydantic validation (422)
+            # Whitespace-only query or oversized chat_history (>50 turns) fails validation (422)
             bad_resp = await client.post("/v1/query", json={"query": "   "})
             assert bad_resp.status_code == 422
+
+            oversized_history = await client.post(
+                "/v1/query",
+                json={
+                    "query": "What is RRF?",
+                    "chat_history": [{"role": "user", "content": f"msg {i}"} for i in range(51)],
+                },
+            )
+            assert oversized_history.status_code == 422
     finally:
         await container.aclose()
 
@@ -712,6 +722,8 @@ def test_ui_sse_parser_and_payload_builder() -> None:
     assert crawl_payload["crawl_url"] == "https://docs.qdrant.tech/concepts/"
     assert crawl_payload["crawl_limit"] == 8
     assert crawl_payload["crawl_max_depth"] == 2
+    assert module.build_auth_headers("") == {}
+    assert module.build_auth_headers("  secret-123  ") == {"X-API-Key": "secret-123"}
 
 
 @pytest.mark.asyncio

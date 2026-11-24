@@ -56,10 +56,24 @@ RUN uv sync --frozen --no-dev
 # 3. Copy built React 19 Glass-Box Studio SPA from Stage 1
 COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
-# 4. Run as an unprivileged non-root system user
+# 4. Optional build-time ONNX warmup for zero-cold-start / air-gapped production deployments
+#    Enable via: `docker build --build-arg PRELOAD_MODELS=true -t adaptiverag:latest .`
+ARG PRELOAD_MODELS="false"
+RUN mkdir -p /app/.adaptiverag_cache/fastembed \
+    && if [ "$PRELOAD_MODELS" = "true" ]; then \
+        /app/.venv/bin/python -c "\
+from adaptiverag.config import Settings; \
+from fastembed import SparseTextEmbedding, TextEmbedding; \
+from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+s = Settings(); \
+TextEmbedding(model_name=s.dense_embedding_model, cache_dir='/app/.adaptiverag_cache/fastembed'); \
+SparseTextEmbedding(model_name=s.sparse_embedding_model, cache_dir='/app/.adaptiverag_cache/fastembed'); \
+TextCrossEncoder(model_name=s.reranker_model, cache_dir='/app/.adaptiverag_cache/fastembed')"; \
+    fi
+
+# 5. Run as an unprivileged non-root system user
 RUN addgroup --system adaptiverag \
     && adduser --system --ingroup adaptiverag --home /app adaptiverag \
-    && mkdir -p /app/.adaptiverag_cache/fastembed \
     && chown -R adaptiverag:adaptiverag /app
 
 USER adaptiverag

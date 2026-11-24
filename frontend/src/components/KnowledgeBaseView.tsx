@@ -2,10 +2,8 @@ import React, { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
-  Database,
   ExternalLink,
   FileText,
-  Flame,
   FolderSync,
   Globe,
   Loader2,
@@ -45,6 +43,34 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function InlineSwitch({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="group flex items-center justify-between gap-3 py-0.5 cursor-pointer select-none">
+      <span className="text-xs text-[var(--text-secondary)] transition group-hover:text-[var(--text-primary)]">
+        {label}
+      </span>
+      <span className="relative inline-flex h-4 w-7 shrink-0 items-center">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="peer sr-only"
+        />
+        <span className="h-4 w-7 rounded-full border border-[var(--border-strong)] bg-[var(--bg-elevated)] transition-colors peer-checked:border-transparent peer-checked:bg-[var(--cta-bg)]" />
+        <span className="pointer-events-none absolute left-0.5 h-3 w-3 rounded-full bg-[var(--text-muted)] transition-transform peer-checked:translate-x-3 peer-checked:bg-[var(--cta-fg)]" />
+      </span>
+    </label>
+  );
+}
+
 export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   apiUrl,
   health,
@@ -53,11 +79,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   documentsError,
   onRefreshAll,
 }) => {
-  // File upload state
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [recreateCollection, setRecreateCollection] = useState(false);
+  const [parentChildChunking, setParentChildChunking] = useState<boolean>(
+    () => Boolean(health?.parent_child_retrieval?.enabled)
+  );
   const [uploading, setUploading] = useState(false);
   const [indexingLocal, setIndexingLocal] = useState(false);
   const [uploadFeedback, setUploadFeedback] = useState<{
@@ -65,7 +93,6 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     message: string;
   } | null>(null);
 
-  // Firecrawl Local state
   const [webMode, setWebMode] = useState<"scrape" | "crawl">("scrape");
   const [urlsText, setUrlsText] = useState("");
   const [crawlUrl, setCrawlUrl] = useState("");
@@ -79,7 +106,6 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     urls?: string[];
   } | null>(null);
 
-  // Documents table search, filter & delete state
   const [searchQuery, setSearchQuery] = useState("");
   const [originFilter, setOriginFilter] = useState<"all" | "local" | "web">("all");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -143,11 +169,15 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     try {
       const res: IngestResponse = await uploadFiles(apiUrl, queuedFiles, {
         recreateCollection,
+        parentChild: parentChildChunking,
       });
       setQueuedFiles([]);
+      const parentSuffix = res.parent_child_enabled
+        ? ` · ${res.unique_parents_created ?? 0} parent sections`
+        : "";
       setUploadFeedback({
         kind: "success",
-        message: `Indexed ${res.documents_processed} uploaded file(s) → ${res.chunks_created} chunks (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
+        message: `Indexed ${res.documents_processed} uploaded file(s) → ${res.chunks_created} chunks${parentSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
       });
       await onRefreshAll();
     } catch (err) {
@@ -166,10 +196,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     try {
       const res = await ingestPayload(apiUrl, {
         recreate_collection: recreateCollection,
+        parent_child: parentChildChunking,
       });
+      const parentSuffix = res.parent_child_enabled
+        ? ` · ${res.unique_parents_created ?? 0} parent sections`
+        : "";
       setUploadFeedback({
         kind: "success",
-        message: `Indexed local corpus (${res.source}): ${res.documents_processed} docs → ${res.chunks_created} chunks (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
+        message: `Indexed local corpus (${res.source}): ${res.documents_processed} docs → ${res.chunks_created} chunks${parentSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
       });
       await onRefreshAll();
     } catch (err) {
@@ -195,6 +229,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         crawlMaxDepth: crawlDepth,
         onlyMainContent,
         recreateCollection,
+        parentChild: parentChildChunking,
       });
     } catch (err) {
       setWebFeedback({
@@ -243,73 +278,75 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
-              Knowledge Base & Ingestion Studio
+            <h2 className="text-base font-semibold tracking-tight text-[var(--text-primary)]">
+              Corpus &amp; Ingestion
             </h2>
             <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
-              Manage indexed Qdrant vectors, upload Markdown/PDF/Text files, or scrape live documentation sites via Firecrawl Local.
+              Inspect Qdrant hybrid vectors, index Markdown/PDF/Text files, or crawl
+              documentation via Firecrawl Local.
             </p>
           </div>
           <button
             type="button"
             onClick={() => void onRefreshAll()}
             disabled={documentsLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition hover:border-blue-500/40 cursor-pointer disabled:opacity-50"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--text-primary)] transition hover:bg-[var(--bg-elevated)] cursor-pointer disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${documentsLoading ? "animate-spin" : ""}`} />
-            <span>Refresh Index</span>
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${documentsLoading ? "animate-spin" : ""}`}
+            />
+            <span>Refresh</span>
           </button>
         </div>
 
-        {/* KPI Strip */}
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4">
-            <div className="flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              <span>Indexed Documents</span>
-              <FileText className="h-3.5 w-3.5 text-blue-400" />
+        {/* 4-Column Hairline KPI Ledger */}
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--border-subtle)] lg:grid-cols-4">
+          <div className="bg-[var(--bg-surface)] p-4">
+            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Documents
             </div>
-            <div className="mt-1.5 font-mono text-2xl font-semibold text-[var(--text-primary)] tabular-nums">
+            <div className="mt-1.5 font-mono text-xl font-semibold text-[var(--text-primary)] tabular-nums">
               {documentsData?.total_documents ?? 0}
             </div>
-            <div className="mt-1 text-[11px] text-[var(--text-secondary)]">
+            <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
               {localCount} local · {webCount} web
             </div>
           </div>
 
-          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4">
-            <div className="flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              <span>Qdrant Hybrid Chunks</span>
-              <Database className="h-3.5 w-3.5 text-teal-400" />
+          <div className="bg-[var(--bg-surface)] p-4">
+            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Qdrant Points
             </div>
-            <div className="mt-1.5 font-mono text-2xl font-semibold text-[var(--text-primary)] tabular-nums">
-              {(health?.qdrant?.points_count ?? documentsData?.total_chunks ?? 0).toLocaleString("en-US")}
+            <div className="mt-1.5 font-mono text-xl font-semibold text-[var(--text-primary)] tabular-nums">
+              {(
+                health?.qdrant?.points_count ??
+                documentsData?.total_chunks ??
+                0
+              ).toLocaleString("en-US")}
             </div>
-            <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-secondary)]">
-              {health?.qdrant?.collection || documentsData?.collection || "adaptiverag_docs"}
+            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
+              {health?.qdrant?.collection ||
+                documentsData?.collection ||
+                "adaptiverag_docs"}
             </div>
           </div>
 
-          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4">
-            <div className="flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              <span>Vector Engine</span>
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+          <div className="bg-[var(--bg-surface)] p-4">
+            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Vector Index
             </div>
             <div className="mt-1.5 font-mono text-sm font-semibold text-[var(--text-primary)]">
               Dense + BM25 RRF
             </div>
-            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-secondary)]">
-              {health?.dense_embedding_model || "multilingual-e5-small"}
+            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
+              {health?.dense_embedding_model ||
+                "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"}
             </div>
           </div>
 
-          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4">
-            <div className="flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              <span>Firecrawl Local</span>
-              <Flame
-                className={`h-3.5 w-3.5 ${
-                  fcStatus === "ok" ? "text-emerald-400" : "text-amber-400"
-                }`}
-              />
+          <div className="bg-[var(--bg-surface)] p-4">
+            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+              Firecrawl Local
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <span
@@ -318,40 +355,34 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     ? "bg-emerald-500"
                     : fcStatus === "unreachable"
                       ? "bg-amber-500"
-                      : "bg-slate-500"
+                      : "bg-zinc-500"
                 }`}
               />
               <span className="font-mono text-sm font-semibold uppercase text-[var(--text-primary)]">
                 {fcStatus}
               </span>
             </div>
-            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-secondary)]">
+            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
               {fcBaseUrl}
             </div>
           </div>
         </div>
 
-        {/* Two-column Ingestion Action Deck */}
+        {/* Two-Column Ingestion Panels */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Card 1: Drag & Drop File Upload + Local Corpus */}
-          <div className="flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/12 text-blue-500">
-                  <UploadCloud className="h-4 w-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                    Upload Documents & Local Corpus
-                  </h3>
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    Structure-aware chunking + Dense/BM25 upsert (.md, .txt, .pdf)
-                  </p>
-                </div>
-              </div>
+          {/* Panel 1: File Upload & Local Corpus */}
+          <div className="flex flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5">
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Local Files &amp; Corpus Directory
+              </h3>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                Structure-aware chunking with idempotent Qdrant point IDs (.md, .txt,
+                .pdf)
+              </p>
             </div>
 
-            {/* Drag-and-Drop Dropzone */}
+            {/* Minimal Dropzone */}
             <div
               onDragOver={(e) => {
                 e.preventDefault();
@@ -366,10 +397,10 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 }
               }}
               onClick={() => fileInputRef.current?.click()}
-              className={`mt-4 flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center transition cursor-pointer ${
+              className={`mt-4 flex flex-col items-center justify-center rounded-lg border border-dashed px-4 py-6 text-center transition cursor-pointer ${
                 dragActive
-                  ? "border-blue-500 bg-blue-500/10"
-                  : "border-[var(--border-strong)] bg-[var(--bg-elevated)]/40 hover:border-blue-500/50 hover:bg-[var(--bg-elevated)]/80"
+                  ? "border-[var(--text-primary)] bg-[var(--bg-elevated)]"
+                  : "border-[var(--border-strong)] bg-[var(--bg-canvas)]/50 hover:bg-[var(--bg-elevated)]/50"
               }`}
             >
               <input
@@ -385,38 +416,39 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   }
                 }}
               />
-              <UploadCloud className="h-7 w-7 text-blue-500/80" />
+              <UploadCloud className="h-5 w-5 text-[var(--text-muted)]" />
               <p className="mt-2 text-xs font-medium text-[var(--text-primary)]">
-                Drop Markdown, Text, or PDF files here — or click to browse
+                Drop Markdown, Text, or PDF files, or click to select
               </p>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                Up to 20 files · Max 15 MB per file · Deterministic idempotent chunk IDs
+              <p className="mt-0.5 font-mono text-[10.5px] text-[var(--text-muted)]">
+                max 20 files · 15 MB/file
               </p>
             </div>
 
-            {/* Queued files list */}
             {queuedFiles.length > 0 && (
-              <div className="mt-3 space-y-1.5">
+              <div className="mt-3 space-y-1">
                 {queuedFiles.map((file) => (
                   <div
                     key={file.name}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-1.5 text-xs"
+                    className="flex items-center justify-between gap-2 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-2.5 py-1.5 text-xs"
                   >
                     <div className="flex min-w-0 items-center gap-2">
-                      <FileText className="h-3.5 w-3.5 shrink-0 text-blue-400" />
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                       <span className="truncate font-medium text-[var(--text-primary)]">
                         {file.name}
                       </span>
-                      <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
+                      <span className="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">
                         {formatBytes(file.size)}
                       </span>
                     </div>
                     <button
                       type="button"
                       onClick={() =>
-                        setQueuedFiles((prev) => prev.filter((f) => f.name !== file.name))
+                        setQueuedFiles((prev) =>
+                          prev.filter((f) => f.name !== file.name)
+                        )
                       }
-                      className="rounded p-0.5 text-[var(--text-muted)] hover:text-rose-400 cursor-pointer"
+                      className="rounded p-0.5 text-[var(--text-muted)] hover:text-rose-500 cursor-pointer"
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -425,24 +457,25 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               </div>
             )}
 
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 pt-1">
-              <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={recreateCollection}
-                  onChange={(e) => setRecreateCollection(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded accent-blue-600"
-                />
-                <span>Recreate Qdrant collection before indexing</span>
-              </label>
+            <div className="mt-4 space-y-2 border-t border-[var(--border-subtle)] pt-3">
+              <InlineSwitch
+                label="Hierarchical Parent-Child chunking (256 → 1000 tok)"
+                checked={parentChildChunking}
+                onChange={setParentChildChunking}
+              />
+              <InlineSwitch
+                label="Recreate Qdrant collection before indexing"
+                checked={recreateCollection}
+                onChange={setRecreateCollection}
+              />
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
                 disabled={queuedFiles.length === 0 || uploading}
                 onClick={() => void handleUploadSubmit()}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:opacity-45 cursor-pointer"
+                className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md bg-[var(--cta-bg)] px-3 text-xs font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-35 cursor-pointer"
               >
                 {uploading ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -451,7 +484,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 )}
                 <span>
                   {uploading
-                    ? "Uploading & Indexing..."
+                    ? "Indexing..."
                     : `Upload & Index${queuedFiles.length > 0 ? ` (${queuedFiles.length})` : ""}`}
                 </span>
               </button>
@@ -460,12 +493,12 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 type="button"
                 disabled={indexingLocal}
                 onClick={() => void handleReindexLocalCorpus()}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-2 text-xs font-medium text-[var(--text-primary)] transition hover:border-blue-500/40 disabled:opacity-45 cursor-pointer"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] px-3 text-xs font-medium text-[var(--text-primary)] transition hover:bg-[var(--bg-hover)] disabled:opacity-45 cursor-pointer"
               >
                 {indexingLocal ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <FolderSync className="h-3.5 w-3.5 text-teal-400" />
+                  <FolderSync className="h-3.5 w-3.5 text-[var(--text-muted)]" />
                 )}
                 <span>Index data/raw</span>
               </button>
@@ -473,10 +506,10 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
 
             {uploadFeedback && (
               <div
-                className={`mt-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${
+                className={`mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
                   uploadFeedback.kind === "success"
-                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
                 }`}
               >
                 {uploadFeedback.kind === "success" ? (
@@ -489,34 +522,30 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             )}
           </div>
 
-          {/* Card 2: Firecrawl Local Live URL / Docs Site Indexing */}
+          {/* Panel 2: Firecrawl Local Web Ingestion */}
           <form
             onSubmit={(e) => void handleWebIngest(e)}
-            className="flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-5"
+            className="flex flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5"
           >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-500/12 text-purple-500">
-                  <Globe className="h-4 w-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                    Live Web URL & Docs Site Indexing
-                  </h3>
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    Powered by <code className="font-mono">firecrawl-local</code> · SSRF-protected
-                  </p>
-                </div>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                  Web URL &amp; Docs Crawl
+                </h3>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                  Powered by <code className="font-mono">firecrawl-local</code> · SSRF
+                  validated
+                </p>
               </div>
 
-              <div className="inline-flex rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-0.5 text-[11px]">
+              <div className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]">
                 <button
                   type="button"
                   onClick={() => setWebMode("scrape")}
-                  className={`rounded-md px-2.5 py-1 font-medium transition cursor-pointer ${
+                  className={`rounded px-2.5 py-1 font-medium transition cursor-pointer ${
                     webMode === "scrape"
-                      ? "bg-[var(--bg-panel)] text-[var(--text-primary)] shadow-xs"
-                      : "text-[var(--text-secondary)]"
+                      ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                   }`}
                 >
                   Scrape URL(s)
@@ -524,10 +553,10 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setWebMode("crawl")}
-                  className={`rounded-md px-2.5 py-1 font-medium transition cursor-pointer ${
+                  className={`rounded px-2.5 py-1 font-medium transition cursor-pointer ${
                     webMode === "crawl"
-                      ? "bg-[var(--bg-panel)] text-[var(--text-primary)] shadow-xs"
-                      : "text-[var(--text-secondary)]"
+                      ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                   }`}
                 >
                   Crawl Docs
@@ -536,9 +565,9 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             </div>
 
             {fcStatus !== "ok" && (
-              <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">
-                Firecrawl Local is currently <strong>{fcStatus}</strong> at{" "}
-                <code className="font-mono">{fcBaseUrl}</code>. Start it with{" "}
+              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">
+                Firecrawl Local is <strong>{fcStatus}</strong> at{" "}
+                <code className="font-mono">{fcBaseUrl}</code>. Start with{" "}
                 <code className="font-mono">FIRECRAWL_CLOUD=off firecrawl-local serve</code>.
               </div>
             )}
@@ -556,7 +585,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     placeholder={
                       "https://docs.qdrant.tech/concepts/hybrid-queries/\nhttps://docs.firecrawl.dev/quickstarts/firecrawl-local"
                     }
-                    className="mt-1.5 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-purple-500 focus:outline-none"
+                    className="mt-1.5 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
                   />
                 </div>
               ) : (
@@ -570,14 +599,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                       value={crawlUrl}
                       onChange={(e) => setCrawlUrl(e.target.value)}
                       placeholder="https://docs.qdrant.tech/concepts/"
-                      className="mt-1.5 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-purple-500 focus:outline-none"
+                      className="mt-1.5 h-8 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 px-3 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
                     />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <div className="flex items-center justify-between text-[11px]">
+                      <div className="mb-1 flex items-center justify-between text-[11px]">
                         <span className="text-[var(--text-secondary)]">Max Pages</span>
-                        <span className="font-mono font-semibold text-[var(--text-primary)]">
+                        <span className="font-mono font-medium text-[var(--text-primary)]">
                           {crawlLimit}
                         </span>
                       </div>
@@ -587,13 +616,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         max={25}
                         value={crawlLimit}
                         onChange={(e) => setCrawlLimit(Number(e.target.value))}
-                        className="mt-1 w-full accent-purple-500"
+                        className="ar-range w-full"
                       />
                     </div>
                     <div>
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="text-[var(--text-secondary)]">Max Link Depth</span>
-                        <span className="font-mono font-semibold text-[var(--text-primary)]">
+                      <div className="mb-1 flex items-center justify-between text-[11px]">
+                        <span className="text-[var(--text-secondary)]">Link Depth</span>
+                        <span className="font-mono font-medium text-[var(--text-primary)]">
                           {crawlDepth}
                         </span>
                       </div>
@@ -603,51 +632,49 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         max={4}
                         value={crawlDepth}
                         onChange={(e) => setCrawlDepth(Number(e.target.value))}
-                        className="mt-1 w-full accent-purple-500"
+                        className="ar-range w-full"
                       />
                     </div>
                   </div>
                 </div>
               )}
 
-              <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
-                <input
-                  type="checkbox"
+              <div className="border-t border-[var(--border-subtle)] pt-2.5">
+                <InlineSwitch
+                  label="Extract main article content only (strip navbars & footers)"
                   checked={onlyMainContent}
-                  onChange={(e) => setOnlyMainContent(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded accent-purple-600"
+                  onChange={setOnlyMainContent}
                 />
-                <span>Extract main article content only (strip navbars & footers)</span>
-              </label>
+              </div>
             </div>
 
             <button
               type="submit"
               disabled={webLoading}
-              className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-purple-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-purple-500 disabled:opacity-45 cursor-pointer"
+              className="mt-4 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-[var(--cta-bg)] px-3 text-xs font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-40 cursor-pointer"
             >
               {webLoading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Flame className="h-3.5 w-3.5" />
+                <Globe className="h-3.5 w-3.5" />
               )}
               <span>
                 {webLoading
                   ? webMode === "crawl"
                     ? `Crawling up to ${crawlLimit} pages...`
-                    : "Scraping & Indexing into Qdrant..."
+                    : "Scraping & Indexing..."
                   : webMode === "crawl"
                     ? "Crawl Docs Site & Index"
-                    : "Scrape URL(s) & Index into Qdrant"}
+                    : "Scrape URL(s) & Index"}
               </span>
             </button>
 
             {webFeedback && (
               <div
-                className={`mt-3 rounded-xl border px-3 py-2 text-xs space-y-1.5 ${
+                className={`mt-3 space-y-1.5 rounded-md border px-3 py-2 text-xs ${
                   webFeedback.kind === "success"
-                    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
                 }`}
               >
                 <div className="flex items-start gap-2">
@@ -680,30 +707,30 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         </div>
 
         {/* Indexed Documents Table */}
-        <div className="overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-panel)]">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-3.5">
+        <div className="overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                Indexed Knowledge Base Sources
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+                Indexed Sources
               </h3>
-              <span className="rounded-full bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)]">
+              <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[10.5px] text-[var(--text-muted)] tabular-nums">
                 {filteredDocs.length}
               </span>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
-                <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by title, doc_id, or URL..."
-                  className="w-56 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] py-1.5 pr-3 pl-8 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-blue-500 focus:outline-none"
+                  placeholder="Filter sources..."
+                  className="h-7.5 w-52 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 pr-3 pl-7 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
                 />
               </div>
 
-              <div className="inline-flex rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-0.5 text-[11px]">
+              <div className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]">
                 {(
                   [
                     ["all", "All"],
@@ -715,10 +742,10 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     key={val}
                     type="button"
                     onClick={() => setOriginFilter(val)}
-                    className={`rounded-md px-2.5 py-1 font-medium transition cursor-pointer ${
+                    className={`rounded px-2.5 py-0.5 font-medium transition cursor-pointer ${
                       originFilter === val
-                        ? "bg-[var(--bg-panel)] text-[var(--text-primary)] shadow-xs"
-                        : "text-[var(--text-secondary)]"
+                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                     }`}
                   >
                     {lbl}
@@ -729,14 +756,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           </div>
 
           {(documentsError || deleteError) && (
-            <div className="border-b border-rose-500/30 bg-rose-500/10 px-5 py-2.5 text-xs text-rose-500">
+            <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-500">
               {deleteError || documentsError}
             </div>
           )}
 
           {documentsLoading && docs.length === 0 ? (
             <div className="flex items-center justify-center gap-2 py-12 text-xs text-[var(--text-muted)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
               <span>Loading indexed documents from Qdrant...</span>
             </div>
           ) : filteredDocs.length === 0 ? (
@@ -748,14 +775,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]/50 text-[10.5px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <thead className="border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]/45 font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
                   <tr>
-                    <th className="px-5 py-2.5">Document / Source</th>
-                    <th className="px-3 py-2.5">Origin</th>
+                    <th className="px-4 py-2.5">Source</th>
+                    <th className="px-3 py-2.5">Type</th>
                     <th className="px-3 py-2.5">Lang</th>
                     <th className="px-3 py-2.5 text-right">Chunks</th>
                     <th className="px-3 py-2.5 text-right">Tokens</th>
-                    <th className="px-5 py-2.5 text-right">Action</th>
+                    <th className="px-4 py-2.5 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)]">
@@ -766,70 +793,69 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                     return (
                       <tr
                         key={doc.doc_id}
-                        className="transition hover:bg-[var(--bg-elevated)]/40"
+                        className="transition hover:bg-[var(--bg-elevated)]/35"
                       >
-                        <td className="max-w-md px-5 py-3">
+                        <td className="max-w-md px-4 py-2.5">
                           <div className="truncate font-medium text-[var(--text-primary)]">
                             {doc.title}
                           </div>
-                          <div className="mt-0.5 flex items-center gap-2 font-mono text-[10.5px] text-[var(--text-muted)]">
+                          <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-[var(--text-muted)]">
                             <span className="truncate">{doc.doc_id}</span>
+                            {doc.chunk_strategy === "parent_child" && (
+                              <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1 py-0.2 text-[9.5px] font-medium text-[var(--text-secondary)]">
+                                Small→Big
+                              </span>
+                            )}
                             {doc.source_url && (
                               <a
                                 href={doc.source_url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="inline-flex shrink-0 items-center gap-0.5 text-blue-500 hover:underline dark:text-blue-400"
+                                className="inline-flex shrink-0 items-center gap-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:underline"
                               >
                                 <ExternalLink className="h-2.5 w-2.5" />
-                                <span>Open URL</span>
+                                <span>URL</span>
                               </a>
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-3">
-                          <span
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold ${
-                              isWeb
-                                ? "border-purple-500/35 bg-purple-500/10 text-purple-600 dark:text-purple-300"
-                                : "border-teal-500/35 bg-teal-500/10 text-teal-600 dark:text-teal-300"
-                            }`}
-                          >
+                        <td className="px-3 py-2.5">
+                          <span className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
                             {isWeb ? (
-                              <Globe className="h-2.5 w-2.5" />
+                              <Globe className="h-2.5 w-2.5 text-amber-500" />
                             ) : (
-                              <FileText className="h-2.5 w-2.5" />
+                              <FileText className="h-2.5 w-2.5 text-[var(--text-muted)]" />
                             )}
                             {isWeb ? "WEB" : doc.doc_type.toUpperCase()}
                           </span>
                         </td>
-                        <td className="px-3 py-3">
-                          <span className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10.5px] uppercase text-[var(--text-secondary)]">
+                        <td className="px-3 py-2.5">
+                          <span className="font-mono text-[10.5px] uppercase text-[var(--text-secondary)]">
                             {doc.language}
                           </span>
                         </td>
-                        <td className="px-3 py-3 text-right font-mono font-semibold text-[var(--text-primary)] tabular-nums">
+                        <td className="px-3 py-2.5 text-right font-mono font-medium text-[var(--text-primary)] tabular-nums">
                           {doc.chunk_count}
                         </td>
-                        <td className="px-3 py-3 text-right font-mono text-[var(--text-secondary)] tabular-nums">
+                        <td className="px-3 py-2.5 text-right font-mono text-[var(--text-secondary)] tabular-nums">
                           {doc.total_tokens.toLocaleString("en-US")}
                         </td>
-                        <td className="px-5 py-3 text-right">
+                        <td className="px-4 py-2.5 text-right">
                           {isConfirming ? (
                             <div className="inline-flex items-center gap-1.5">
                               <button
                                 type="button"
                                 disabled={isDeleting}
                                 onClick={() => void handleDeleteDoc(doc)}
-                                className="rounded-md bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                                className="rounded bg-rose-600 px-2 py-0.5 text-[10.5px] font-medium text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
                               >
-                                {isDeleting ? "Deleting..." : "Confirm"}
+                                {isDeleting ? "..." : "Confirm"}
                               </button>
                               <button
                                 type="button"
                                 disabled={isDeleting}
                                 onClick={() => setConfirmDeleteId(null)}
-                                className="rounded-md border border-[var(--border-subtle)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+                                className="rounded border border-[var(--border-subtle)] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
                               >
                                 Cancel
                               </button>
@@ -839,7 +865,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                               type="button"
                               onClick={() => setConfirmDeleteId(doc.doc_id)}
                               title={`Delete ${doc.doc_id} from Qdrant`}
-                              className="inline-flex items-center gap-1 rounded-lg p-1.5 text-[var(--text-muted)] transition hover:bg-rose-500/10 hover:text-rose-500 cursor-pointer"
+                              className="inline-flex items-center rounded p-1 text-[var(--text-muted)] transition hover:bg-rose-500/10 hover:text-rose-500 cursor-pointer"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>

@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     firecrawl_default_crawl_limit: int = Field(default=10, ge=1, le=100)
     firecrawl_allow_private_urls: bool = False
 
-    # --- Observability & Prompt Management (Langfuse v5 OTEL SDK: Cloud or Self-Hosted v3) ---
+    # --- Observability & Prompt Management (Langfuse v5 OTEL SDK: Cloud or Self-Hosted v4) ---
     langfuse_enabled: bool = False
     langfuse_host: str = "https://cloud.langfuse.com"
     langfuse_public_key: str = ""
@@ -149,8 +149,17 @@ class Settings(BaseSettings):
     guardrails_pii_mode: Literal["off", "redact", "block"] = "redact"
 
     # --- Paths & Logging ---
+    allowed_corpus_root: Path = Path("data")
     strategies_config_path: Path = Path("configs/strategies.yaml")
     log_level: str = "INFO"
+
+    @field_validator("allowed_corpus_root", mode="before")
+    @classmethod
+    def _normalize_allowed_corpus_root(cls, value: str | Path | None) -> Path:
+        if value is None:
+            return Path("data")
+        cleaned = str(value).strip()
+        return Path(cleaned) if cleaned else Path("data")
 
     @field_validator("api_auth_key", mode="before")
     @classmethod

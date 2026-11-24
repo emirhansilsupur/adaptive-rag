@@ -118,6 +118,9 @@ def build_record_evaluations(record: QueryEvalRecord) -> list[Any]:
             ]
         )
 
+    if record.fact_coverage is not None:
+        evals.append(_make_evaluation(name="fact_coverage", value=round(record.fact_coverage, 6)))
+
     if record.routing_correct is not None:
         evals.append(
             _make_evaluation(
@@ -212,6 +215,7 @@ def build_summary_evaluations(summary: ConfigBenchmarkSummary) -> list[Any]:
         ("avg_precision_at_k", summary.mean_precision),
         ("avg_ndcg_at_k", summary.mean_ndcg),
         ("hit_rate", summary.hit_rate),
+        ("avg_fact_coverage", summary.mean_fact_coverage),
         ("routing_accuracy", summary.routing_accuracy),
         ("avg_citation_precision", summary.mean_citation_precision),
         ("avg_claim_support_rate", summary.mean_claim_support_rate),

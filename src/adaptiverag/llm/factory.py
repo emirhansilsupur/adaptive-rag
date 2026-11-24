@@ -89,6 +89,7 @@ def create_chat_model(settings: Settings, tier: ModelTier = ModelTier.FAST) -> B
                 model=model_name,
                 google_api_key=api_key,
                 temperature=settings.llm_temperature,
+                timeout=settings.llm_request_timeout,
             ),
         )
 

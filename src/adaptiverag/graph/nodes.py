@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -181,6 +182,19 @@ async def _rerank_against_active_queries(
     return ranked
 
 
+async def _resolve_node_prompt[R](
+    runtime: GraphRuntime,
+    resolver: Callable[..., R],
+    *args: Any,
+    **kwargs: Any,
+) -> R:
+    """Offload prompt resolution to a worker thread only when remote Langfuse fetching is active."""
+    pm = runtime.prompt_manager
+    if pm is not None and pm.active:
+        return await asyncio.to_thread(resolver, *args, prompt_manager=pm, **kwargs)
+    return resolver(*args, prompt_manager=pm, **kwargs)
+
+
 def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
     """Create all bound async LangGraph node callables for the AdaptiveRAG state machine."""
 
@@ -228,10 +242,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "trace": [event],
             }
 
-        messages, resolved_prompt = resolve_router_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_router_prompt,
             query,
             chat_history,
-            prompt_manager=runtime.prompt_manager,
         )
         try:
             res = await invoke_structured(
@@ -320,11 +335,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         chat_history = state.get("chat_history") or []
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages, resolved_prompt = resolve_conversational_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_conversational_prompt,
             query=state["query"],
             language=plan.language,
             chat_history=chat_history,
-            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.fast_model,
@@ -365,11 +381,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         sub_queries = [plan.standalone_query]
         rationale = ""
 
-        messages, resolved_prompt = resolve_decompose_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_decompose_prompt,
             plan.standalone_query,
             language=plan.language,
             max_sub_queries=max_subs,
-            prompt_manager=runtime.prompt_manager,
         )
         try:
             res = await invoke_structured(
@@ -638,13 +655,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         rewritten = list(prior_queries)
         diagnosis = ""
 
-        messages, resolved_prompt = resolve_corrective_rewrite_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_corrective_rewrite_prompt,
             original_query=plan.original_query,
             standalone_query=plan.standalone_query,
             prior_queries=prior_queries,
             confidence=confidence,
             language=plan.language,
-            prompt_manager=runtime.prompt_manager,
         )
         try:
             res = await invoke_structured(
@@ -735,6 +753,20 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             budgeted.append(chunk)
             running_tokens += tokens
 
+        prev_decision = state.get("dynamic_k_decision")
+        top_score = max((_effective_chunk_score(c) for c in budgeted), default=0.0)
+        cutoff_score = _effective_chunk_score(budgeted[-1]) if budgeted else 0.0
+        prior_candidates = prev_decision.candidate_count if prev_decision is not None else 0
+        fallback_decision = DynamicKDecision(
+            candidate_count=max(prior_candidates + len(web_chunks), len(budgeted)),
+            selected_count=len(budgeted),
+            cutoff_reason="web_fallback" if budgeted else "web_fallback_empty",
+            top_score=round(top_score, 6),
+            cutoff_score=round(cutoff_score, 6),
+            total_context_tokens=running_tokens,
+            dropped_chunk_ids=list(prev_decision.dropped_chunk_ids) if prev_decision else [],
+        )
+
         event = NodeTraceEvent(
             node="web_fallback_search",
             latency_ms=_elapsed_ms(started),
@@ -751,6 +783,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         )
         return {
             "selected_chunks": budgeted,
+            "dynamic_k_decision": fallback_decision,
             "fallback_used": True,
             "trace": [event],
         }
@@ -762,14 +795,15 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         chat_history = state.get("chat_history") or []
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages, resolved_prompt = resolve_generation_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_generation_prompt,
             query=state["query"],
             standalone_query=plan.standalone_query,
             language=plan.language,
             chunks=chunks,
             chat_history=chat_history,
             query_type=plan.query_type,
-            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.generation_model,
@@ -878,14 +912,15 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         attempt = state.get("regeneration_attempts", 0) + 1
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages, resolved_prompt = resolve_strict_regeneration_prompt(
+        messages, resolved_prompt = await _resolve_node_prompt(
+            runtime,
+            resolve_strict_regeneration_prompt,
             query=state["query"],
             standalone_query=plan.standalone_query,
             language=plan.language,
             chunks=chunks,
             previous_draft=previous_draft,
             report=report,
-            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.generation_model,

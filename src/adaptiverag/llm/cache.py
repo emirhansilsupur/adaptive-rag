@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -34,6 +35,8 @@ class SQLiteLLMCache:
 
     def _init_schema(self) -> None:
         with self._lock, self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS llm_cache (
@@ -114,3 +117,28 @@ class SQLiteLLMCache:
                 ),
             )
             conn.commit()
+
+    async def aget(self, cache_key: str) -> CachedResponse | None:
+        """Non-blocking async cache lookup offloading SQLite disk I/O to a worker thread."""
+        return await asyncio.to_thread(self.get, cache_key)
+
+    async def aset(
+        self,
+        *,
+        cache_key: str,
+        model_name: str,
+        schema_name: str,
+        response_text: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
+        """Non-blocking async cache write offloading SQLite disk I/O to a worker thread."""
+        await asyncio.to_thread(
+            self.set,
+            cache_key=cache_key,
+            model_name=model_name,
+            schema_name=schema_name,
+            response_text=response_text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )

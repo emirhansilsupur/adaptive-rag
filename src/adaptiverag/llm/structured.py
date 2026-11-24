@@ -191,7 +191,7 @@ async def invoke_text(
             schema_name="text",
             messages=_serialize_messages(messages),
         )
-        cached = cache.get(cache_key)
+        cached = await cache.aget(cache_key)
         if cached is not None:
             usage = TokenUsage(cache_hits=1)
             if cost_tracker is not None:
@@ -215,7 +215,7 @@ async def invoke_text(
         cost_tracker.record(usage)
 
     if cache is not None and cache_key is not None:
-        cache.set(
+        await cache.aset(
             cache_key=cache_key,
             model_name=model_name,
             schema_name="text",
@@ -264,7 +264,7 @@ async def invoke_structured[T: BaseModel](
             schema_name=schema.__name__,
             messages=_serialize_messages(enriched_messages),
         )
-        cached = cache.get(cache_key)
+        cached = await cache.aget(cache_key)
         if cached is not None:
             parsed = schema.model_validate_json(extract_json_payload(cached.response_text))
             usage = TokenUsage(cache_hits=1)
@@ -305,7 +305,7 @@ async def invoke_structured[T: BaseModel](
             payload = extract_json_payload(raw_text)
             parsed = schema.model_validate_json(payload)
             if cache is not None and cache_key is not None:
-                cache.set(
+                await cache.aset(
                     cache_key=cache_key,
                     model_name=model_name,
                     schema_name=schema.__name__,

@@ -23,6 +23,7 @@ import structlog
 
 from adaptiverag.config import Settings
 from adaptiverag.ingestion.loader import LoadedDocument, detect_document_language
+from adaptiverag.verification.guardrails import sanitize_untrusted_passage
 
 logger = structlog.get_logger(__name__)
 
@@ -130,10 +131,14 @@ def validate_public_url(
         elif resolve_dns:
             try:
                 addr_infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-            except OSError:
-                # Graceful pass-through when offline / DNS unavailable locally;
-                # Firecrawl itself will report host resolution failure if unreachable.
-                addr_infos = []
+            except OSError as exc:
+                raise UnsafeURLError(
+                    f"Could not resolve hostname '{hostname}' for SSRF verification."
+                ) from exc
+            if not addr_infos:
+                raise UnsafeURLError(
+                    f"Hostname '{hostname}' returned no DNS records (SSRF protection)."
+                )
             for info in addr_infos:
                 raw_ip = str(info[4][0]).split("%", 1)[0]
                 try:
@@ -149,6 +154,23 @@ def validate_public_url(
     # Strip fragment so identical pages map to one canonical URL & doc_id.
     normalized = urlunsplit((scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
     return normalized
+
+
+async def avalidate_public_url(
+    url: str,
+    *,
+    allow_private: bool = False,
+    resolve_dns: bool = False,
+) -> str:
+    """Async wrapper running blocking DNS resolution on a worker thread when enabled."""
+    if resolve_dns and not allow_private:
+        return await asyncio.to_thread(
+            validate_public_url,
+            url,
+            allow_private=allow_private,
+            resolve_dns=True,
+        )
+    return validate_public_url(url, allow_private=allow_private, resolve_dns=False)
 
 
 def make_web_doc_id(url: str) -> str:
@@ -221,9 +243,10 @@ def _page_to_loaded_document(
     fallback_url: str,
     crawled_at: str,
     crawl_root_url: str | None = None,
+    allow_private_urls: bool = False,
 ) -> LoadedDocument | None:
     """Convert a single Firecrawl v2 page payload into a LoadedDocument."""
-    markdown = str(page.get("markdown") or "").strip()
+    markdown = sanitize_untrusted_passage(str(page.get("markdown") or "")).strip()
     if not markdown:
         return None
 
@@ -237,6 +260,13 @@ def _page_to_loaded_document(
     ).strip()
     if not source_url:
         source_url = fallback_url
+
+    # Post-redirect SSRF check: reject pages whose final URL redirected to a private/internal host.
+    source_url = validate_public_url(
+        source_url,
+        allow_private=allow_private_urls,
+        resolve_dns=False,
+    )
 
     raw_title = meta.get("title")
     title = (
@@ -429,7 +459,7 @@ class FirecrawlClient:
         only_main_content: bool = True,
     ) -> LoadedDocument:
         """Scrape a single public URL into clean Markdown via POST /v2/scrape."""
-        safe_url = validate_public_url(
+        safe_url = await avalidate_public_url(
             url,
             allow_private=self._allow_private_urls,
             resolve_dns=self._resolve_dns,
@@ -453,6 +483,7 @@ class FirecrawlClient:
             raw_data,
             fallback_url=safe_url,
             crawled_at=crawled_at,
+            allow_private_urls=self._allow_private_urls,
         )
         if doc is None:
             raise FirecrawlError(f"Firecrawl returned empty markdown content for {safe_url}.")
@@ -479,9 +510,9 @@ class FirecrawlClient:
             return []
 
         # Fail fast on any unsafe URL before dispatching any HTTP requests.
-        normalized_unique: list[str] = list(
-            dict.fromkeys(
-                validate_public_url(
+        validated_urls = await asyncio.gather(
+            *(
+                avalidate_public_url(
                     u,
                     allow_private=self._allow_private_urls,
                     resolve_dns=self._resolve_dns,
@@ -489,6 +520,7 @@ class FirecrawlClient:
                 for u in urls
             )
         )
+        normalized_unique: list[str] = list(dict.fromkeys(validated_urls))
 
         sem = asyncio.Semaphore(max(1, concurrency))
 
@@ -536,7 +568,7 @@ class FirecrawlClient:
         max_wait_seconds: float | None = None,
     ) -> list[LoadedDocument]:
         """Crawl a documentation/website root URL via POST /v2/crawl and poll until complete."""
-        safe_url = validate_public_url(
+        safe_url = await avalidate_public_url(
             url,
             allow_private=self._allow_private_urls,
             resolve_dns=self._resolve_dns,
@@ -605,12 +637,17 @@ class FirecrawlClient:
         docs: list[LoadedDocument] = []
         seen_doc_ids: set[str] = set()
         for page in raw_pages:
-            doc = _page_to_loaded_document(
-                page,
-                fallback_url=safe_url,
-                crawled_at=crawled_at,
-                crawl_root_url=safe_url,
-            )
+            try:
+                doc = _page_to_loaded_document(
+                    page,
+                    fallback_url=safe_url,
+                    crawled_at=crawled_at,
+                    crawl_root_url=safe_url,
+                    allow_private_urls=self._allow_private_urls,
+                )
+            except UnsafeURLError as exc:
+                logger.warning("firecrawl_crawl_skipped_unsafe_redirect", error=str(exc))
+                continue
             if doc is None or doc.doc_id in seen_doc_ids:
                 continue
             seen_doc_ids.add(doc.doc_id)

@@ -649,6 +649,10 @@ async def test_graph_web_fallback_for_fresh_web_query() -> None:
         )
         assert result.citation_report is not None and result.citation_report.passed is True
         assert "W1" in result.citation_report.valid_citation_ids
+        assert result.dynamic_k_decision is not None
+        assert result.dynamic_k_decision.cutoff_reason == "web_fallback"
+        assert result.dynamic_k_decision.selected_count == len(result.evidence_chunks)
+        assert result.dynamic_k_decision.total_context_tokens >= 20
         assert "web_fallback_search" in [t.node for t in result.trace]
     finally:
         await store.close()
@@ -968,6 +972,10 @@ async def test_graph_web_fallback_filters_irrelevant_snippets_and_abstains() -> 
         assert result.fallback_used is True
         assert result.abstained is True
         assert result.evidence_chunks == []
+        assert result.dynamic_k_decision is not None
+        assert result.dynamic_k_decision.cutoff_reason == "web_fallback_empty"
+        assert result.dynamic_k_decision.selected_count == 0
+        assert result.dynamic_k_decision.total_context_tokens == 0
         assert len(fallback.calls) == 1
         assert gen_model.call_count == 0
         assert "abstain_response" in [t.node for t in result.trace]

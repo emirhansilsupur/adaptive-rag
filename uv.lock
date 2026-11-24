@@ -80,7 +80,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=0.3.40" },
     { name = "langchain-google-genai", marker = "extra == 'providers'", specifier = ">=2.0.0" },
     { name = "langchain-openai", specifier = ">=0.3.7" },
-    { name = "langfuse", specifier = ">=2.59.0" },
+    { name = "langfuse", specifier = ">=5.0.0" },
     { name = "langgraph", specifier = ">=0.3.0" },
     { name = "numpy", marker = "extra == 'eval'", specifier = ">=2.0.0" },
     { name = "pandas", marker = "extra == 'ui'", specifier = ">=2.2.0" },

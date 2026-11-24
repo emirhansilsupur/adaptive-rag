@@ -15,6 +15,7 @@ import structlog
 from adaptiverag.config import Settings
 from adaptiverag.ingestion.chunker import count_tokens
 from adaptiverag.schemas.retrieval import EvidenceChunk, SourceType
+from adaptiverag.verification.guardrails import sanitize_untrusted_passage
 
 logger = structlog.get_logger(__name__)
 
@@ -288,7 +289,7 @@ class WebFallbackRetriever:
         chunks: list[EvidenceChunk] = []
 
         for hit in results:
-            content = hit.content.strip()
+            content = sanitize_untrusted_passage(hit.content).strip()
             if not content:
                 continue
 

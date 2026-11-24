@@ -25,6 +25,19 @@ PiiEntityType = Literal["api_key", "email", "credit_card", "tr_national_id", "ph
 # Strip invisible formatting / bidi control characters that attackers use to evade regex rules.
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
 _WHITESPACE_RE = re.compile(r"\s+")
+_ROLE_SPOOF_RE = re.compile(
+    r"(?:<\|im_start\|>\s*(?:system|developer|assistant)|<\|im_end\|>|<\|system\|>"
+    r"|\[SYSTEM\s+OVERRIDE\]|###\s*SYSTEM\s+INSTRUCTIONS?\s*:)",
+    re.IGNORECASE,
+)
+
+
+class GuardrailBlockedError(ValueError):
+    """Raised when deterministic input safety guardrails reject a query or chat history."""
+
+    def __init__(self, decision: GuardrailDecision) -> None:
+        self.decision = decision
+        super().__init__(decision.blocked_reason or "Request blocked by input safety guardrails.")
 
 
 @dataclass(frozen=True)
@@ -211,6 +224,18 @@ def _is_valid_tckn(digits: str) -> bool:
         return False
     check_11 = sum(nums[:10]) % 10
     return check_11 == nums[10]
+
+
+def sanitize_untrusted_passage(text: str) -> str:
+    """Strip zero-width obfuscation and neutralize chat role-delimiter spoofing in external text.
+
+    Applied to untrusted web search snippets and scraped web pages before indexing or
+    prompt injection so retrieved content cannot forge system/developer message boundaries.
+    """
+    if not text:
+        return ""
+    stripped = _ZERO_WIDTH_RE.sub("", text)
+    return _ROLE_SPOOF_RE.sub("[filtered-delimiter]", stripped)
 
 
 def detect_prompt_injection(text: str) -> list[str]:

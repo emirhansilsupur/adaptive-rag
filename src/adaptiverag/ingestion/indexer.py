@@ -50,7 +50,7 @@ async def index_documents(
     """Structure-chunk, embed (Dense + BM25), and idempotently upsert LoadedDocuments into Qdrant."""
     started = started_at if started_at is not None else time.perf_counter()
     doc_list = list(docs)
-    chunks = chunk_documents(doc_list, config=chunk_config)
+    chunks = await asyncio.to_thread(chunk_documents, doc_list, config=chunk_config)
 
     created = await store.ensure_collection(recreate=recreate)
     upserted = await store.upsert_chunks(
@@ -95,7 +95,7 @@ async def index_corpus(
 ) -> IndexingReport:
     """Load, structure-chunk, embed (Dense + BM25), and upsert a local corpus into Qdrant."""
     started = time.perf_counter()
-    docs = load_directory(data_dir)
+    docs = await asyncio.to_thread(load_directory, data_dir)
     return await index_documents(
         docs,
         store,

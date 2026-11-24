@@ -277,6 +277,10 @@ export interface IngestRequest {
   recreate_collection?: boolean;
   max_tokens?: number;
   overlap_tokens?: number;
+  parent_child?: boolean | null;
+  parent_max_tokens?: number;
+  child_max_tokens?: number;
+  child_overlap_tokens?: number;
   batch_size?: number;
 }
 
@@ -290,6 +294,8 @@ export interface IngestResponse {
   collection_created: boolean;
   elapsed_ms: number;
   source_urls: string[];
+  parent_child_enabled?: boolean;
+  unique_parents_created?: number;
 }
 
 export interface IndexedDocumentInfo {
@@ -298,6 +304,7 @@ export interface IndexedDocumentInfo {
   source_origin: "local" | "web";
   doc_type: string;
   language: string;
+  chunk_strategy?: "flat" | "parent_child";
   chunk_count: number;
   total_tokens: number;
   source_url: string | null;

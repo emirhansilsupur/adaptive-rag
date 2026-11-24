@@ -60,7 +60,9 @@ _ABSTENTION_MARKERS = (
     "doğrulayamıyorum",
 )
 
-_ENTAILMENT_EXCERPT_LIMIT = 1400
+# Matches _CONTEXT_CHUNK_CHAR_LIMIT (6000) so Tier-2 entailment sees the full 1000-token Parent
+# passage and never flags grounded facts from later H3/H4 subsections as UNSUPPORTED.
+_ENTAILMENT_EXCERPT_LIMIT = 6000
 
 _TIER2_SYSTEM_PROMPT = DEFAULT_PROMPTS[PROMPT_CITATION_ENTAILMENT].template
 
@@ -248,7 +250,7 @@ async def validate_citations(
         return failed, TokenUsage()
 
     resolved_prompt = (
-        prompt_manager.resolve(PROMPT_CITATION_ENTAILMENT)
+        await prompt_manager.aresolve(PROMPT_CITATION_ENTAILMENT)
         if prompt_manager is not None
         else ResolvedPrompt(
             name=PROMPT_CITATION_ENTAILMENT,

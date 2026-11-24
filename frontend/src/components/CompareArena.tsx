@@ -2,23 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeftRight,
+  ArrowRight,
   ArrowUp,
   Check,
   CheckCircle2,
-  Columns2,
   ExternalLink,
   FileText,
   Globe,
-  Microscope,
+  PanelRightOpen,
   Plus,
   ShieldAlert,
-  Sparkles,
   Square,
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  TrendingDown,
-  TrendingUp,
 } from "lucide-react";
 import {
   ARENA_PRESET_OPTIONS,
@@ -69,7 +66,7 @@ interface CompareArenaProps {
   ) => Promise<void>;
 }
 
-function DeltaTile({
+function DeltaLedgerCell({
   label,
   value,
   deltaBadge,
@@ -78,28 +75,28 @@ function DeltaTile({
   label: string;
   value: string;
   deltaBadge?: string;
-  tone?: "emerald" | "amber" | "rose" | "blue" | "neutral";
+  tone?: "emerald" | "amber" | "rose" | "sky" | "neutral";
 }) {
   const badgeTone =
     tone === "emerald"
-      ? "border-emerald-500/35 bg-emerald-500/12 text-emerald-600 dark:text-emerald-300"
+      ? "text-emerald-600 dark:text-emerald-400"
       : tone === "amber"
-        ? "border-amber-500/35 bg-amber-500/12 text-amber-600 dark:text-amber-300"
+        ? "text-amber-600 dark:text-amber-400"
         : tone === "rose"
-          ? "border-rose-500/35 bg-rose-500/12 text-rose-600 dark:text-rose-300"
-          : tone === "blue"
-            ? "border-blue-500/35 bg-blue-500/12 text-blue-600 dark:text-blue-300"
-            : "border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
+          ? "text-rose-600 dark:text-rose-400"
+          : tone === "sky"
+            ? "text-sky-600 dark:text-sky-400"
+            : "text-[var(--text-muted)]";
 
   return (
-    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-2.5">
+    <div className="bg-[var(--bg-surface)] px-3 py-2.5">
       <div className="flex items-center justify-between gap-1.5">
-        <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+        <span className="truncate font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
           {label}
         </span>
         {deltaBadge && (
           <span
-            className={`shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums ${badgeTone}`}
+            className={`shrink-0 whitespace-nowrap font-mono text-[10px] font-semibold tabular-nums ${badgeTone}`}
           >
             {deltaBadge}
           </span>
@@ -168,49 +165,43 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
     <section
       data-compare-side={sideKey}
       onClick={() => result && onInspect()}
-      className={`flex min-w-0 flex-col rounded-2xl border p-4 transition-colors ${
+      className={`flex min-w-0 flex-col rounded-lg border p-4 transition-colors ${
         isInspected && result
-          ? isBaseline
-            ? "border-amber-500/45 bg-[var(--bg-panel)] shadow-xs"
-            : "border-blue-500/50 bg-[var(--bg-panel)] shadow-xs"
-          : "border-[var(--border-subtle)] bg-[var(--bg-panel)]/90 hover:border-[var(--border-strong)]"
+          ? "border-[var(--border-strong)] bg-[var(--bg-surface)]"
+          : "border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 hover:border-[var(--border-strong)]"
       }`}
     >
       {/* Column Header */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-bold ${
+            className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border font-mono text-[10px] font-semibold ${
               isBaseline
-                ? "bg-amber-500/15 text-amber-600 dark:text-amber-300"
-                : "bg-blue-500/15 text-blue-600 dark:text-blue-300"
+                ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"
+                : "border-[var(--border-strong)] bg-[var(--cta-bg)] text-[var(--cta-fg)]"
             }`}
           >
             {isBaseline ? "A" : "B"}
           </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate text-xs font-semibold text-[var(--text-primary)]">
-                {side.presetLabel}
-              </span>
-              <span className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[9.5px] text-[var(--text-muted)]">
-                {isBaseline ? "Baseline" : "Challenger"}
-              </span>
-            </div>
-          </div>
+          <span className="truncate text-xs font-semibold text-[var(--text-primary)]">
+            {side.presetLabel}
+          </span>
+          <span className="font-mono text-[10px] text-[var(--text-muted)]">
+            {isBaseline ? "baseline" : "challenger"}
+          </span>
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
           {side.status === "running" && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10.5px] font-medium text-blue-600 dark:text-blue-300">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-              Running
+            <span className="inline-flex items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
+              running
             </span>
           )}
           {result && (
             <>
-              <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)] tabular-nums">
-                k={chunks.length} · {ctxTokens?.toLocaleString("en-US")} ctx tok
+              <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)] tabular-nums">
+                k={chunks.length} · {ctxTokens?.toLocaleString("en-US")} tok
               </span>
               <button
                 type="button"
@@ -218,13 +209,13 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                   e.stopPropagation();
                   onInspect("trace");
                 }}
-                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] font-medium transition cursor-pointer ${
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium transition cursor-pointer ${
                   isInspected
-                    ? "bg-blue-500/15 text-blue-600 dark:text-blue-300"
-                    : "text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                    ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                    : "border-transparent text-[var(--text-muted)] hover:border-[var(--border-subtle)] hover:text-[var(--text-primary)]"
                 }`}
               >
-                <Microscope className="h-3 w-3" />
+                <PanelRightOpen className="h-3 w-3" />
                 <span>{isInspected ? "Inspecting" : "Inspect"}</span>
               </button>
             </>
@@ -234,17 +225,17 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
 
       {/* Running State */}
       {side.status === "running" && (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           <LivePipelineTracker
             mode="streaming"
             steps={side.liveSteps}
             liveUsage={side.liveUsage}
           />
-          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+          <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--text-muted)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
             <span>
               {useStreaming
-                ? `Streaming ${side.presetLabel} over SSE...`
+                ? `Streaming ${side.presetLabel}...`
                 : `Running ${side.presetLabel}...`}
             </span>
           </div>
@@ -253,10 +244,10 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
 
       {/* Error State */}
       {side.status === "error" && (
-        <div className="flex items-start gap-2 rounded-xl border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-600 dark:text-rose-300">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="flex items-start gap-2 rounded-lg border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-600 dark:text-rose-300">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <div className="min-w-0">
-            <div className="font-semibold">{side.presetLabel} Failed</div>
+            <div className="font-medium">{side.presetLabel} Failed</div>
             <p className="mt-0.5 break-words opacity-90">{side.error}</p>
           </div>
         </div>
@@ -265,14 +256,13 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
       {/* Completed Result */}
       {result && (
         <div className="flex flex-1 flex-col">
-          <LivePipelineTracker
-            mode="completed"
-            steps={result.trace || []}
-            totalLatencyMs={result.total_latency_ms}
-            onOpenInspector={() => onInspect("trace")}
-          />
-
-          <div className="mb-3">
+          <div className="mb-3.5 border-b border-[var(--border-subtle)] pb-3">
+            <LivePipelineTracker
+              mode="completed"
+              steps={result.trace || []}
+              totalLatencyMs={result.total_latency_ms}
+              onOpenInspector={() => onInspect("trace")}
+            />
             <AnswerTelemetryBar
               result={result}
               onBadgeClick={(tab) => onInspect(tab)}
@@ -302,19 +292,21 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                       onCitationClick(cid);
                     }}
                     title={`${ch.title || ch.doc_id}${ch.url ? ` (${ch.url})` : ""}`}
-                    className="inline-flex max-w-[165px] items-center gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/70 px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition hover:border-blue-500/40 hover:text-[var(--text-primary)] cursor-pointer"
+                    className="inline-flex max-w-[160px] items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
                   >
                     <span
-                      className={`shrink-0 font-mono text-[10px] font-bold ${
-                        isWeb ? "text-purple-400" : "text-teal-400"
+                      className={`shrink-0 font-mono text-[10px] font-semibold ${
+                        isWeb
+                          ? "text-amber-600 dark:text-amber-300"
+                          : "text-sky-600 dark:text-sky-300"
                       }`}
                     >
-                      [{cid}]
+                      {cid}
                     </span>
                     {isWeb ? (
-                      <Globe className="h-2.5 w-2.5 shrink-0 text-purple-400" />
+                      <Globe className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
                     ) : (
-                      <FileText className="h-2.5 w-2.5 shrink-0 text-teal-400" />
+                      <FileText className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
                     )}
                     <span className="truncate">{ch.title || ch.doc_id}</span>
                     {ch.url && <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-60" />}
@@ -328,14 +320,14 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                     e.stopPropagation();
                     onInspect("evidence");
                   }}
-                  className="text-[10.5px] font-medium text-blue-500 hover:underline cursor-pointer"
+                  className="font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
                 >
                   +{chunks.length - 4} more
                 </button>
               )}
               {chunks.length === 0 && (
-                <span className="font-mono text-[10.5px] text-[var(--text-muted)]">
-                  No passages retrieved
+                <span className="font-mono text-[10px] text-[var(--text-muted)]">
+                  0 passages
                 </span>
               )}
             </div>
@@ -345,16 +337,16 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                 className="inline-flex items-center gap-1"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5">
+                <div className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5">
                   <button
                     type="button"
                     aria-label={`Mark ${side.presetLabel} answer helpful`}
                     disabled={savingFeedback}
                     onClick={() => void submitSideRating(1)}
-                    className={`rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
+                    className={`rounded p-1 transition cursor-pointer disabled:opacity-50 ${
                       side.feedback?.score === 1
-                        ? "bg-emerald-500/20 text-emerald-500 dark:text-emerald-300"
-                        : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-emerald-500"
+                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                        : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                     }`}
                   >
                     <ThumbsUp className="h-3 w-3" />
@@ -367,19 +359,19 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                       setCommentOpen((prev) => !prev);
                       setCommentDraft(side.feedback?.comment ?? "");
                     }}
-                    className={`rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
+                    className={`rounded p-1 transition cursor-pointer disabled:opacity-50 ${
                       side.feedback?.score === 0 || commentOpen
-                        ? "bg-rose-500/20 text-rose-500 dark:text-rose-300"
-                        : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-rose-500"
+                        ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
+                        : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                     }`}
                   >
                     <ThumbsDown className="h-3 w-3" />
                   </button>
                 </div>
                 {side.feedback && (
-                  <span className="inline-flex items-center gap-0.5 rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
+                  <span className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[9.5px] text-[var(--text-muted)]">
                     <Check className="h-2.5 w-2.5 text-emerald-500" />
-                    {side.feedback.persistedToLangfuse ? "LF" : "Saved"}
+                    {side.feedback.persistedToLangfuse ? "lf" : "ok"}
                   </span>
                 )}
               </div>
@@ -389,14 +381,14 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
           {commentOpen && (
             <div
               onClick={(e) => e.stopPropagation()}
-              className="mt-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/65 p-2"
+              className="mt-2 flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-2"
             >
               <input
                 type="text"
                 value={commentDraft}
                 onChange={(e) => setCommentDraft(e.target.value)}
                 placeholder="Optional note for this preset..."
-                className="min-w-[140px] flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-blue-500 focus:outline-none"
+                className="min-w-[140px] flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
               />
               <button
                 type="button"
@@ -404,7 +396,7 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
                 onClick={() =>
                   void submitSideRating(0, commentDraft.trim() || undefined)
                 }
-                className="rounded-lg bg-rose-600 px-2 py-1 text-[10.5px] font-medium text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                className="rounded bg-[var(--cta-bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--cta-fg)] hover:bg-[var(--cta-hover)] disabled:opacity-50 cursor-pointer"
               >
                 Save
               </button>
@@ -480,13 +472,13 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-[var(--bg-canvas)]">
-      {/* Top Arena Configuration Bar */}
-      <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)]/75 px-4 py-2.5 sm:px-6">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2.5">
-          {/* A vs B Preset Selectors */}
-          <div className="flex flex-wrap items-center gap-2">
+      {/* Arena Configuration Toolbar */}
+      <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] px-4 py-2 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
+          {/* A vs B Selectors */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15 font-mono text-[10px] font-bold text-amber-600 dark:text-amber-300">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--border-strong)] bg-[var(--bg-surface)] font-mono text-[10px] font-semibold text-[var(--text-secondary)]">
                 A
               </span>
               <select
@@ -494,7 +486,7 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                 value={leftPreset}
                 disabled={isRunning}
                 onChange={(e) => onLeftPresetChange(e.target.value as AblationPreset)}
-                className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                className="ar-select h-7.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none disabled:opacity-50"
               >
                 {ARENA_PRESET_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -510,13 +502,13 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
               disabled={isRunning}
               title="Swap A and B presets"
               aria-label="Swap A and B presets"
-              className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-1.5 text-[var(--text-secondary)] transition hover:border-blue-500/40 hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
+              className="flex h-7.5 w-7.5 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
             >
-              <ArrowLeftRight className="h-3.5 w-3.5" />
+              <ArrowLeftRight className="h-3 w-3" />
             </button>
 
             <div className="flex items-center gap-1.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-blue-500/15 font-mono text-[10px] font-bold text-blue-600 dark:text-blue-300">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--border-strong)] bg-[var(--cta-bg)] font-mono text-[10px] font-semibold text-[var(--cta-fg)]">
                 B
               </span>
               <select
@@ -524,7 +516,7 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                 value={rightPreset}
                 disabled={isRunning}
                 onChange={(e) => onRightPresetChange(e.target.value as AblationPreset)}
-                className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                className="ar-select h-7.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none disabled:opacity-50"
               >
                 {ARENA_PRESET_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -535,42 +527,44 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
             </div>
           </div>
 
-          {/* Quick Pairs + History Controls */}
+          {/* Quick Pairs + Past Comparisons */}
           <div className="flex flex-wrap items-center gap-1.5">
-            {COMPARE_PAIR_PRESETS.map((pair) => {
-              const active = leftPreset === pair.left && rightPreset === pair.right;
-              return (
-                <button
-                  key={pair.id}
-                  type="button"
-                  disabled={isRunning}
-                  onClick={() => {
-                    onLeftPresetChange(pair.left);
-                    onRightPresetChange(pair.right);
-                  }}
-                  className={`rounded-full border px-2.5 py-0.5 text-[10.5px] font-medium transition cursor-pointer disabled:opacity-40 ${
-                    active
-                      ? "border-blue-500/40 bg-blue-500/12 text-blue-600 dark:text-blue-300"
-                      : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                  }`}
-                >
-                  {pair.label}
-                </button>
-              );
-            })}
+            <div className="hidden items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-0.5 xl:inline-flex">
+              {COMPARE_PAIR_PRESETS.map((pair) => {
+                const active = leftPreset === pair.left && rightPreset === pair.right;
+                return (
+                  <button
+                    key={pair.id}
+                    type="button"
+                    disabled={isRunning}
+                    onClick={() => {
+                      onLeftPresetChange(pair.left);
+                      onRightPresetChange(pair.right);
+                    }}
+                    className={`rounded px-2 py-0.5 text-[10.5px] font-medium transition cursor-pointer disabled:opacity-40 ${
+                      active
+                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    {pair.label}
+                  </button>
+                );
+              })}
+            </div>
 
             {runs.length > 0 && (
-              <div className="ml-1 flex items-center gap-1 border-l border-[var(--border-subtle)] pl-2">
+              <div className="flex items-center gap-1">
                 <select
                   aria-label="Past Arena Comparisons"
                   value={activeRun?.id ?? ""}
                   onChange={(e) => {
                     if (e.target.value) onSelectRun(e.target.value);
                   }}
-                  className="max-w-[180px] truncate rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 text-[11px] text-[var(--text-primary)] focus:border-blue-500 focus:outline-none"
+                  className="ar-select h-7.5 max-w-[180px] truncate rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-[11px] text-[var(--text-primary)] focus:outline-none"
                 >
                   <option value="" disabled>
-                    Select run ({runs.length})
+                    History ({runs.length})
                   </option>
                   {runs.map((r, idx) => (
                     <option key={r.id} value={r.id}>
@@ -582,8 +576,8 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                   <button
                     type="button"
                     onClick={() => onDeleteRun(activeRun.id)}
-                    title="Delete this comparison"
-                    className="rounded-lg p-1 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-rose-500 cursor-pointer"
+                    title="Delete comparison"
+                    className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-rose-500 cursor-pointer"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -592,8 +586,8 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                   type="button"
                   onClick={onNewComparison}
                   disabled={isRunning}
-                  title="New comparison prompt"
-                  className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
+                  title="New comparison"
+                  className="inline-flex h-7.5 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-[11px] font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
                 >
                   <Plus className="h-3 w-3" />
                   <span className="hidden sm:inline">New</span>
@@ -608,53 +602,50 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
       <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mx-auto max-w-6xl space-y-4">
           {!activeRun ? (
-            /* Empty Arena Welcome */
-            <div className="mx-auto max-w-3xl py-6 sm:py-10">
-              <div className="inline-flex items-center gap-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-300">
-                <Columns2 className="h-3.5 w-3.5" />
-                <span>Live Side-by-Side Ablation Arena · Parallel SSE Execution</span>
+            /* Empty Arena Console */
+            <div className="mx-auto max-w-3xl py-6 sm:py-12">
+              <div className="font-mono text-[10.5px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
+                Parallel SSE Ablation Arena
               </div>
 
-              <h1 className="mt-4 text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl">
-                Compare {leftShort} vs. {rightShort} on the exact same query.
+              <h1 className="mt-2.5 text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
+                Compare {leftShort} vs. {rightShort} on identical queries.
               </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--text-secondary)]">
-                Fire both RAG configurations simultaneously against your Qdrant corpus.
-                Measure real-time <strong>context token savings</strong>,{" "}
-                <strong>Dynamic Top-K</strong> cutoffs,{" "}
-                <strong>CRAG confidence</strong>,{" "}
-                <strong>Two-Tier Citation Audit</strong>, and hallucination protection
-                side by side.
+              <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-secondary)]">
+                Execute baseline and challenger pipelines concurrently against the same
+                Qdrant index to measure context token deltas, Dynamic Top-K selection,
+                CRAG confidence, and citation entailment side by side.
               </p>
 
-              <div className="mt-7">
-                <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  High-Contrast Ablation Prompts
+              <div className="mt-8">
+                <div className="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                  Controlled Ablation Prompts
                 </div>
-                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
                   {COMPARE_DEMO_QUERIES.map((demo) => (
                     <button
                       key={demo.id}
                       type="button"
                       onClick={() => onSubmitCompare(demo.query)}
-                      className="group flex flex-col justify-between rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-3.5 text-left transition hover:border-blue-500/45 hover:bg-[var(--bg-elevated)]/60 cursor-pointer"
+                      className="group flex w-full items-start justify-between gap-4 px-4 py-3 text-left transition hover:bg-[var(--bg-elevated)]/65 cursor-pointer"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-[var(--text-primary)] group-hover:text-blue-500 dark:group-hover:text-blue-400">
-                          {demo.title}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-600 dark:text-emerald-300">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-[var(--text-primary)]">
+                            {demo.title}
+                          </span>
+                          <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-secondary)]">
                             {demo.highlight}
                           </span>
-                          <span className="rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-blue-600 dark:text-blue-300">
+                          <span className="font-mono text-[9.5px] text-[var(--text-muted)]">
                             {demo.lang}
                           </span>
                         </div>
+                        <p className="mt-1 line-clamp-1 text-xs text-[var(--text-secondary)]">
+                          {demo.query}
+                        </p>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-                        {demo.query}
-                      </p>
+                      <ArrowRight className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:translate-x-0.5 group-hover:text-[var(--text-primary)] group-hover:opacity-100" />
                     </button>
                   ))}
                 </div>
@@ -662,61 +653,51 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
             </div>
           ) : (
             <>
-              {/* Evaluated Query Banner */}
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-500/25 bg-blue-600/[0.07] px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-300">
-                    <Sparkles className="h-3 w-3" />
-                    <span>Evaluated Prompt</span>
-                    <span className="opacity-50">·</span>
-                    <span className="font-mono">
-                      {activeRun.left.presetLabel} vs {activeRun.right.presetLabel}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-sm font-medium leading-relaxed text-[var(--text-primary)]">
-                    {activeRun.query}
-                  </p>
+              {/* Evaluated Query Header */}
+              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3">
+                <div className="flex items-center gap-2 font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                  <span>Query Under Evaluation</span>
+                  <span>·</span>
+                  <span className="text-[var(--text-secondary)]">
+                    {activeRun.left.presetLabel} vs {activeRun.right.presetLabel}
+                  </span>
                 </div>
+                <p className="mt-1 text-sm font-medium leading-snug text-[var(--text-primary)]">
+                  {activeRun.query}
+                </p>
               </div>
 
-              {/* Delta Scorecard Ribbon (once both sides finish) */}
+              {/* Hairline Ledger Delta Scorecard */}
               {delta && (
                 <div
                   data-testid="compare-delta-scorecard"
-                  className="space-y-2.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/45 p-3.5"
+                  className="overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
-                      {delta.contextTokensDelta <= 0 ? (
-                        <TrendingDown className="h-3.5 w-3.5 text-emerald-500" />
-                      ) : (
-                        <TrendingUp className="h-3.5 w-3.5 text-blue-500" />
-                      )}
-                      <span>A → B Ablation Delta Summary</span>
-                    </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-3.5 py-2">
+                    <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                      A → B Ablation Delta
+                    </span>
 
                     {delta.highlights.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1.5">
                         {delta.highlights.map((hl) => {
                           const cls =
                             hl.tone === "emerald"
-                              ? "border-emerald-500/35 bg-emerald-500/12 text-emerald-600 dark:text-emerald-300"
-                              : hl.tone === "purple"
-                                ? "border-purple-500/35 bg-purple-500/12 text-purple-600 dark:text-purple-300"
-                                : hl.tone === "amber"
-                                  ? "border-amber-500/35 bg-amber-500/12 text-amber-600 dark:text-amber-300"
-                                  : hl.tone === "rose"
-                                    ? "border-rose-500/35 bg-rose-500/12 text-rose-600 dark:text-rose-300"
-                                    : "border-blue-500/35 bg-blue-500/12 text-blue-600 dark:text-blue-300";
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                              : hl.tone === "amber"
+                                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                                : hl.tone === "rose"
+                                  ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                                  : "border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
                           return (
                             <span
                               key={hl.label}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold ${cls}`}
+                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium ${cls}`}
                             >
                               {hl.tone === "emerald" ? (
-                                <CheckCircle2 className="h-3 w-3" />
+                                <CheckCircle2 className="h-2.5 w-2.5" />
                               ) : (
-                                <ShieldAlert className="h-3 w-3" />
+                                <ShieldAlert className="h-2.5 w-2.5" />
                               )}
                               {hl.label}
                             </span>
@@ -726,8 +707,8 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                    <DeltaTile
+                  <div className="grid grid-cols-2 gap-px bg-[var(--border-subtle)] sm:grid-cols-3 lg:grid-cols-5">
+                    <DeltaLedgerCell
                       label="Context Tokens"
                       value={`${delta.leftContextTokens.toLocaleString("en-US")} → ${delta.rightContextTokens.toLocaleString("en-US")}`}
                       deltaBadge={formatSignedPct(delta.contextTokensPct)}
@@ -739,7 +720,7 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                             : "neutral"
                       }
                     />
-                    <DeltaTile
+                    <DeltaLedgerCell
                       label="Selected (k)"
                       value={`${delta.leftK} → ${delta.rightK}`}
                       deltaBadge={
@@ -751,11 +732,11 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                         delta.kDelta < 0
                           ? "emerald"
                           : delta.kDelta > 0
-                            ? "blue"
+                            ? "sky"
                             : "neutral"
                       }
                     />
-                    <DeltaTile
+                    <DeltaLedgerCell
                       label="CRAG Confidence"
                       value={`${delta.leftConfidence !== null ? delta.leftConfidence.toFixed(2) : "Off"} → ${delta.rightConfidence !== null ? delta.rightConfidence.toFixed(2) : "Off"}`}
                       deltaBadge={
@@ -773,7 +754,7 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                               : "neutral"
                       }
                     />
-                    <DeltaTile
+                    <DeltaLedgerCell
                       label="Citation Audit"
                       value={`${delta.leftClaimSupport !== null ? `${Math.round(delta.leftClaimSupport * 100)}%` : "Off"} → ${delta.rightClaimSupport !== null ? `${Math.round(delta.rightClaimSupport * 100)}%` : "Off"}`}
                       deltaBadge={
@@ -791,7 +772,7 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                             : "neutral"
                       }
                     />
-                    <DeltaTile
+                    <DeltaLedgerCell
                       label="Latency / Cost"
                       value={`${(delta.leftLatencyMs / 1000).toFixed(1)}s → ${(delta.rightLatencyMs / 1000).toFixed(1)}s`}
                       deltaBadge={`${delta.costDeltaUsd >= 0 ? "+" : "-"}$${Math.abs(delta.costDeltaUsd).toFixed(5)}`}
@@ -840,9 +821,9 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
       </div>
 
       {/* Bottom Sticky Arena Composer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/90 px-4 py-3 backdrop-blur sm:px-6">
+      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-4 py-3 backdrop-blur sm:px-6">
         <div className="mx-auto max-w-4xl">
-          <div className="relative flex items-end gap-2 rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-3.5 py-2.5 shadow-xs focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/15">
+          <div className="relative flex items-end gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 transition focus-within:border-[var(--text-muted)]">
             <textarea
               ref={textareaRef}
               rows={1}
@@ -850,17 +831,21 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isRunning}
-              placeholder={`Compare ${leftShort} vs ${rightShort} on any EN/TR query... (Enter to run both in parallel)`}
-              className="max-h-36 flex-1 resize-none bg-transparent py-1 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60"
+              placeholder={`Run ${leftShort} vs ${rightShort} on an EN/TR query...`}
+              className={`max-h-36 flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60 ${
+                input.includes("\n") || input.length > 90
+                  ? "overflow-y-auto"
+                  : "overflow-hidden"
+              }`}
             />
             {isRunning ? (
               <button
                 type="button"
                 onClick={onStopCompare}
                 title="Stop both streams"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
               >
-                <Square className="h-3.5 w-3.5 fill-current" />
+                <Square className="h-3 w-3 fill-current" />
               </button>
             ) : (
               <button
@@ -868,36 +853,32 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                 onClick={handleSend}
                 disabled={!input.trim()}
                 title="Run side-by-side comparison"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-500 disabled:opacity-35 cursor-pointer"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--cta-bg)] text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-25 cursor-pointer"
               >
-                <ArrowUp className="h-4 w-4" />
+                <ArrowUp className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
-          <div className="mt-1.5 flex items-center justify-between px-1 text-[10.5px] text-[var(--text-muted)]">
+          <div className="mt-1.5 flex items-center justify-between px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
             <div className="flex items-center gap-2">
               <span>
-                Arena:{" "}
-                <strong className="text-[var(--text-secondary)]">
-                  {leftShort} vs {rightShort}
-                </strong>
+                arena:{leftShort.toLowerCase().replace(/\s+/g, "-")} vs{" "}
+                {rightShort.toLowerCase().replace(/\s+/g, "-")}
               </span>
               <span>·</span>
-              <span>Parallel {useStreaming ? "SSE" : "Batch"}</span>
+              <span>parallel-{useStreaming ? "sse" : "batch"}</span>
               {budgetCapLabel && (
                 <>
                   <span>·</span>
-                  <span className="font-mono text-blue-400">
-                    Cap {budgetCapLabel}/side
-                  </span>
+                  <span>cap:{budgetCapLabel}/side</span>
                 </>
               )}
             </div>
-            <span className="hidden sm:inline">
-              Click either card or <code className="font-mono">[C1]</code> to focus the
-              Glass-Box Inspector
-            </span>
+            <div className="hidden items-center gap-1.5 sm:flex">
+              <span>Run parallel</span>
+              <kbd className="ar-kbd">↵</kbd>
+            </div>
           </div>
         </div>
       </div>

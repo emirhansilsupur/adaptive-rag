@@ -18,7 +18,8 @@ class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000, description="User question in TR or EN.")
     chat_history: list[ChatMessage] = Field(
         default_factory=list,
-        description="Optional prior conversation turns for coreference resolution.",
+        max_length=50,
+        description="Optional prior conversation turns (max 50) for coreference resolution.",
     )
     preset: AblationPreset | None = Field(
         default=None,
@@ -85,7 +86,7 @@ class InlineDocument(BaseModel):
 
     doc_id: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=400)
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=1_000_000)
     doc_type: Literal["markdown", "text"] = "markdown"
     language: Literal["en", "tr"] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -104,6 +105,7 @@ class IngestRequest(BaseModel):
 
     corpus_dir: str | None = Field(
         default=None,
+        max_length=512,
         description=(
             "Directory containing .md/.txt/.pdf files "
             "(defaults to data/raw when no other source is provided)."
@@ -111,7 +113,8 @@ class IngestRequest(BaseModel):
     )
     documents: list[InlineDocument] | None = Field(
         default=None,
-        description="Optional list of inline documents to chunk and upsert directly.",
+        max_length=50,
+        description="Optional list of inline documents (max 50) to chunk and upsert directly.",
     )
     urls: list[str] | None = Field(
         default=None,
@@ -122,6 +125,7 @@ class IngestRequest(BaseModel):
     )
     crawl_url: str | None = Field(
         default=None,
+        max_length=2048,
         description=(
             "Optional public root documentation/website URL to crawl via firecrawl-local "
             "and index into Qdrant."
@@ -243,6 +247,7 @@ class IndexedDocumentInfo(BaseModel):
     source_origin: Literal["local", "web"] = "local"
     doc_type: str = "markdown"
     language: str = "en"
+    chunk_strategy: Literal["flat", "parent_child"] = "flat"
     chunk_count: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
     source_url: str | None = None

@@ -876,3 +876,82 @@ async def test_run_parent_child_ablation_benchmark_offline_in_memory() -> None:
 
     await flat_store.close()
     await pc_store.close()
+
+
+async def test_parent_passage_long_tail_preserved_and_store_reupsert_cleans_stale_ids() -> None:
+    from adaptiverag.graph.prompts import format_evidence_context
+    from adaptiverag.verification.citation_validator import _build_entailment_user_prompt
+
+    # 1. Verify ~4,000-char (1000-token) parent passage tail facts are preserved in both
+    #    grounded generation and Tier-2 citation entailment prompts (no 1400/2400-char clipping).
+    long_body = ("Detailed HNSW quantization background prose. " * 75) + "TAIL_FACT_MARKER_4096"
+    assert len(long_body) > 3300
+    parent_chunk = EvidenceChunk(
+        citation_id="C1",
+        chunk_id="parent-long-1",
+        doc_id="qdrant_quant",
+        title="Qdrant Quantization",
+        section_path="Qdrant Quantization > Vector Quantization",
+        text=long_body,
+        token_count=920,
+        parent_id="parent-long-1",
+        expanded_to_parent=True,
+    )
+    gen_ctx = format_evidence_context([parent_chunk])
+    entail_ctx = _build_entailment_user_prompt("Answer [C1].", [parent_chunk])
+    assert "TAIL_FACT_MARKER_4096" in gen_ctx
+    assert "TAIL_FACT_MARKER_4096" in entail_ctx
+
+    # 2. Verify Qdrant upsert_chunks transitions cleanly from flat IDs to parent-child IDs
+    #    without leaving stale flat points, and list_documents reports non-overlapping parent tokens.
+    doc = LoadedDocument(
+        doc_id="transition_doc",
+        title="Transition Guide",
+        content=(
+            "# Transition Guide\n\n## Section A\n\n"
+            "### Sub 1\n\nAlpha scalar quantization details for Qdrant hybrid search.\n\n"
+            "### Sub 2\n\nBeta binary quantization details with oversampling and rescore.\n"
+        ),
+        source_path="transition_doc.md",
+        doc_type="markdown",
+        language="en",
+    )
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    store = QdrantHybridStore.from_settings(
+        settings,
+        collection_name="transition_test",
+        dense_embedder=_StubDenseEmbedder(),
+        sparse_embedder=_StubSparseEmbedder(),
+        in_memory=True,
+    )
+    await store.ensure_collection(recreate=True)
+    flat_chunks = chunk_documents([doc])
+    await store.upsert_chunks(flat_chunks)
+    flat_docs = await store.list_documents()
+    assert len(flat_docs) == 1
+    assert flat_docs[0]["chunk_strategy"] == "flat"
+
+    pc_chunks = chunk_documents(
+        [doc],
+        ChunkingConfig(
+            parent_child_enabled=True,
+            parent_max_tokens=1000,
+            child_max_tokens=80,
+            child_overlap_tokens=20,
+            min_chunk_tokens=5,
+        ),
+    )
+    assert len(pc_chunks) >= 2
+    await store.upsert_chunks(pc_chunks)
+
+    # Stale flat IDs must be cleaned up after parent-child upsert completes
+    assert await store.count_points() == len(pc_chunks)
+    pc_docs = await store.list_documents()
+    assert len(pc_docs) == 1
+    assert pc_docs[0]["chunk_strategy"] == "parent_child"
+    assert pc_docs[0]["chunk_count"] == len(pc_chunks)
+    expected_parent_tokens = sum(
+        {c.parent_id: c.parent_token_count or c.token_count for c in pc_chunks}.values()
+    )
+    assert pc_docs[0]["total_tokens"] == expected_parent_tokens
+    await store.close()

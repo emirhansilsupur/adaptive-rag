@@ -20,7 +20,7 @@ class ChatMessage(BaseModel):
     """Single message in conversation history."""
 
     role: Literal["user", "assistant", "system"]
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=16_000)
 
 
 class StrategyProfile(BaseModel):

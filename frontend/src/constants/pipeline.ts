@@ -3,6 +3,7 @@ import type { AblationConfig, AblationPreset, PresetSelection } from "../types/a
 export interface NodeVisualMeta {
   label: string;
   shortLabel: string;
+  /** Restrained 4-stage indicator dot color (routing, retrieval, verification, generation) */
   color: string;
   bgClass: string;
   textClass: string;
@@ -10,113 +11,110 @@ export interface NodeVisualMeta {
   stage: "routing" | "retrieval" | "verification" | "generation";
 }
 
+const STAGE_SURFACE = {
+  routing: {
+    color: "#a1a1aa",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
+  },
+  retrieval: {
+    color: "#38bdf8",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
+  },
+  verification: {
+    color: "#f59e0b",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
+  },
+  generation: {
+    color: "#10b981",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
+  },
+} as const;
+
 export const NODE_META: Record<string, NodeVisualMeta> = {
   classify_and_plan: {
     label: "Classify & Plan",
     shortLabel: "Router",
-    color: "#3B82F6",
-    bgClass: "bg-blue-500/12",
-    textClass: "text-blue-400",
-    borderClass: "border-blue-500/30",
+    ...STAGE_SURFACE.routing,
     stage: "routing",
   },
   conversational_respond: {
     label: "Conversational Respond",
     shortLabel: "Direct Chat",
-    color: "#0EA5E9",
-    bgClass: "bg-sky-500/12",
-    textClass: "text-sky-400",
-    borderClass: "border-sky-500/30",
+    ...STAGE_SURFACE.generation,
     stage: "generation",
   },
   decompose_queries: {
     label: "Decompose Sub-Queries",
     shortLabel: "Decompose",
-    color: "#6366F1",
-    bgClass: "bg-indigo-500/12",
-    textClass: "text-indigo-400",
-    borderClass: "border-indigo-500/30",
+    ...STAGE_SURFACE.routing,
     stage: "routing",
   },
   hybrid_retrieve: {
     label: "Hybrid Retrieve (Dense + BM25)",
     shortLabel: "Hybrid RRF",
-    color: "#14B8A6",
-    bgClass: "bg-teal-500/12",
-    textClass: "text-teal-400",
-    borderClass: "border-teal-500/30",
+    ...STAGE_SURFACE.retrieval,
     stage: "retrieval",
   },
   rerank_and_select_k: {
     label: "Rerank & Dynamic Top-K",
     shortLabel: "Rerank + K",
-    color: "#06B6D4",
-    bgClass: "bg-cyan-500/12",
-    textClass: "text-cyan-400",
-    borderClass: "border-cyan-500/30",
+    ...STAGE_SURFACE.retrieval,
     stage: "retrieval",
   },
   score_confidence: {
     label: "Confidence & CRAG Gate",
     shortLabel: "CRAG Gate",
-    color: "#F59E0B",
-    bgClass: "bg-amber-500/12",
-    textClass: "text-amber-400",
-    borderClass: "border-amber-500/30",
+    ...STAGE_SURFACE.verification,
     stage: "verification",
   },
   corrective_rewrite: {
     label: "Corrective Query Rewrite",
     shortLabel: "Rewrite",
-    color: "#F97316",
-    bgClass: "bg-orange-500/12",
-    textClass: "text-orange-400",
-    borderClass: "border-orange-500/30",
+    ...STAGE_SURFACE.verification,
     stage: "verification",
   },
   web_fallback_search: {
     label: "Web Fallback Search",
     shortLabel: "Web Search",
-    color: "#A855F7",
-    bgClass: "bg-purple-500/12",
-    textClass: "text-purple-400",
-    borderClass: "border-purple-500/30",
+    ...STAGE_SURFACE.retrieval,
     stage: "retrieval",
   },
   generate_answer: {
     label: "Grounded Generation",
     shortLabel: "Generate",
-    color: "#10B981",
-    bgClass: "bg-emerald-500/12",
-    textClass: "text-emerald-400",
-    borderClass: "border-emerald-500/30",
+    ...STAGE_SURFACE.generation,
     stage: "generation",
   },
   validate_citations: {
     label: "Two-Tier Citation Audit",
     shortLabel: "Cite Audit",
-    color: "#22C55E",
-    bgClass: "bg-green-500/12",
-    textClass: "text-green-400",
-    borderClass: "border-green-500/30",
+    ...STAGE_SURFACE.verification,
     stage: "verification",
   },
   regenerate_strict: {
     label: "Strict Grounded Regeneration",
     shortLabel: "Strict Regen",
-    color: "#F43F5E",
-    bgClass: "bg-rose-500/12",
-    textClass: "text-rose-400",
-    borderClass: "border-rose-500/30",
+    color: "#f43f5e",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
     stage: "generation",
   },
   abstain_response: {
     label: "Honest Abstention",
     shortLabel: "Abstain",
-    color: "#64748B",
-    bgClass: "bg-slate-500/15",
-    textClass: "text-slate-400",
-    borderClass: "border-slate-500/30",
+    color: "#71717a",
+    bgClass: "bg-[var(--bg-surface)]",
+    textClass: "text-[var(--text-secondary)]",
+    borderClass: "border-[var(--border-subtle)]",
     stage: "generation",
   },
 };
@@ -126,10 +124,7 @@ export function getNodeMeta(node: string): NodeVisualMeta {
     NODE_META[node] ?? {
       label: node.replace(/_/g, " "),
       shortLabel: node,
-      color: "#64748B",
-      bgClass: "bg-slate-500/15",
-      textClass: "text-slate-400",
-      borderClass: "border-slate-500/30",
+      ...STAGE_SURFACE.routing,
       stage: "retrieval",
     }
   );
@@ -147,7 +142,7 @@ export const PRESET_OPTIONS: PresetOption[] = [
     value: "full",
     label: "Full AdaptiveRAG",
     shortLabel: "Full Agentic",
-    description: "All routing, hybrid RRF, rerank, dynamic K, CRAG, web fallback & citation audit loops.",
+    description: "Query routing, hybrid RRF, rerank, dynamic K, CRAG, web fallback, and citation audit.",
   },
   {
     value: "adaptive_routing",

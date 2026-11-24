@@ -239,6 +239,33 @@ class QdrantHybridStore:
             points_selector=models.FilterSelector(filter=flt),
         )
 
+    async def _list_point_ids_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+    ) -> list[models.ExtendedPointId]:
+        """Collect existing Qdrant point IDs belonging to ``doc_ids`` without loading vectors or text."""
+        unique_ids = list(dict.fromkeys(d for d in doc_ids if d))
+        flt = _build_filter(doc_ids=unique_ids)
+        if flt is None or not await self._client.collection_exists(self._collection_name):
+            return []
+
+        found_ids: list[models.ExtendedPointId] = []
+        offset: Any = None
+        while True:
+            records, next_offset = await self._client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=flt,
+                limit=256,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            found_ids.extend(rec.id for rec in records)
+            if next_offset is None or not records:
+                break
+            offset = next_offset
+        return found_ids
+
     async def upsert_chunks(
         self,
         chunks: Sequence[DocumentChunk],
@@ -246,13 +273,14 @@ class QdrantHybridStore:
         batch_size: int = 64,
         replace_existing_docs: bool = True,
     ) -> int:
-        """Embed and batch-upsert DocumentChunks into Qdrant (idempotent by UUID chunk_id)."""
+        """Embed and batch-upsert DocumentChunks into Qdrant (crash-safe & zero-gap re-indexing)."""
         if not chunks:
             return 0
 
+        existing_ids: list[models.ExtendedPointId] = []
         if replace_existing_docs:
             doc_ids = [c.doc_id for c in chunks]
-            await self.delete_by_doc_ids(doc_ids)
+            existing_ids = await self._list_point_ids_by_doc_ids(doc_ids)
 
         total_upserted = 0
         for start in range(0, len(chunks), batch_size):
@@ -301,6 +329,20 @@ class QdrantHybridStore:
                 wait=True,
             )
             total_upserted += len(points)
+
+        # Clean up stale leftover point IDs ONLY after all new batches have succeeded,
+        # eliminating both data-loss risk on embedding errors and empty-document query gaps.
+        if replace_existing_docs and existing_ids:
+            new_id_set = {c.chunk_id for c in chunks}
+            stale_ids: list[models.ExtendedPointId] = [
+                pid for pid in existing_ids if str(pid) not in new_id_set
+            ]
+            if stale_ids:
+                await self._client.delete(
+                    collection_name=self._collection_name,
+                    points_selector=models.PointIdsList(points=stale_ids),
+                    wait=True,
+                )
 
         logger.info(
             "qdrant_chunks_upserted",
@@ -531,19 +573,30 @@ class QdrantHybridStore:
         return existing_count, remaining
 
     async def list_documents(self, *, limit: int = 1000) -> list[dict[str, Any]]:
-        """Aggregate indexed chunks by doc_id for Knowledge Base inspection."""
+        """Aggregate indexed chunks by doc_id using a metadata-only payload projection."""
         if not await self._client.collection_exists(self._collection_name):
             return []
 
         docs_by_id: dict[str, dict[str, Any]] = {}
+        seen_parents_by_doc: dict[str, set[str]] = {}
         offset: Any = None
+        metadata_fields = [
+            "doc_id",
+            "title",
+            "token_count",
+            "language",
+            "metadata",
+            "parent_id",
+            "parent_token_count",
+        ]
 
         while True:
             records, next_offset = await self._client.scroll(
                 collection_name=self._collection_name,
                 limit=256,
                 offset=offset,
-                with_payload=True,
+                # Project only lightweight metadata fields — never transfer `text` or `parent_text`.
+                with_payload=metadata_fields,
                 with_vectors=False,
             )
             for rec in records:
@@ -555,6 +608,20 @@ class QdrantHybridStore:
                 raw_meta = payload.get("metadata")
                 meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
                 token_count = int(payload.get("token_count") or 0)
+                raw_parent_id = payload.get("parent_id")
+                parent_id = str(raw_parent_id).strip() if raw_parent_id else None
+                parent_tokens = int(payload.get("parent_token_count") or token_count)
+
+                # Avoid double-counting overlapping child tokens when parent_id is present.
+                if parent_id:
+                    seen_parents = seen_parents_by_doc.setdefault(doc_id, set())
+                    if parent_id in seen_parents:
+                        effective_tokens = 0
+                    else:
+                        seen_parents.add(parent_id)
+                        effective_tokens = parent_tokens
+                else:
+                    effective_tokens = token_count
 
                 entry = docs_by_id.get(doc_id)
                 if entry is None:
@@ -564,21 +631,29 @@ class QdrantHybridStore:
                     source_origin = (
                         "web" if source_url or meta.get("source") == "firecrawl_local" else "local"
                     )
+                    chunk_strategy = (
+                        "parent_child"
+                        if parent_id or meta.get("chunk_strategy") == "parent_child"
+                        else "flat"
+                    )
                     docs_by_id[doc_id] = {
                         "doc_id": doc_id,
                         "title": str(payload.get("title") or doc_id),
                         "source_origin": source_origin,
                         "doc_type": str(meta.get("doc_type") or "markdown"),
                         "language": str(payload.get("language") or meta.get("language") or "en"),
+                        "chunk_strategy": chunk_strategy,
                         "chunk_count": 1,
-                        "total_tokens": token_count,
+                        "total_tokens": effective_tokens,
                         "source_url": str(source_url) if source_url else None,
                         "source_path": str(source_path) if source_path else None,
                         "file_name": str(file_name) if file_name else None,
                     }
                 else:
                     entry["chunk_count"] = int(entry["chunk_count"]) + 1
-                    entry["total_tokens"] = int(entry["total_tokens"]) + token_count
+                    entry["total_tokens"] = int(entry["total_tokens"]) + effective_tokens
+                    if parent_id:
+                        entry["chunk_strategy"] = "parent_child"
 
             if next_offset is None or not records:
                 break

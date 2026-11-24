@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Columns2,
   Database,
+  MessageSquare,
   Moon,
   PanelLeftOpen,
   PanelRightClose,
@@ -23,6 +24,7 @@ import {
   fetchDocuments,
   fetchHealth,
   runQueryBatch,
+  setStudioApiKey,
   streamQuery,
   submitFeedback,
 } from "./lib/api";
@@ -52,6 +54,7 @@ const STORAGE_SESSIONS_KEY = "adaptiverag_studio_sessions_v1";
 const STORAGE_COMPARE_KEY = "adaptiverag_studio_compare_v1";
 const STORAGE_THEME_KEY = "adaptiverag_studio_theme_v1";
 const STORAGE_API_URL_KEY = "adaptiverag_studio_api_url_v1";
+const SESSION_API_KEY_STORAGE_KEY = "adaptiverag_studio_api_key_v1";
 
 function loadInitialCompareRuns(): CompareRun[] {
   try {
@@ -71,7 +74,7 @@ function createEmptySession(): ChatSession {
   const now = Date.now();
   return {
     id: `sess_${now}_${Math.random().toString(36).slice(2, 7)}`,
-    title: "New Research Session",
+    title: "Untitled Thread",
     createdAt: now,
     updatedAt: now,
     turns: [],
@@ -122,7 +125,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>("workbench");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorWidth, setInspectorWidth] = useState(440);
+  const [inspectorWidth, setInspectorWidth] = useState(432);
   const resizingRef = useRef(false);
 
   // API & Health & Knowledge Base state
@@ -132,6 +135,15 @@ export default function App() {
       return saved !== null ? saved : DEFAULT_API_URL;
     } catch {
       return DEFAULT_API_URL;
+    }
+  });
+  const [apiKey, setApiKey] = useState<string>(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_API_KEY_STORAGE_KEY) ?? "";
+      setStudioApiKey(saved);
+      return saved;
+    } catch {
+      return "";
     }
   });
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -145,7 +157,7 @@ export default function App() {
   // Sessions & turns
   const [sessions, setSessions] = useState<ChatSession[]>(loadInitialSessions);
   const [activeSessionId, setActiveSessionId] = useState<string>(
-    () => loadInitialSessions()[0].id
+    () => sessions[0].id
   );
   const [selectedTurnIndex, setSelectedTurnIndex] = useState<number>(0);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("trace");
@@ -226,7 +238,7 @@ export default function App() {
     }
   }, [sessions]);
 
-  // Persist API URL
+  // Persist API URL & session-scoped API Key
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_API_URL_KEY, apiUrl);
@@ -234,6 +246,21 @@ export default function App() {
       // ignore
     }
   }, [apiUrl]);
+
+  const handleApiKeyChange = useCallback((nextKey: string) => {
+    const cleaned = nextKey.trim();
+    setStudioApiKey(cleaned);
+    setApiKey(cleaned);
+    try {
+      if (cleaned) {
+        sessionStorage.setItem(SESSION_API_KEY_STORAGE_KEY, cleaned);
+      } else {
+        sessionStorage.removeItem(SESSION_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   const refreshHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -247,7 +274,7 @@ export default function App() {
     } finally {
       setHealthLoading(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, apiKey]);
 
   const refreshDocuments = useCallback(async () => {
     setDocumentsLoading(true);
@@ -260,7 +287,7 @@ export default function App() {
     } finally {
       setDocumentsLoading(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, apiKey]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([refreshHealth(), refreshDocuments()]);
@@ -733,6 +760,20 @@ export default function App() {
     }
   };
 
+  const viewBreadcrumb =
+    activeView === "workbench"
+      ? "Workbench"
+      : activeView === "compare"
+        ? "Ablation Arena"
+        : "Knowledge Base";
+
+  const viewSubtitle =
+    activeView === "workbench"
+      ? activeSession.title
+      : activeView === "compare"
+        ? `${getPresetShortLabel(leftPreset)} vs ${getPresetShortLabel(rightPreset)}`
+        : `${documentsData?.total_documents ?? 0} docs · ${health?.qdrant?.points_count ?? 0} chunks`;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       {/* Left Navigation & Controls Sidebar */}
@@ -747,6 +788,8 @@ export default function App() {
           onDeleteSession={handleDeleteSession}
           apiUrl={apiUrl}
           onApiUrlChange={(url) => setApiUrl(url)}
+          apiKey={apiKey}
+          onApiKeyChange={handleApiKeyChange}
           health={health}
           healthError={healthError}
           healthLoading={healthLoading}
@@ -768,87 +811,75 @@ export default function App() {
       {/* Center + Right Split Container */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Global Top Header Bar */}
-        <header className="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] px-4">
-          <div className="flex min-w-0 items-center gap-2.5">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3.5">
+          <div className="flex min-w-0 items-center gap-2">
             {!sidebarOpen && (
               <button
                 type="button"
                 onClick={() => setSidebarOpen(true)}
                 title="Open sidebar"
-                className="rounded-lg p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
+                className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
               >
-                <PanelLeftOpen className="h-4 w-4" />
+                <PanelLeftOpen className="h-3.5 w-3.5" />
               </button>
             )}
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-xs font-semibold text-[var(--text-primary)]">
-                  {activeView === "workbench"
-                    ? activeSession.title
-                    : activeView === "compare"
-                      ? "Side-by-Side Ablation Arena"
-                      : "Knowledge Base & Ingestion Studio"}
-                </span>
-                {activeView === "workbench" && (
-                  <span className="hidden rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] font-medium text-blue-600 sm:inline dark:text-blue-300">
-                    {presetMeta.shortLabel}
-                  </span>
-                )}
-                {activeView === "compare" && (
-                  <span className="hidden rounded-full border border-indigo-500/35 bg-indigo-500/10 px-2 py-0.5 font-mono text-[10px] font-medium text-indigo-600 sm:inline dark:text-indigo-300">
-                    {getPresetShortLabel(leftPreset)} vs {getPresetShortLabel(rightPreset)}
-                  </span>
-                )}
-              </div>
-            </div>
+
+            <nav aria-label="Workspace breadcrumb" className="flex min-w-0 items-center gap-1.5 text-xs">
+              <span className="shrink-0 font-medium text-[var(--text-muted)]">
+                {viewBreadcrumb}
+              </span>
+              <span className="shrink-0 text-[var(--text-muted)]/50">/</span>
+              <span className="truncate font-medium text-[var(--text-primary)]">
+                {viewSubtitle}
+              </span>
+            </nav>
+
+            {activeView === "workbench" && (
+              <span className="hidden shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-secondary)] sm:inline">
+                {presetMeta.shortLabel}
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() =>
-                handleChangeView(activeView === "compare" ? "workbench" : "compare")
-              }
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
-                activeView === "compare"
-                  ? "border-indigo-500/45 bg-indigo-500/12 text-indigo-600 dark:text-indigo-300"
-                  : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              }`}
-            >
-              <Columns2 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">
-                {activeView === "compare" ? "Compare Active" : "Compare Mode"}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() =>
-                handleChangeView(activeView === "knowledge" ? "workbench" : "knowledge")
-              }
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
-                activeView === "knowledge"
-                  ? "border-blue-500/40 bg-blue-500/12 text-blue-600 dark:text-blue-300"
-                  : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              }`}
-            >
-              <Database className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">
-                {activeView === "knowledge" ? "Back to Workbench" : "Knowledge Base"}
-              </span>
-            </button>
+            {/* Compact mode switcher shown only when sidebar is collapsed */}
+            {!sidebarOpen && (
+              <div className="mr-1 inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-0.5">
+                {(
+                  [
+                    ["workbench", "Chat", MessageSquare],
+                    ["compare", "Arena", Columns2],
+                    ["knowledge", "KB", Database],
+                  ] as const
+                ).map(([id, lbl, Icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleChangeView(id)}
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition cursor-pointer ${
+                      activeView === id
+                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <Icon className="h-3 w-3" />
+                    <span className="hidden sm:inline">{lbl}</span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             <button
               type="button"
               onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
               title={theme === "dark" ? "Switch to Light theme" : "Switch to Dark theme"}
               aria-label="Toggle color theme"
-              className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-1.5 text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] cursor-pointer"
+              className="flex h-7.5 w-7.5 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
             >
               {theme === "dark" ? (
-                <Sun className="h-4 w-4" />
+                <Sun className="h-3.5 w-3.5" />
               ) : (
-                <Moon className="h-4 w-4" />
+                <Moon className="h-3.5 w-3.5" />
               )}
             </button>
 
@@ -856,11 +887,11 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setInspectorOpen((o) => !o)}
-                title="Toggle Glass-Box Inspector (⌘I)"
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
+                title="Toggle Inspector (⌘I)"
+                className={`inline-flex h-7.5 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition cursor-pointer ${
                   inspectorOpen
-                    ? "border-blue-500/40 bg-blue-500/12 text-blue-600 dark:text-blue-300"
-                    : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                    ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
+                    : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                 }`}
               >
                 {inspectorOpen ? (
@@ -869,6 +900,7 @@ export default function App() {
                   <PanelRightOpen className="h-3.5 w-3.5" />
                 )}
                 <span className="hidden md:inline">Inspector</span>
+                <kbd className="ar-kbd hidden md:inline-flex">⌘I</kbd>
               </button>
             )}
           </div>
@@ -935,7 +967,7 @@ export default function App() {
                 />
               )}
 
-              {/* Resizable Glass-Box Inspector */}
+              {/* Resizable Inspector */}
               {inspectorOpen && (
                 <>
                   <div
@@ -945,7 +977,7 @@ export default function App() {
                       resizingRef.current = true;
                       document.body.style.cursor = "col-resize";
                     }}
-                    className="hidden w-1 shrink-0 cursor-col-resize bg-transparent transition hover:bg-blue-500/40 lg:block"
+                    className="hidden w-1 shrink-0 cursor-col-resize bg-transparent transition hover:bg-[var(--border-strong)] lg:block"
                   />
                   <div
                     style={{ width: `${inspectorWidth}px` }}
@@ -972,7 +1004,7 @@ export default function App() {
                         highlightToken={highlightToken}
                         onJumpToCitation={handleJumpWithinInspector}
                         onClose={() => setInspectorOpen(false)}
-                        selectorLabel="Inspecting Arena Side"
+                        selectorLabel="Inspecting Side"
                       />
                     ) : (
                       <GlassBoxInspector

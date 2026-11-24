@@ -16,6 +16,7 @@ from adaptiverag.ingestion.web_loader import (
     FirecrawlError,
     FirecrawlUnavailableError,
     UnsafeURLError,
+    avalidate_public_url,
     make_web_doc_id,
     validate_public_url,
 )
@@ -75,6 +76,42 @@ def test_validate_public_url_blocks_dns_rebinding_to_private_ip(
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
     with pytest.raises(UnsafeURLError, match="non-public IP"):
         validate_public_url("https://rebind.example.com/docs", resolve_dns=True)
+
+
+@pytest.mark.asyncio
+async def test_validate_public_url_fails_closed_on_dns_failure_and_blocks_unsafe_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _failing_dns(*args: Any, **kwargs: Any) -> list[Any]:
+        raise socket.gaierror("DNS lookup failed")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _failing_dns)
+    with pytest.raises(UnsafeURLError, match="Could not resolve hostname"):
+        await avalidate_public_url("https://unresolvable.example.com/docs", resolve_dns=True)
+
+    # Post-redirect SSRF check: public input URL redirecting to 169.254.169.254 in metadata.url is blocked
+    def _redirect_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "markdown": "# Cloud Metadata\n\nSecret IAM token",
+                    "metadata": {
+                        "sourceURL": "https://public.example.com/redirect",
+                        "url": "http://169.254.169.254/latest/meta-data/",
+                    },
+                },
+            },
+        )
+
+    async with FirecrawlClient(
+        "http://localhost:3002",
+        resolve_dns=False,
+        transport=httpx.MockTransport(_redirect_handler),
+    ) as client:
+        with pytest.raises(UnsafeURLError, match="non-public IP"):
+            await client.ascrape_url("https://public.example.com/redirect")
 
 
 def test_validate_public_url_allows_private_when_explicitly_enabled() -> None:
