@@ -1,4 +1,4 @@
-import type { AblationConfig, PresetSelection } from "../types/api";
+import type { AblationConfig, AblationPreset, PresetSelection } from "../types/api";
 
 export interface NodeVisualMeta {
   label: string;
@@ -234,6 +234,87 @@ export const DEMO_QUERIES: DemoQueryItem[] = [
     category: "Web Fallback",
     lang: "EN",
     query: "What is the latest stable release version of Qdrant available today?",
+  },
+];
+
+export interface ArenaPresetOption {
+  value: AblationPreset;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+export const ARENA_PRESET_OPTIONS: ArenaPresetOption[] = PRESET_OPTIONS.filter(
+  (opt): opt is ArenaPresetOption => opt.value !== "custom"
+);
+
+export interface ComparePairPreset {
+  id: string;
+  label: string;
+  left: AblationPreset;
+  right: AblationPreset;
+}
+
+export const COMPARE_PAIR_PRESETS: ComparePairPreset[] = [
+  {
+    id: "naive-vs-full",
+    label: "Naive Dense vs Full",
+    left: "naive_dense",
+    right: "full",
+  },
+  {
+    id: "hybrid-vs-adaptive",
+    label: "Hybrid Static vs Adaptive K",
+    left: "hybrid_rerank",
+    right: "adaptive_routing",
+  },
+  {
+    id: "adaptive-vs-full",
+    label: "Adaptive K vs Full",
+    left: "adaptive_routing",
+    right: "full",
+  },
+];
+
+export interface CompareDemoItem {
+  id: string;
+  title: string;
+  highlight: string;
+  lang: "EN" | "TR";
+  query: string;
+}
+
+export const COMPARE_DEMO_QUERIES: CompareDemoItem[] = [
+  {
+    id: "cmp-factual-tokens",
+    title: "Factual Dynamic Top-K Savings",
+    highlight: "Context Tokens ↓",
+    lang: "EN",
+    query:
+      "What is the default value of ef_construct in Qdrant HNSW and how does it trade off index build time versus recall?",
+  },
+  {
+    id: "cmp-analytical-multi",
+    title: "Multi-Doc Architectural Trade-Off",
+    highlight: "Multi-Query + Audit",
+    lang: "EN",
+    query:
+      "Compare Qdrant Filterable HNSW and PostgreSQL pgvector for hybrid RAG.",
+  },
+  {
+    id: "cmp-tr-conv",
+    title: "Zero-Retrieval Fast Path",
+    highlight: "k=5 → k=0",
+    lang: "TR",
+    query: "Merhaba! Bana kendini kısaca tanıtabilir misin?",
+  },
+  {
+    id: "cmp-unanswerable",
+    title: "Out-of-Corpus Hallucination Trap",
+    highlight: "Abstention Guard",
+    lang: "EN",
+    query:
+      "What are the exact RAM and HNSW defaults of the fictional QuantumVectorX-9000 engine released in 2029?",
   },
 ];
 

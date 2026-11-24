@@ -336,4 +336,25 @@ export interface ChatSession {
 }
 
 export type InspectorTab = "trace" | "dynamic_k" | "confidence" | "evidence" | "citations";
-export type AppView = "workbench" | "knowledge";
+export type AppView = "workbench" | "compare" | "knowledge";
+
+export type CompareSideKey = "left" | "right";
+
+export interface CompareSideState {
+  preset: AblationPreset;
+  presetLabel: string;
+  status: "idle" | "running" | "done" | "error";
+  liveSteps: LiveStreamStep[];
+  liveUsage: Partial<TokenUsage> | null;
+  result: FinalAnswer | null;
+  error: string | null;
+  feedback?: TurnFeedback;
+}
+
+export interface CompareRun {
+  id: string;
+  query: string;
+  createdAt: number;
+  left: CompareSideState;
+  right: CompareSideState;
+}

@@ -3,6 +3,7 @@ import {
   Activity,
   ChevronDown,
   ChevronRight,
+  Columns2,
   Database,
   Flame,
   MessageSquare,
@@ -147,33 +148,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span>New Session</span>
         </button>
 
-        <div className="grid grid-cols-2 gap-1 pt-1">
+        <div className="grid grid-cols-3 gap-1 pt-1">
           <button
             type="button"
             onClick={() => onChangeView("workbench")}
-            className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition cursor-pointer ${
+            data-nav="workbench"
+            className={`flex items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 text-[11.5px] font-medium transition cursor-pointer ${
               activeView === "workbench"
                 ? "bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow-2xs ring-1 ring-[var(--border-subtle)]"
                 : "text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]/60"
             }`}
           >
-            <MessageSquare className="h-3.5 w-3.5" />
-            <span>Workbench</span>
+            <MessageSquare className="h-3.5 w-3.5 shrink-0" />
+            <span>Chat</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChangeView("compare")}
+            data-nav="compare"
+            className={`flex items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 text-[11.5px] font-medium transition cursor-pointer ${
+              activeView === "compare"
+                ? "bg-[var(--bg-elevated)] text-indigo-600 shadow-2xs ring-1 ring-indigo-500/35 dark:text-indigo-300"
+                : "text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]/60"
+            }`}
+          >
+            <Columns2 className="h-3.5 w-3.5 shrink-0" />
+            <span>Arena</span>
           </button>
 
           <button
             type="button"
             onClick={() => onChangeView("knowledge")}
             data-nav="knowledge"
-            className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition cursor-pointer ${
+            className={`flex items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 text-[11.5px] font-medium transition cursor-pointer ${
               activeView === "knowledge"
                 ? "bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow-2xs ring-1 ring-[var(--border-subtle)]"
                 : "text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]/60"
             }`}
           >
-            <Database className="h-3.5 w-3.5" />
+            <Database className="h-3.5 w-3.5 shrink-0" />
             <span>KB</span>
-            <span className="rounded bg-blue-500/15 px-1 font-mono text-[10px] font-semibold text-blue-500 dark:text-blue-400 tabular-nums">
+            <span className="rounded bg-blue-500/15 px-1 font-mono text-[9.5px] font-semibold text-blue-500 dark:text-blue-400 tabular-nums">
               {qdrantPoints}
             </span>
           </button>
@@ -252,6 +268,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {controlsOpen && (
             <div className="space-y-3 border-t border-[var(--border-subtle)] px-3 py-2.5 text-xs">
+              {activeView === "compare" && (
+                <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-2.5 py-2 text-[10.5px] leading-snug text-indigo-700 dark:text-indigo-300">
+                  Arena A/B presets are selected in the top bar. Streaming &amp; USD
+                  cap below apply to both sides.
+                </div>
+              )}
+
               <div>
                 <label className="block text-[10.5px] font-medium text-[var(--text-muted)]">
                   Ablation Preset

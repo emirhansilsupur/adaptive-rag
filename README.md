@@ -11,6 +11,13 @@
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Glass--Box%20Studio-2563EB?logo=react&logoColor=white)
 ![Pydantic v2](https://img.shields.io/badge/Schemas-Pydantic%20v2-E92063)
 
+<p align="center">
+  <img src="docs/assets/studio-glass-box.png" alt="AdaptiveRAG React 19 Glass-Box Studio showing a live 7-node LangGraph trace, inline citations, Langfuse trace link, and Dynamic Top-K sigmoid score cutoff chart" width="100%" />
+</p>
+<p align="center">
+  <em><strong>React 19 3-Pane Glass-Box Studio</strong> executing a live analytical comparison: 7-node LangGraph SSE pipeline, clickable <code>[C1]</code>–<code>[C6]</code> inline citations, CRAG confidence (<code>0.92 HIGH</code>), 100% Two-Tier Citation Audit, <code>Langfuse ↗</code> trace deep link, and calibrated sigmoid Dynamic Top-K cutoff (<code>6 / 34</code> chunks via <code>relative_drop</code>).</em>
+</p>
+
 ---
 
 ## Why AdaptiveRAG?
@@ -222,6 +229,14 @@ The primary 3-pane Glass-Box Studio (`make ui` at `http://localhost:5173`) provi
   4. **Evidence Passages:** Local/Web filter, expandable passage cards with scores, section paths, clickable Firecrawl/Web URLs, and pulse-highlight on inline citation click.
   5. **Citation Audit:** Tier-1 valid/fabricated IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards with clickable cited IDs.
 - **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` file upload (`/v1/ingest/upload`), one-click local corpus re-indexing, live **Firecrawl Local** URL scraper & docs crawler, and a searchable/filterable table of all indexed Qdrant documents with safe 2-step deletion.
+- **Side-by-Side Ablation Arena (`Compare Mode`):** Fire any two presets in parallel over live SSE (default `Naive Dense Baseline` vs. `Full AdaptiveRAG`, with quick-pair chips and 1-click swap), compare real-time **A → B deltas** across context tokens, selected `k`, CRAG confidence, Two-Tier Citation Audit (`Fail → Pass`), latency, and cost, rate either side via `/v1/feedback`, and click any card or `[C1]` badge to focus the Glass-Box Inspector on that exact side.
+
+<p align="center">
+  <img src="docs/assets/studio-compare-arena.png" alt="AdaptiveRAG Side-by-Side Ablation Arena comparing Naive Dense Baseline against Full AdaptiveRAG in parallel over live SSE" width="100%" />
+</p>
+<p align="center">
+  <em><strong>Side-by-Side Ablation Arena (Compare Mode):</strong> Parallel live SSE comparison of <code>Naive Dense Baseline</code> (<code>k=5</code>, <code>Conf 0.66 MEDIUM</code>, <code>Audit 57%</code>, relevant passage buried at <code>[C4]</code>) vs. <code>Full AdaptiveRAG</code> (<code>k=4</code>, <code>Conf 0.90 HIGH</code>, <code>Audit 100% PASS</code>, reranked to <code>[C1]</code>) with automatic A → B delta telemetry.</em>
+</p>
 
 *(The legacy Streamlit inspector remains available as an optional Python fallback via `make ui-legacy` on port `8501`.)*
 
@@ -243,7 +258,23 @@ AdaptiveRAG ships with a vendor-neutral, fail-open **Langfuse v5 OpenTelemetry**
    - All **8 LLM system prompts** (`adaptiverag.router`, `decompose`, `corrective_rewrite`, `crag_grader`, `conversational`, `grounded_synthesis`, `strict_regeneration`, `citation_entailment`) are registered with mustache `{{variable}}` templates and fetched by deployment label (`LANGFUSE_PROMPT_LABEL=production`) with configurable SDK TTL caching (`LANGFUSE_PROMPT_CACHE_TTL_SECONDS=300`).
    - Live Langfuse prompt objects are natively linked to LangChain generation observations (via `langfuse_prompt` metadata) and recorded on both `NodeTraceEvent.metadata["prompt"]` and the root trace's `prompts_used` map, enabling per-prompt-version quality & cost comparisons—while automatically invalidating `SQLiteLLMCache` whenever a prompt version changes and failing open to local canonical templates whenever Langfuse is disabled or unreachable.
 
-### Deployment Options: Cloud Free Tier vs. Self-Hosted v3
+### Live Langfuse v4 Telemetry & Experiments Preview
+
+<p align="center">
+  <img src="docs/assets/langfuse-trace-scores.png" alt="Langfuse v4 trace detail showing AdaptiveRAG span hierarchy, native prompt link adaptiverag.grounded_synthesis, and 13 automated plus human-in-the-loop scores" width="100%" />
+</p>
+<p align="center">
+  <em><strong>Deep OTEL Trace &amp; Online Auto-Scoring:</strong> Full LangGraph execution tree alongside domain-specific spans (<code>retrieval.hybrid_dynamic_k</code>, <code>verification.crag_confidence</code>, <code>verification.citation_audit</code>), native versioned prompt link (<code>prompt:adaptiverag.grounded_synthesis</code>), and all 12 automated online scores + <code>user_feedback</code> from the React Studio.</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/langfuse-experiments.png" alt="Langfuse v4 Dataset Experiments comparing 4 ablation configs on adaptiverag-golden-set with context tokens, selected k, MRR, NDCG, Precision, and Recall" width="100%" />
+</p>
+<p align="center">
+  <em><strong>4-Way Ablation Experiments (<code>adaptiverag-golden-set</code>):</strong> Side-by-side comparison synced via <code>make eval-langfuse</code> showing <code>adaptive_dynamic_k</code> cutting average context tokens from <code>1,152</code> down to <code>287</code> and <code>avg_selected_k</code> from <code>5.0</code> to <code>1.0</code> while preserving <code>1.00</code> MRR.</em>
+</p>
+
+### Deployment Options: Cloud Free Tier vs. Self-Hosted v4
 
 - **Zero-Overhead Local Dev (Recommended):** Connect to [Langfuse Cloud](https://cloud.langfuse.com) (free tier) by setting `LANGFUSE_ENABLED=true`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY` in `.env` — runs with zero extra local containers (`make up` starts only Qdrant).
 - **Self-Hosted On-Prem / Air-Gapped (`make up-full`):** [`docker-compose.yml`](docker-compose.yml) includes a full **Langfuse v4** `observability` profile (compatible with Python SDK v5) separating OLTP (`PostgreSQL 16`), durable event/media ingestion (`MinIO/S3`), async worker queues (`Redis 7` + `langfuse-worker:4`), and high-speed columnar trace analytics (`ClickHouse 25.12`), with one-command headless bootstrap on `http://localhost:3000`.
@@ -385,6 +416,8 @@ adaptiverag/
 │   ├── raw/                         # 10 multilingual AI/ML & Systems Engineering Markdown docs (8 EN + 2 TR)
 │   └── eval/
 │       └── golden_set.jsonl         # 66-query stratified TR+EN golden benchmark dataset (5 strata)
+├── docs/
+│   └── assets/                      # Curated React Studio & Langfuse v4 screenshots embedded in README.md
 ├── src/adaptiverag/
 │   ├── config.py                    # Pydantic Settings + YAML strategy loader
 │   ├── schemas/                     # Pure Pydantic v2 contracts (query, retrieval, citation, response)
@@ -397,9 +430,9 @@ adaptiverag/
 │   └── api/                         # FastAPI app, lifespan container, REST + SSE streaming + /v1/feedback routes
 ├── frontend/
 │   ├── src/
-│   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, LivePipelineTracker, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
-│   │   ├── lib/                     # Typed FastAPI + SSE ReadableStream client, citation tokenizer, URL helpers
-│   │   └── test/                    # Vitest + Testing Library unit tests
+│   │   ├── components/              # 3-Pane Glass-Box Studio: Sidebar, ChatWorkspace, CompareArena, LivePipelineTracker, MarkdownWithCitations, GlassBoxInspector, KnowledgeBaseView
+│   │   ├── lib/                     # Typed FastAPI + SSE ReadableStream client, Compare delta helpers, citation tokenizer, URL helpers
+│   │   └── test/                    # Vitest + Testing Library unit tests (core + Compare Arena)
 │   └── vite.config.ts               # React 19 + TypeScript + Tailwind CSS v4 + KaTeX math
 ├── ui/
 │   └── app.py                       # Optional legacy Streamlit Glass-Box Inspector (`make ui-legacy`)
@@ -422,7 +455,7 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All automated tests run **100% offline at `$0` API cost** (`114` backend unit & in-memory Qdrant integration tests + `9` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+All automated tests run **100% offline at `$0` API cost** (`114` backend unit & in-memory Qdrant integration tests + `15` frontend Vitest tests) using deterministic embeddings/reranker stubs, `httpx.MockTransport`, in-memory Qdrant, fake Langfuse clients, and scripted fake LLMs. Every push and pull request to `main` is verified automatically via [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
 ```bash
 # Run the full local CI mirror (lint + format + mypy + frontend typecheck/test/build + offline pytest w/ coverage)
@@ -430,7 +463,7 @@ make ci
 
 # Or run individual gates:
 make test       # 114 offline Python unit & in-memory integration tests ($0 API cost)
-make ui-test    # Frontend TypeScript typecheck + 9 Vitest unit tests
+make ui-test    # Frontend TypeScript typecheck + 15 Vitest unit tests
 make ui-build   # Production Vite bundle build
 make lint       # ruff check + ruff format --check (src, tests, eval, ui)
 make typecheck  # mypy static type check (src, eval)

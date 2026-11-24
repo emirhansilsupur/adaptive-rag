@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Columns2,
   Database,
   Moon,
   PanelLeftOpen,
@@ -8,6 +9,7 @@ import {
   Sun,
 } from "lucide-react";
 import { ChatWorkspace } from "./components/ChatWorkspace";
+import { CompareArena } from "./components/CompareArena";
 import { GlassBoxInspector } from "./components/GlassBoxInspector";
 import { KnowledgeBaseView } from "./components/KnowledgeBaseView";
 import { Sidebar } from "./components/Sidebar";
@@ -24,12 +26,19 @@ import {
   streamQuery,
   submitFeedback,
 } from "./lib/api";
+import {
+  createCompareInspectorTurns,
+  getPresetShortLabel,
+} from "./lib/compare";
 import type {
   AblationConfig,
+  AblationPreset,
   AppView,
   ChatMessage,
   ChatSession,
   ChatTurn,
+  CompareRun,
+  CompareSideKey,
   DocumentListResponse,
   FinalAnswer,
   HealthResponse,
@@ -40,8 +49,23 @@ import type {
 } from "./types/api";
 
 const STORAGE_SESSIONS_KEY = "adaptiverag_studio_sessions_v1";
+const STORAGE_COMPARE_KEY = "adaptiverag_studio_compare_v1";
 const STORAGE_THEME_KEY = "adaptiverag_studio_theme_v1";
 const STORAGE_API_URL_KEY = "adaptiverag_studio_api_url_v1";
+
+function loadInitialCompareRuns(): CompareRun[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_COMPARE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as CompareRun[];
+    if (Array.isArray(parsed)) {
+      return parsed.filter((r) => r && typeof r.id === "string" && r.left && r.right);
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return [];
+}
 
 function createEmptySession(): ChatSession {
   const now = Date.now();
@@ -143,6 +167,48 @@ export default function App() {
   const [liveUsage, setLiveUsage] = useState<Partial<TokenUsage> | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Side-by-Side Ablation Arena (Compare Mode) state
+  const [compareRuns, setCompareRuns] = useState<CompareRun[]>(loadInitialCompareRuns);
+  const [activeCompareRunId, setActiveCompareRunId] = useState<string | null>(
+    () => loadInitialCompareRuns()[0]?.id ?? null
+  );
+  const [leftPreset, setLeftPreset] = useState<AblationPreset>("naive_dense");
+  const [rightPreset, setRightPreset] = useState<AblationPreset>("full");
+  const [compareRunning, setCompareRunning] = useState(false);
+  const [inspectedCompareSide, setInspectedCompareSide] =
+    useState<CompareSideKey>("right");
+  const compareAbortRef = useRef<AbortController | null>(null);
+
+  const activeCompareRun = useMemo(
+    () =>
+      activeCompareRunId
+        ? compareRuns.find((r) => r.id === activeCompareRunId) ?? null
+        : null,
+    [compareRuns, activeCompareRunId]
+  );
+
+  const compareInspector = useMemo(
+    () => createCompareInspectorTurns(activeCompareRun),
+    [activeCompareRun]
+  );
+
+  // Persist completed Compare Arena runs
+  useEffect(() => {
+    try {
+      const serializable = compareRuns
+        .filter((r) => r.left.status !== "running" && r.right.status !== "running")
+        .slice(0, 10)
+        .map((r) => ({
+          ...r,
+          left: { ...r.left, liveSteps: [] },
+          right: { ...r.right, liveSteps: [] },
+        }));
+      localStorage.setItem(STORAGE_COMPARE_KEY, JSON.stringify(serializable));
+    } catch {
+      // ignore storage errors
+    }
+  }, [compareRuns]);
 
   // Ensure activeSessionId always resolves to an existing session
   const activeSession = useMemo(
@@ -291,6 +357,222 @@ export default function App() {
 
   const handleStopStream = () => {
     abortControllerRef.current?.abort();
+  };
+
+  const handleChangeView = (nextView: AppView) => {
+    setActiveView(nextView);
+    if (nextView === "compare" && typeof window !== "undefined" && window.innerWidth < 1540) {
+      setInspectorOpen(false);
+    } else if (nextView === "workbench") {
+      setInspectorOpen(true);
+    }
+  };
+
+  const handleInspectCompareSide = (side: CompareSideKey, tab?: InspectorTab) => {
+    setInspectedCompareSide(side);
+    if (tab) {
+      setInspectorTab(tab);
+    }
+    setInspectorOpen(true);
+  };
+
+  const handleCompareCitationClick = (side: CompareSideKey, citationId: string) => {
+    setInspectedCompareSide(side);
+    setInspectorTab("evidence");
+    setHighlightedCitationId(citationId);
+    setHighlightToken((t) => t + 1);
+    setInspectorOpen(true);
+  };
+
+  const handleStopCompare = () => {
+    compareAbortRef.current?.abort();
+  };
+
+  const handleSwapPresets = () => {
+    setLeftPreset(rightPreset);
+    setRightPreset(leftPreset);
+  };
+
+  const handleDeleteCompareRun = (runId: string) => {
+    setCompareRuns((prev) => {
+      const remaining = prev.filter((r) => r.id !== runId);
+      if (activeCompareRunId === runId) {
+        setActiveCompareRunId(remaining[0]?.id ?? null);
+      }
+      return remaining;
+    });
+  };
+
+  const handleSubmitCompareFeedback = async (
+    runId: string,
+    side: CompareSideKey,
+    score: 0 | 1,
+    comment?: string
+  ) => {
+    const run = compareRuns.find((r) => r.id === runId);
+    const sideState = run?.[side];
+    const traceId = sideState?.result?.trace_id;
+    if (!run || !sideState || !traceId) return;
+
+    const resp = await submitFeedback(apiUrl, {
+      trace_id: traceId,
+      score,
+      comment,
+      session_id: `${run.id}_${side}`,
+      query: run.query,
+    });
+
+    setCompareRuns((prev) =>
+      prev.map((item) => {
+        if (item.id !== runId) return item;
+        return {
+          ...item,
+          [side]: {
+            ...item[side],
+            feedback: {
+              score,
+              comment: resp.comment ?? comment,
+              persistedToLangfuse: resp.persisted_to_langfuse,
+              submittedAt: Date.now(),
+            },
+          },
+        };
+      })
+    );
+  };
+
+  const handleSubmitCompare = async (query: string) => {
+    if (compareRunning) return;
+
+    const runId = `cmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const leftLabel = getPresetShortLabel(leftPreset);
+    const rightLabel = getPresetShortLabel(rightPreset);
+
+    const initialRun: CompareRun = {
+      id: runId,
+      query,
+      createdAt: Date.now(),
+      left: {
+        preset: leftPreset,
+        presetLabel: leftLabel,
+        status: "running",
+        liveSteps: [],
+        liveUsage: null,
+        result: null,
+        error: null,
+      },
+      right: {
+        preset: rightPreset,
+        presetLabel: rightLabel,
+        status: "running",
+        liveSteps: [],
+        liveUsage: null,
+        result: null,
+        error: null,
+      },
+    };
+
+    const controller = new AbortController();
+    compareAbortRef.current = controller;
+
+    setCompareRuns((prev) => [initialRun, ...prev.slice(0, 9)]);
+    setActiveCompareRunId(runId);
+    setCompareRunning(true);
+    setHighlightedCitationId(null);
+
+    const updateSide = (
+      side: CompareSideKey,
+      updater: (prev: CompareRun["left"]) => CompareRun["left"]
+    ) => {
+      setCompareRuns((prev) =>
+        prev.map((r) => (r.id === runId ? { ...r, [side]: updater(r[side]) } : r))
+      );
+    };
+
+    const executeSide = async (side: CompareSideKey, sidePreset: AblationPreset) => {
+      const payload = buildQueryPayload({
+        query,
+        chatHistory: [],
+        preset: sidePreset,
+        customAblation,
+        maxCostUsd: enableBudgetCap ? maxCostUsd : null,
+        sessionId: `${runId}_${side}`,
+      });
+
+      try {
+        let answer: FinalAnswer;
+        if (useStreaming) {
+          answer = await streamQuery(
+            apiUrl,
+            payload,
+            {
+              onNodeUpdate: (update) => {
+                updateSide(side, (prev) => {
+                  const traceEvents = update.trace || [];
+                  const appended: LiveStreamStep[] =
+                    traceEvents.length > 0
+                      ? traceEvents.map((evt, i) => ({
+                          id: `${side}_${evt.node}_${prev.liveSteps.length + i}_${Date.now()}`,
+                          node: evt.node,
+                          latency_ms: evt.latency_ms,
+                          summary: evt.summary,
+                          metadata: evt.metadata || {},
+                        }))
+                      : update.node
+                        ? [
+                            {
+                              id: `${side}_${update.node}_${prev.liveSteps.length}_${Date.now()}`,
+                              node: update.node,
+                              latency_ms: 0,
+                              summary: "",
+                              metadata: {},
+                            },
+                          ]
+                        : [];
+                  return {
+                    ...prev,
+                    liveUsage: update.usage ?? prev.liveUsage,
+                    liveSteps: [...prev.liveSteps, ...appended],
+                  };
+                });
+              },
+            },
+            controller.signal
+          );
+        } else {
+          answer = await runQueryBatch(apiUrl, payload, controller.signal);
+        }
+
+        updateSide(side, (prev) => ({
+          ...prev,
+          status: "done",
+          result: answer,
+          error: null,
+        }));
+      } catch (err) {
+        const message =
+          (err as Error)?.name === "AbortError"
+            ? "Comparison cancelled by user."
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        updateSide(side, (prev) => ({
+          ...prev,
+          status: "error",
+          error: message,
+        }));
+      }
+    };
+
+    try {
+      await Promise.allSettled([
+        executeSide("left", leftPreset),
+        executeSide("right", rightPreset),
+      ]);
+    } finally {
+      setCompareRunning(false);
+      compareAbortRef.current = null;
+    }
   };
 
   const handleSubmitFeedback = async (
@@ -456,7 +738,7 @@ export default function App() {
       {sidebarOpen && (
         <Sidebar
           activeView={activeView}
-          onChangeView={setActiveView}
+          onChangeView={handleChangeView}
           sessions={sessions}
           activeSessionId={activeSession.id}
           onSelectSession={handleSelectSession}
@@ -502,11 +784,18 @@ export default function App() {
                 <span className="truncate text-xs font-semibold text-[var(--text-primary)]">
                   {activeView === "workbench"
                     ? activeSession.title
-                    : "Knowledge Base & Ingestion Studio"}
+                    : activeView === "compare"
+                      ? "Side-by-Side Ablation Arena"
+                      : "Knowledge Base & Ingestion Studio"}
                 </span>
                 {activeView === "workbench" && (
                   <span className="hidden rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 font-mono text-[10px] font-medium text-blue-600 sm:inline dark:text-blue-300">
                     {presetMeta.shortLabel}
+                  </span>
+                )}
+                {activeView === "compare" && (
+                  <span className="hidden rounded-full border border-indigo-500/35 bg-indigo-500/10 px-2 py-0.5 font-mono text-[10px] font-medium text-indigo-600 sm:inline dark:text-indigo-300">
+                    {getPresetShortLabel(leftPreset)} vs {getPresetShortLabel(rightPreset)}
                   </span>
                 )}
               </div>
@@ -517,7 +806,24 @@ export default function App() {
             <button
               type="button"
               onClick={() =>
-                setActiveView((v) => (v === "workbench" ? "knowledge" : "workbench"))
+                handleChangeView(activeView === "compare" ? "workbench" : "compare")
+              }
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
+                activeView === "compare"
+                  ? "border-indigo-500/45 bg-indigo-500/12 text-indigo-600 dark:text-indigo-300"
+                  : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              }`}
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">
+                {activeView === "compare" ? "Compare Active" : "Compare Mode"}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                handleChangeView(activeView === "knowledge" ? "workbench" : "knowledge")
               }
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
                 activeView === "knowledge"
@@ -545,7 +851,7 @@ export default function App() {
               )}
             </button>
 
-            {activeView === "workbench" && (
+            {(activeView === "workbench" || activeView === "compare") && (
               <button
                 type="button"
                 onClick={() => setInspectorOpen((o) => !o)}
@@ -580,23 +886,53 @@ export default function App() {
             />
           ) : (
             <>
-              <ChatWorkspace
-                turns={activeSession.turns}
-                selectedTurnIndex={selectedTurnIndex}
-                isRunning={isRunning}
-                pendingQuery={pendingQuery}
-                liveSteps={liveSteps}
-                liveUsage={liveUsage}
-                streamError={streamError}
-                presetShortLabel={presetMeta.shortLabel}
-                useStreaming={useStreaming}
-                budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
-                onSubmitQuery={(q) => void handleSubmitQuery(q)}
-                onStopStream={handleStopStream}
-                onInspectTurn={handleInspectTurn}
-                onCitationClick={handleCitationClick}
-                onSubmitFeedback={handleSubmitFeedback}
-              />
+              {activeView === "compare" ? (
+                <CompareArena
+                  runs={compareRuns}
+                  activeRunId={activeCompareRunId}
+                  leftPreset={leftPreset}
+                  rightPreset={rightPreset}
+                  inspectedSide={inspectedCompareSide}
+                  isRunning={compareRunning}
+                  useStreaming={useStreaming}
+                  budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
+                  onLeftPresetChange={setLeftPreset}
+                  onRightPresetChange={setRightPreset}
+                  onSwapPresets={handleSwapPresets}
+                  onSelectRun={(id) => {
+                    setActiveCompareRunId(id);
+                    setHighlightedCitationId(null);
+                  }}
+                  onDeleteRun={handleDeleteCompareRun}
+                  onNewComparison={() => {
+                    setActiveCompareRunId(null);
+                    setHighlightedCitationId(null);
+                  }}
+                  onSubmitCompare={(q) => void handleSubmitCompare(q)}
+                  onStopCompare={handleStopCompare}
+                  onInspectSide={handleInspectCompareSide}
+                  onCitationClick={handleCompareCitationClick}
+                  onSubmitSideFeedback={handleSubmitCompareFeedback}
+                />
+              ) : (
+                <ChatWorkspace
+                  turns={activeSession.turns}
+                  selectedTurnIndex={selectedTurnIndex}
+                  isRunning={isRunning}
+                  pendingQuery={pendingQuery}
+                  liveSteps={liveSteps}
+                  liveUsage={liveUsage}
+                  streamError={streamError}
+                  presetShortLabel={presetMeta.shortLabel}
+                  useStreaming={useStreaming}
+                  budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
+                  onSubmitQuery={(q) => void handleSubmitQuery(q)}
+                  onStopStream={handleStopStream}
+                  onInspectTurn={handleInspectTurn}
+                  onCitationClick={handleCitationClick}
+                  onSubmitFeedback={handleSubmitFeedback}
+                />
+              )}
 
               {/* Resizable Glass-Box Inspector */}
               {inspectorOpen && (
@@ -614,17 +950,42 @@ export default function App() {
                     style={{ width: `${inspectorWidth}px` }}
                     className="hidden h-full shrink-0 lg:block"
                   >
-                    <GlassBoxInspector
-                      turns={activeSession.turns}
-                      selectedTurnIndex={selectedTurnIndex}
-                      onSelectTurnIndex={setSelectedTurnIndex}
-                      activeTab={inspectorTab}
-                      onTabChange={setInspectorTab}
-                      highlightedCitationId={highlightedCitationId}
-                      highlightToken={highlightToken}
-                      onJumpToCitation={handleJumpWithinInspector}
-                      onClose={() => setInspectorOpen(false)}
-                    />
+                    {activeView === "compare" ? (
+                      <GlassBoxInspector
+                        turns={compareInspector.turns}
+                        selectedTurnIndex={
+                          compareInspector.sideIndexMap[inspectedCompareSide] >= 0
+                            ? compareInspector.sideIndexMap[inspectedCompareSide]
+                            : 0
+                        }
+                        onSelectTurnIndex={(idx) => {
+                          if (idx === compareInspector.sideIndexMap.left) {
+                            setInspectedCompareSide("left");
+                          } else if (idx === compareInspector.sideIndexMap.right) {
+                            setInspectedCompareSide("right");
+                          }
+                        }}
+                        activeTab={inspectorTab}
+                        onTabChange={setInspectorTab}
+                        highlightedCitationId={highlightedCitationId}
+                        highlightToken={highlightToken}
+                        onJumpToCitation={handleJumpWithinInspector}
+                        onClose={() => setInspectorOpen(false)}
+                        selectorLabel="Inspecting Arena Side"
+                      />
+                    ) : (
+                      <GlassBoxInspector
+                        turns={activeSession.turns}
+                        selectedTurnIndex={selectedTurnIndex}
+                        onSelectTurnIndex={setSelectedTurnIndex}
+                        activeTab={inspectorTab}
+                        onTabChange={setInspectorTab}
+                        highlightedCitationId={highlightedCitationId}
+                        highlightToken={highlightToken}
+                        onJumpToCitation={handleJumpWithinInspector}
+                        onClose={() => setInspectorOpen(false)}
+                      />
+                    )}
                   </div>
                 </>
               )}

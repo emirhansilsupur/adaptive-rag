@@ -36,6 +36,7 @@ interface GlassBoxInspectorProps {
   highlightToken: number;
   onJumpToCitation: (citationId: string) => void;
   onClose: () => void;
+  selectorLabel?: string;
 }
 
 const TABS: { id: InspectorTab; label: string; icon: React.FC<{ className?: string }> }[] = [
@@ -1083,6 +1084,7 @@ export const GlassBoxInspector: React.FC<GlassBoxInspectorProps> = ({
   highlightToken,
   onJumpToCitation,
   onClose,
+  selectorLabel = "Inspecting Turn",
 }) => {
   const safeIdx =
     selectedTurnIndex >= 0 && selectedTurnIndex < turns.length
@@ -1117,7 +1119,7 @@ export const GlassBoxInspector: React.FC<GlassBoxInspectorProps> = ({
         <div className="border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]/40 px-3 py-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Inspecting Turn
+              {selectorLabel}
             </span>
             {activeTurn && (
               <span className="rounded bg-[var(--bg-panel)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
