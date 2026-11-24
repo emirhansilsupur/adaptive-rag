@@ -14,6 +14,12 @@ from adaptiverag.config import ConfidenceConfig
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.llm.structured import invoke_structured
+from adaptiverag.observability.prompts import (
+    DEFAULT_PROMPTS,
+    PROMPT_CRAG_GRADER,
+    PromptManager,
+    ResolvedPrompt,
+)
 from adaptiverag.schemas.response import TokenUsage
 from adaptiverag.schemas.retrieval import (
     ConfidenceAction,
@@ -30,16 +36,7 @@ logger = structlog.get_logger(__name__)
 _CRAG_MAX_CHUNKS_IN_PROMPT = 6
 _CRAG_EXCERPT_CHAR_LIMIT = 500
 
-_CRAG_SYSTEM_PROMPT = """You are a strict Retrieval Sufficiency Grader (CRAG evaluator) for a multilingual (Turkish & English) technical RAG system.
-
-Given a user question and retrieved evidence passages, judge whether the passages contain sufficient factual evidence to answer the question accurately WITHOUT guessing or relying on outside memory.
-
-Grading rubric:
-- "sufficient": Passages directly and completely cover the core question (and all major sub-parts if analytical/comparative).
-- "partial": Passages cover only part of the question, are somewhat tangential, or miss key details/comparisons needed for a complete answer.
-- "insufficient": Passages are off-topic, outdated relative to what is asked, or do not contain the required facts.
-
-List any concrete missing aspects in `missing_aspects` (empty list when sufficient) and give a concise 1-sentence justification in `reasoning`."""
+_CRAG_SYSTEM_PROMPT = DEFAULT_PROMPTS[PROMPT_CRAG_GRADER].template
 
 
 @dataclass(frozen=True)
@@ -171,6 +168,8 @@ async def assess_retrieval_confidence(
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
     callbacks: list[Any] | None = None,
+    prompt_manager: PromptManager | None = None,
+    prompt_out: list[ResolvedPrompt] | None = None,
 ) -> tuple[ConfidenceAssessment, TokenUsage]:
     """Evaluate retrieval quality via deterministic fast paths and optional CRAG grading.
 
@@ -282,8 +281,19 @@ async def assess_retrieval_confidence(
 
     # Ambiguous band [low_threshold, high_threshold): invoke CRAG grader if enabled
     if config.enable_crag_grader_in_ambiguous_band and fast_model is not None:
+        resolved_prompt = (
+            prompt_manager.resolve(PROMPT_CRAG_GRADER)
+            if prompt_manager is not None
+            else ResolvedPrompt(
+                name=PROMPT_CRAG_GRADER,
+                text=_CRAG_SYSTEM_PROMPT,
+                source="local_fallback",
+            )
+        )
+        if prompt_out is not None:
+            prompt_out.append(resolved_prompt)
         messages = [
-            SystemMessage(content=_CRAG_SYSTEM_PROMPT),
+            SystemMessage(content=resolved_prompt.text),
             HumanMessage(content=_build_crag_user_prompt(query, sub_queries, selected_chunks)),
         ]
         try:
@@ -297,6 +307,8 @@ async def assess_retrieval_confidence(
                 cache=cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                langfuse_prompt=resolved_prompt.langfuse_prompt,
+                prompt_metadata=resolved_prompt.telemetry_metadata(),
             )
             judgment = crag_result.parsed
 

@@ -1,5 +1,55 @@
-"""Observability and tracing utilities."""
+"""Observability, structured logging, Langfuse v5 tracing, and Prompt Management utilities."""
 
-from adaptiverag.observability.tracing import configure_logging, get_langfuse_callback
+from adaptiverag.observability.prompts import (
+    DEFAULT_PROMPTS,
+    PROMPT_CITATION_ENTAILMENT,
+    PROMPT_CONVERSATIONAL,
+    PROMPT_CORRECTIVE_REWRITE,
+    PROMPT_CRAG_GRADER,
+    PROMPT_DECOMPOSE,
+    PROMPT_GROUNDED_SYNTHESIS,
+    PROMPT_ROUTER,
+    PROMPT_STRICT_REGENERATION,
+    PromptDefinition,
+    PromptManager,
+    PromptSyncItem,
+    PromptSyncResult,
+    ResolvedPrompt,
+    compile_mustache_template,
+    sync_prompts_to_langfuse,
+)
+from adaptiverag.observability.tracing import (
+    FeedbackRecordResult,
+    LangfuseObservability,
+    OnlineScoreSpec,
+    TraceRunHandle,
+    build_online_quality_scores,
+    configure_logging,
+    get_langfuse_callback,
+)
 
-__all__ = ["configure_logging", "get_langfuse_callback"]
+__all__ = [
+    "DEFAULT_PROMPTS",
+    "PROMPT_CITATION_ENTAILMENT",
+    "PROMPT_CONVERSATIONAL",
+    "PROMPT_CORRECTIVE_REWRITE",
+    "PROMPT_CRAG_GRADER",
+    "PROMPT_DECOMPOSE",
+    "PROMPT_GROUNDED_SYNTHESIS",
+    "PROMPT_ROUTER",
+    "PROMPT_STRICT_REGENERATION",
+    "FeedbackRecordResult",
+    "LangfuseObservability",
+    "OnlineScoreSpec",
+    "PromptDefinition",
+    "PromptManager",
+    "PromptSyncItem",
+    "PromptSyncResult",
+    "ResolvedPrompt",
+    "TraceRunHandle",
+    "build_online_quality_scores",
+    "compile_mustache_template",
+    "configure_logging",
+    "get_langfuse_callback",
+    "sync_prompts_to_langfuse",
+]

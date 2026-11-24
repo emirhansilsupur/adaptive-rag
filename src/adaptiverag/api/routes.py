@@ -16,6 +16,8 @@ from adaptiverag.api.dependencies import AppContainer, get_container
 from adaptiverag.api.schemas import (
     DeleteDocumentResponse,
     DocumentListResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     HealthResponse,
     IndexedDocumentInfo,
     IngestRequest,
@@ -97,10 +99,14 @@ async def health_check(
             "base_url": settings.firecrawl_local_url,
         }
 
+    langfuse_info = container.get_observability().health_summary()
+    langfuse_info["prompt_management"] = container.get_prompt_manager().health_summary()
+
     return HealthResponse(
         status=overall_status,
         qdrant=qdrant_info,
         firecrawl=firecrawl_info,
+        langfuse=langfuse_info,
         llm_configured=llm_ok,
         llm_error=llm_error,
         llm_provider=settings.llm_provider,
@@ -111,7 +117,7 @@ async def health_check(
         reranker_model=settings.reranker_model,
         web_fallback_enabled=fallback_enabled,
         web_fallback_providers=fallback_providers,
-        langfuse_enabled=settings.langfuse_enabled,
+        langfuse_enabled=bool(langfuse_info.get("enabled", settings.langfuse_enabled)),
         llm_cache_enabled=settings.llm_cache_enabled,
         default_max_run_cost_usd=settings.max_run_cost_usd,
     )
@@ -135,6 +141,9 @@ async def run_query(
             chat_history=payload.chat_history,
             ablation=ablation,
             cost_tracker=request_tracker,
+            session_id=payload.session_id,
+            user_id=payload.user_id,
+            preset_name=payload.resolve_preset_label(),
         )
         return answer
     except BudgetExceededError as exc:
@@ -168,6 +177,9 @@ async def stream_query(
                 chat_history=payload.chat_history,
                 ablation=ablation,
                 cost_tracker=request_tracker,
+                session_id=payload.session_id,
+                user_id=payload.user_id,
+                preset_name=payload.resolve_preset_label(),
             ):
                 if await http_request.is_disconnected():
                     logger.info("sse_client_disconnected")
@@ -498,4 +510,31 @@ async def delete_indexed_document(
         doc_id=cleaned_id,
         deleted_chunks=deleted_chunks,
         remaining_collection_points=remaining,
+    )
+
+
+@router.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    summary="Record human-in-the-loop feedback score for a traced answer",
+)
+async def submit_feedback(
+    payload: FeedbackRequest,
+    container: AppContainer = Depends(get_container),  # noqa: B008
+) -> FeedbackResponse:
+    """Record thumbs-up/down feedback on a trace_id and forward to Langfuse when enabled."""
+    outcome = container.get_observability().record_user_feedback(
+        trace_id=payload.trace_id,
+        score=payload.score,
+        comment=payload.comment,
+        session_id=payload.session_id,
+        query=payload.query,
+    )
+    return FeedbackResponse(
+        status="recorded",
+        trace_id=outcome.trace_id,
+        score=outcome.score,
+        comment=outcome.comment,
+        persisted_to_langfuse=outcome.persisted_to_langfuse,
+        langfuse_error=outcome.langfuse_error,
     )

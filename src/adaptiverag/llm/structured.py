@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from pydantic import BaseModel, ValidationError
 
 from adaptiverag.llm.cache import SQLiteLLMCache
@@ -124,6 +124,52 @@ def extract_json_payload(raw_text: str) -> str:
     raise ValueError(f"Could not extract valid JSON object from LLM response: {raw_text[:200]!r}")
 
 
+async def _ainvoke_model(
+    model: BaseChatModel,
+    messages: list[BaseMessage],
+    *,
+    callbacks: list[Any] | None = None,
+    langfuse_prompt: Any | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
+) -> BaseMessage:
+    """Invoke a chat model and natively bind a Langfuse managed prompt object when present.
+
+    Langfuse v5's LangChain ``CallbackHandler`` registers ``metadata["langfuse_prompt"]``
+    from an ``on_chain_start`` event and links it to the immediate child generation span.
+    Wrapping the model with a zero-overhead ``RunnableLambda | model`` sequence *only* when
+    a live Langfuse prompt object is supplied preserves exact generation-to-prompt version
+    attribution without altering local-fallback behavior.
+    """
+    invoke_config: RunnableConfig = {}
+    if callbacks:
+        invoke_config["callbacks"] = callbacks
+    if prompt_metadata:
+        invoke_config["metadata"] = {"prompt": dict(prompt_metadata)}
+    resolved_config: RunnableConfig | None = invoke_config or None
+
+    if langfuse_prompt is not None:
+        prompt_name = (
+            str(prompt_metadata.get("name", "managed"))
+            if isinstance(prompt_metadata, dict)
+            else "managed"
+        )
+        step_metadata: dict[str, Any] = {"langfuse_prompt": langfuse_prompt}
+        if prompt_metadata:
+            step_metadata["prompt"] = dict(prompt_metadata)
+
+        def _identity(msgs: list[BaseMessage]) -> list[BaseMessage]:
+            return msgs
+
+        prompt_step = RunnableLambda(_identity).with_config(
+            run_name=f"prompt:{prompt_name}",
+            metadata=step_metadata,
+        )
+        chain = prompt_step | model
+        return await chain.ainvoke(messages, config=resolved_config)
+
+    return await model.ainvoke(messages, config=resolved_config)
+
+
 async def invoke_text(
     model: BaseChatModel,
     messages: list[BaseMessage],
@@ -133,6 +179,8 @@ async def invoke_text(
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
     callbacks: list[Any] | None = None,
+    langfuse_prompt: Any | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> LLMTextResult:
     """Invoke a chat model for plain text with optional SQLite caching and budget tracking."""
     cache_key: str | None = None
@@ -153,8 +201,13 @@ async def invoke_text(
     if cost_tracker is not None:
         cost_tracker.assert_within_budget()
 
-    config: RunnableConfig | None = RunnableConfig(callbacks=callbacks) if callbacks else None
-    response = await model.ainvoke(messages, config=config)
+    response = await _ainvoke_model(
+        model,
+        messages,
+        callbacks=callbacks,
+        langfuse_prompt=langfuse_prompt,
+        prompt_metadata=prompt_metadata,
+    )
     text = _extract_text(response)
     usage = _extract_token_usage(response, model_name)
 
@@ -185,6 +238,8 @@ async def invoke_structured[T: BaseModel](
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
     callbacks: list[Any] | None = None,
+    langfuse_prompt: Any | None = None,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> LLMStructuredResult[T]:
     """Invoke a chat model and parse output into a strict Pydantic v2 schema.
 
@@ -231,8 +286,13 @@ async def invoke_structured[T: BaseModel](
         if cost_tracker is not None:
             cost_tracker.assert_within_budget()
 
-        config: RunnableConfig | None = RunnableConfig(callbacks=callbacks) if callbacks else None
-        response = await model.ainvoke(conversation, config=config)
+        response = await _ainvoke_model(
+            model,
+            conversation,
+            callbacks=callbacks,
+            langfuse_prompt=langfuse_prompt,
+            prompt_metadata=prompt_metadata,
+        )
         raw_text = _extract_text(response)
         last_raw = raw_text
 

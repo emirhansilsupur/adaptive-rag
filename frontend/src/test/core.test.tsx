@@ -1,5 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { AnswerTelemetryBar } from "../components/AnswerTelemetryBar";
+import { ChatWorkspace } from "../components/ChatWorkspace";
 import { GlassBoxInspector } from "../components/GlassBoxInspector";
 import { KnowledgeBaseView } from "../components/KnowledgeBaseView";
 import { MarkdownWithCitations } from "../components/MarkdownWithCitations";
@@ -78,10 +80,12 @@ describe("API payload helpers", () => {
       preset: "full",
       customAblation: DEFAULT_CUSTOM_ABLATION,
       maxCostUsd: 0.05,
+      sessionId: "sess_abc",
     });
     expect(presetReq.preset).toBe("full");
     expect(presetReq.ablation).toBeUndefined();
     expect(presetReq.max_cost_usd).toBe(0.05);
+    expect(presetReq.session_id).toBe("sess_abc");
 
     const customReq = buildQueryPayload({
       query: "What is RRF?",
@@ -345,5 +349,82 @@ describe("KnowledgeBaseView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Web" }));
     expect(screen.queryByText("Qdrant Hybrid Guide")).not.toBeInTheDocument();
     expect(screen.getByText("Firecrawl Local Quickstart")).toBeInTheDocument();
+  });
+});
+
+describe("Langfuse Trace Link & Human-in-the-Loop Feedback UI", () => {
+  const sampleTurn: ChatTurn = {
+    id: "turn_lf_1",
+    query: "How does Qdrant hybrid search work?",
+    createdAt: Date.now(),
+    presetLabel: "Full Agentic",
+    result: {
+      query: "How does Qdrant hybrid search work?",
+      answer: "Qdrant fuses dense and BM25 sparse vectors via RRF [C1].",
+      query_type: "factual",
+      language: "en",
+      query_plan: null,
+      evidence_chunks: [],
+      dynamic_k_decision: null,
+      confidence: null,
+      citation_report: null,
+      fallback_used: false,
+      abstained: false,
+      rewrite_attempts: 0,
+      regeneration_attempts: 0,
+      total_latency_ms: 350,
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 40,
+        total_tokens: 240,
+        estimated_cost_usd: 0.0003,
+        cache_hits: 0,
+      },
+      trace: [],
+      trace_id: "00000000000000000000000000000001",
+      trace_url: "https://cloud.langfuse.com/project/demo/traces/00000000000000000000000000000001",
+    },
+  };
+
+  it("renders a clickable Langfuse trace deep-link pill in AnswerTelemetryBar", () => {
+    render(<AnswerTelemetryBar result={sampleTurn.result} />);
+    const link = screen.getByRole("link", { name: /Langfuse/i });
+    expect(link).toHaveAttribute("href", sampleTurn.result.trace_url);
+  });
+
+  it("submits thumbs-up immediately and thumbs-down with an optional comment in ChatWorkspace", async () => {
+    const onSubmitFeedback = vi.fn(async () => {});
+    render(
+      <ChatWorkspace
+        turns={[sampleTurn]}
+        selectedTurnIndex={0}
+        isRunning={false}
+        pendingQuery={null}
+        liveSteps={[]}
+        liveUsage={null}
+        streamError={null}
+        presetShortLabel="Full Agentic"
+        useStreaming={true}
+        budgetCapLabel={null}
+        onSubmitQuery={vi.fn()}
+        onStopStream={vi.fn()}
+        onInspectTurn={vi.fn()}
+        onCitationClick={vi.fn()}
+        onSubmitFeedback={onSubmitFeedback}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark answer helpful" }));
+    await waitFor(() => {
+      expect(onSubmitFeedback).toHaveBeenCalledWith("turn_lf_1", 1, undefined);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark answer unhelpful" }));
+    const noteInput = screen.getByPlaceholderText(/Optional note/i);
+    fireEvent.change(noteInput, { target: { value: "Missing Turkish summary" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+    await waitFor(() => {
+      expect(onSubmitFeedback).toHaveBeenCalledWith("turn_lf_1", 0, "Missing Turkish summary");
+    });
   });
 });

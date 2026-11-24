@@ -1,4 +1,4 @@
-.PHONY: install up up-full down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval
+.PHONY: install up up-full down ingest api ui ui-install ui-build ui-test ui-legacy test test-unit lint typecheck ci eval eval-langfuse prompts-list prompts-sync
 
 install:
 	uv sync --extra ui --extra eval --group dev
@@ -54,3 +54,12 @@ ci: lint typecheck ui-test ui-build
 
 eval:
 	uv run python -m eval.run_benchmark
+
+eval-langfuse:
+	uv run python -m eval.run_benchmark --mode offline-ir --in-memory --langfuse-sync
+
+prompts-list:
+	uv run python -m adaptiverag.observability.prompts --list
+
+prompts-sync:
+	uv run python -m adaptiverag.observability.prompts --seed

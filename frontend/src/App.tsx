@@ -22,6 +22,7 @@ import {
   fetchHealth,
   runQueryBatch,
   streamQuery,
+  submitFeedback,
 } from "./lib/api";
 import type {
   AblationConfig,
@@ -292,6 +293,47 @@ export default function App() {
     abortControllerRef.current?.abort();
   };
 
+  const handleSubmitFeedback = async (
+    turnId: string,
+    score: 0 | 1,
+    comment?: string
+  ) => {
+    if (!activeSession) return;
+    const targetTurn = activeSession.turns.find((t) => t.id === turnId);
+    const traceId = targetTurn?.result.trace_id;
+    if (!targetTurn || !traceId) return;
+
+    const resp = await submitFeedback(apiUrl, {
+      trace_id: traceId,
+      score,
+      comment,
+      session_id: activeSession.id,
+      query: targetTurn.query,
+    });
+
+    setSessions((prev) =>
+      prev.map((sess) => {
+        if (sess.id !== activeSession.id) return sess;
+        return {
+          ...sess,
+          turns: sess.turns.map((turn) =>
+            turn.id === turnId
+              ? {
+                  ...turn,
+                  feedback: {
+                    score,
+                    comment: resp.comment ?? comment,
+                    persistedToLangfuse: resp.persisted_to_langfuse,
+                    submittedAt: Date.now(),
+                  },
+                }
+              : turn
+          ),
+        };
+      })
+    );
+  };
+
   const presetMeta =
     PRESET_OPTIONS.find((p) => p.value === preset) ?? PRESET_OPTIONS[0];
 
@@ -310,6 +352,7 @@ export default function App() {
       preset,
       customAblation,
       maxCostUsd: enableBudgetCap ? maxCostUsd : null,
+      sessionId: targetSessionId,
     });
 
     const controller = new AbortController();
@@ -552,6 +595,7 @@ export default function App() {
                 onStopStream={handleStopStream}
                 onInspectTurn={handleInspectTurn}
                 onCitationClick={handleCitationClick}
+                onSubmitFeedback={handleSubmitFeedback}
               />
 
               {/* Resizable Glass-Box Inspector */}

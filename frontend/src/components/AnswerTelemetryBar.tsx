@@ -1,10 +1,12 @@
 import React from "react";
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   Clock,
   Coins,
   Compass,
+  ExternalLink,
   Globe,
   RefreshCw,
   ShieldAlert,
@@ -129,6 +131,21 @@ export const AnswerTelemetryBar: React.FC<AnswerTelemetryBarProps> = ({
           <Zap className="h-3 w-3" />
           <span>Cache ×{usage.cache_hits}</span>
         </span>
+      )}
+
+      {result.trace_url && (
+        <a
+          href={result.trace_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title={result.trace_id ? `Open Langfuse trace ${result.trace_id}` : "Open in Langfuse"}
+          className="inline-flex items-center gap-1 rounded-full border border-indigo-500/35 bg-indigo-500/10 px-2.5 py-0.5 text-indigo-700 transition hover:bg-indigo-500/20 dark:text-indigo-300"
+        >
+          <Activity className="h-3 w-3" />
+          <span>Langfuse</span>
+          <ExternalLink className="h-2.5 w-2.5 opacity-80" />
+        </a>
       )}
     </div>
   );

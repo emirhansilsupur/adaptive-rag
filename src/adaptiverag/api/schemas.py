@@ -34,6 +34,16 @@ class QueryRequest(BaseModel):
         le=50.0,
         description="Optional per-request hard USD cost cap (FinOps guardrail).",
     )
+    session_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional UI/client session identifier grouped in Langfuse Sessions.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional end-user identifier attached to observability traces.",
+    )
 
     @field_validator("query")
     @classmethod
@@ -42,6 +52,20 @@ class QueryRequest(BaseModel):
         if not cleaned:
             raise ValueError("query must not be empty or whitespace-only.")
         return cleaned
+
+    @field_validator("session_id", "user_id")
+    @classmethod
+    def _strip_optional_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def resolve_preset_label(self) -> str:
+        """Return the effective preset label for trace tagging and analytics."""
+        if self.ablation is not None:
+            return "custom"
+        return self.preset or "full"
 
     def resolve_ablation(self) -> AblationConfig:
         """Resolve the effective AblationConfig from explicit overrides or preset name."""
@@ -217,6 +241,55 @@ class DeleteDocumentResponse(BaseModel):
     remaining_collection_points: int = Field(ge=0)
 
 
+class FeedbackRequest(BaseModel):
+    """Payload for POST /v1/feedback recording human-in-the-loop answer quality scores."""
+
+    trace_id: str = Field(
+        min_length=8,
+        max_length=128,
+        description="Trace ID returned on FinalAnswer.trace_id.",
+    )
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Normalized user rating (1.0 = thumbs up / helpful, 0.0 = thumbs down).",
+    )
+    comment: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Optional qualitative explanation from the reviewer or user.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional session identifier for correlation.",
+    )
+    query: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional query preview attached to feedback metadata.",
+    )
+
+    @field_validator("trace_id")
+    @classmethod
+    def _strip_trace_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 8:
+            raise ValueError("trace_id must contain at least 8 non-whitespace characters.")
+        return cleaned
+
+
+class FeedbackResponse(BaseModel):
+    """Response payload for POST /v1/feedback."""
+
+    status: Literal["recorded"] = "recorded"
+    trace_id: str
+    score: float
+    comment: str | None = None
+    persisted_to_langfuse: bool = False
+    langfuse_error: str | None = None
+
+
 class HealthResponse(BaseModel):
     """Operational readiness & configuration summary for GET /v1/health."""
 
@@ -224,6 +297,7 @@ class HealthResponse(BaseModel):
     version: str = "0.1.0"
     qdrant: dict[str, Any]
     firecrawl: dict[str, Any] = Field(default_factory=dict)
+    langfuse: dict[str, Any] = Field(default_factory=dict)
     llm_configured: bool
     llm_error: str | None = None
     llm_provider: str

@@ -13,13 +13,13 @@ from langchain_core.runnables import RunnableConfig
 from adaptiverag.config import Settings, StrategiesConfig
 from adaptiverag.graph.prompts import (
     build_abstention_message,
-    build_conversational_messages,
-    build_corrective_rewrite_messages,
-    build_decompose_messages,
-    build_generation_messages,
-    build_router_messages,
-    build_strict_regeneration_messages,
     detect_language_heuristic,
+    resolve_conversational_prompt,
+    resolve_corrective_rewrite_prompt,
+    resolve_decompose_prompt,
+    resolve_generation_prompt,
+    resolve_router_prompt,
+    resolve_strict_regeneration_prompt,
 )
 from adaptiverag.graph.state import AblationConfig, AgentState
 from adaptiverag.ingestion.chunker import count_tokens
@@ -27,6 +27,8 @@ from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.llm.factory import ModelBundle
 from adaptiverag.llm.structured import invoke_structured, invoke_text
+from adaptiverag.observability.prompts import PromptManager, ResolvedPrompt
+from adaptiverag.observability.tracing import LangfuseObservability
 from adaptiverag.retrieval.dynamic_k import assign_citation_ids, select_dynamic_top_k
 from adaptiverag.retrieval.fallback import FallbackRetriever
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
@@ -75,6 +77,8 @@ class GraphRuntime:
     cache: SQLiteLLMCache | None = None
     cost_tracker: CostTracker | None = None
     callbacks: list[Any] | None = None
+    observability: LangfuseObservability | None = None
+    prompt_manager: PromptManager | None = None
 
 
 def _elapsed_ms(started_at: float) -> float:
@@ -223,7 +227,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "trace": [event],
             }
 
-        messages = build_router_messages(query, chat_history)
+        messages, resolved_prompt = resolve_router_prompt(
+            query,
+            chat_history,
+            prompt_manager=runtime.prompt_manager,
+        )
         try:
             res = await invoke_structured(
                 runtime.models.fast_model,
@@ -235,6 +243,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                langfuse_prompt=resolved_prompt.langfuse_prompt,
+                prompt_metadata=resolved_prompt.telemetry_metadata(),
             )
             node_usage = res.usage
             cls = res.parsed
@@ -289,6 +299,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "standalone_query": plan.standalone_query,
                 "requires_fresh_web_info": plan.requires_fresh_web_info,
                 "reasoning": plan.reasoning,
+                "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
         return {
@@ -308,10 +319,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         chat_history = state.get("chat_history") or []
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages = build_conversational_messages(
+        messages, resolved_prompt = resolve_conversational_prompt(
             query=state["query"],
             language=plan.language,
             chat_history=chat_history,
+            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.fast_model,
@@ -321,13 +333,19 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
+            langfuse_prompt=resolved_prompt.langfuse_prompt,
+            prompt_metadata=resolved_prompt.telemetry_metadata(),
         )
 
         event = NodeTraceEvent(
             node="conversational_respond",
             latency_ms=_elapsed_ms(started),
             summary=f"Direct conversational reply via {runtime.models.fast_model_name} (0 retrieval calls)",
-            metadata={"model": runtime.models.fast_model_name, "from_cache": res.from_cache},
+            metadata={
+                "model": runtime.models.fast_model_name,
+                "from_cache": res.from_cache,
+                "prompt": resolved_prompt.telemetry_metadata(),
+            },
         )
         return {
             "draft_answer": res.text.strip(),
@@ -346,10 +364,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         sub_queries = [plan.standalone_query]
         rationale = ""
 
-        messages = build_decompose_messages(
+        messages, resolved_prompt = resolve_decompose_prompt(
             plan.standalone_query,
             language=plan.language,
             max_sub_queries=max_subs,
+            prompt_manager=runtime.prompt_manager,
         )
         try:
             res = await invoke_structured(
@@ -362,6 +381,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                langfuse_prompt=resolved_prompt.langfuse_prompt,
+                prompt_metadata=resolved_prompt.telemetry_metadata(),
             )
             node_usage = res.usage
             deduped = _deduplicate_queries(res.parsed.sub_queries, limit=max_subs)
@@ -378,7 +399,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             node="decompose_queries",
             latency_ms=_elapsed_ms(started),
             summary=f"Decomposed analytical query into {len(sub_queries)} sub-queries",
-            metadata={"sub_queries": sub_queries, "rationale": rationale},
+            metadata={
+                "sub_queries": sub_queries,
+                "rationale": rationale,
+                "prompt": resolved_prompt.telemetry_metadata(),
+            },
         )
         return {
             "query_plan": updated_plan,
@@ -499,6 +524,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
         node_usage = TokenUsage()
+        crag_prompts: list[ResolvedPrompt] = []
         if not ablation.enable_confidence_gating:
             signals = compute_deterministic_confidence(
                 selected, active_queries, runtime.strategies.confidence
@@ -544,7 +570,22 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                prompt_manager=runtime.prompt_manager,
+                prompt_out=crag_prompts,
             )
+
+        confidence_meta: dict[str, Any] = {
+            "deterministic_score": assessment.deterministic_score,
+            "final_score": assessment.final_score,
+            "top1_score": assessment.top1_score,
+            "mean_topk_score": assessment.mean_topk_score,
+            "subquery_coverage": assessment.subquery_coverage,
+            "crag_grade": assessment.crag_grade.value if assessment.crag_grade else None,
+            "level": assessment.level.value,
+            "recommended_action": assessment.recommended_action.value,
+        }
+        if crag_prompts:
+            confidence_meta["prompt"] = crag_prompts[-1].telemetry_metadata()
 
         event = NodeTraceEvent(
             node="score_confidence",
@@ -553,16 +594,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 f"Confidence {assessment.level.value.upper()} ({assessment.final_score:.3f}) -> "
                 f"{assessment.recommended_action.value}"
             ),
-            metadata={
-                "deterministic_score": assessment.deterministic_score,
-                "final_score": assessment.final_score,
-                "top1_score": assessment.top1_score,
-                "mean_topk_score": assessment.mean_topk_score,
-                "subquery_coverage": assessment.subquery_coverage,
-                "crag_grade": assessment.crag_grade.value if assessment.crag_grade else None,
-                "level": assessment.level.value,
-                "recommended_action": assessment.recommended_action.value,
-            },
+            metadata=confidence_meta,
         )
         return {
             "confidence": assessment,
@@ -582,12 +614,13 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         rewritten = list(prior_queries)
         diagnosis = ""
 
-        messages = build_corrective_rewrite_messages(
+        messages, resolved_prompt = resolve_corrective_rewrite_prompt(
             original_query=plan.original_query,
             standalone_query=plan.standalone_query,
             prior_queries=prior_queries,
             confidence=confidence,
             language=plan.language,
+            prompt_manager=runtime.prompt_manager,
         )
         try:
             res = await invoke_structured(
@@ -600,6 +633,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                langfuse_prompt=resolved_prompt.langfuse_prompt,
+                prompt_metadata=resolved_prompt.telemetry_metadata(),
             )
             node_usage = res.usage
             max_rewrite_queries = max(2, min(3, max(plan.strategy.max_sub_queries, 2)))
@@ -620,6 +655,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "attempt": attempt,
                 "rewritten_queries": rewritten,
                 "diagnosis": diagnosis,
+                "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
         return {
@@ -702,13 +738,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         chat_history = state.get("chat_history") or []
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages = build_generation_messages(
+        messages, resolved_prompt = resolve_generation_prompt(
             query=state["query"],
             standalone_query=plan.standalone_query,
             language=plan.language,
             chunks=chunks,
             chat_history=chat_history,
             query_type=plan.query_type,
+            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.generation_model,
@@ -718,6 +755,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
+            langfuse_prompt=resolved_prompt.langfuse_prompt,
+            prompt_metadata=resolved_prompt.telemetry_metadata(),
         )
 
         event = NodeTraceEvent(
@@ -731,6 +770,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "model": runtime.models.generation_model_name,
                 "evidence_count": len(chunks),
                 "from_cache": res.from_cache,
+                "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
         return {
@@ -749,6 +789,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
         node_usage = TokenUsage()
+        entail_prompts: list[ResolvedPrompt] = []
         if not ablation.enable_citation_validation:
             report = validate_citations_structural(
                 draft_answer,
@@ -766,10 +807,26 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
+                prompt_manager=runtime.prompt_manager,
+                prompt_out=entail_prompts,
             )
 
         if regen_attempts > 0:
             report = report.model_copy(update={"regeneration_triggered": True})
+
+        cite_meta: dict[str, Any] = {
+            "passed": report.passed,
+            "citation_precision": report.citation_precision,
+            "claim_support_rate": report.claim_support_rate,
+            "valid_citation_ids": report.valid_citation_ids,
+            "invalid_citation_ids": report.invalid_citation_ids,
+            "uncited_count": len(report.uncited_factual_sentences),
+            "audited_claims": len(report.claim_verifications),
+            "regeneration_attempts": regen_attempts,
+            "validation_enabled": ablation.enable_citation_validation,
+        }
+        if entail_prompts:
+            cite_meta["prompt"] = entail_prompts[-1].telemetry_metadata()
 
         event = NodeTraceEvent(
             node="validate_citations",
@@ -780,17 +837,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 f"support={report.claim_support_rate:.2f}, "
                 f"invalid={len(report.invalid_citation_ids)})"
             ),
-            metadata={
-                "passed": report.passed,
-                "citation_precision": report.citation_precision,
-                "claim_support_rate": report.claim_support_rate,
-                "valid_citation_ids": report.valid_citation_ids,
-                "invalid_citation_ids": report.invalid_citation_ids,
-                "uncited_count": len(report.uncited_factual_sentences),
-                "audited_claims": len(report.claim_verifications),
-                "regeneration_attempts": regen_attempts,
-                "validation_enabled": ablation.enable_citation_validation,
-            },
+            metadata=cite_meta,
         )
         return {
             "citation_report": report,
@@ -807,13 +854,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         attempt = state.get("regeneration_attempts", 0) + 1
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
-        messages = build_strict_regeneration_messages(
+        messages, resolved_prompt = resolve_strict_regeneration_prompt(
             query=state["query"],
             standalone_query=plan.standalone_query,
             language=plan.language,
             chunks=chunks,
             previous_draft=previous_draft,
             report=report,
+            prompt_manager=runtime.prompt_manager,
         )
         res = await invoke_text(
             runtime.models.generation_model,
@@ -823,6 +871,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
+            langfuse_prompt=resolved_prompt.langfuse_prompt,
+            prompt_metadata=resolved_prompt.telemetry_metadata(),
         )
 
         event = NodeTraceEvent(
@@ -836,6 +886,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "attempt": attempt,
                 "model": runtime.models.generation_model_name,
                 "from_cache": res.from_cache,
+                "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
         return {

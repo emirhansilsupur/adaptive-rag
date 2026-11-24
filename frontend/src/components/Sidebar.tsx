@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  Activity,
   ChevronDown,
   ChevronRight,
   Database,
@@ -80,6 +81,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const qdrantPoints = health?.qdrant?.points_count ?? 0;
   const fcStatus = health?.firecrawl?.status;
+  const lfMode = health?.langfuse?.mode ?? (health?.langfuse_enabled ? "cloud" : "disabled");
+  const lfLabel =
+    lfMode === "cloud"
+      ? "Cloud"
+      : lfMode === "self_hosted"
+        ? "Self-Hosted"
+        : lfMode === "misconfigured"
+          ? "Keys Missing"
+          : "Off";
   const statusTone = !health
     ? "bg-rose-500"
     : health.status === "ok"
@@ -427,7 +437,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     fcStatus === "ok" ? "text-emerald-400" : "text-slate-500"
                   }`}
                 />
-                <span>Firecrawl: {fcStatus || "unknown"}</span>
+                <span>FC: {fcStatus || "off"}</span>
+                <span className="opacity-40">·</span>
+                <Activity
+                  className={`h-2.5 w-2.5 shrink-0 ${
+                    lfMode === "cloud" || lfMode === "self_hosted"
+                      ? "text-indigo-400"
+                      : lfMode === "misconfigured"
+                        ? "text-amber-400"
+                        : "text-slate-500"
+                  }`}
+                />
+                <span>LF: {lfLabel}</span>
               </div>
             </div>
           </button>
@@ -493,6 +514,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <dt className="text-[var(--text-muted)]">Firecrawl</dt>
                   <dd className="truncate text-[var(--text-primary)]">
                     {health.firecrawl?.status || "disabled"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-[var(--text-muted)]">Langfuse</dt>
+                  <dd className="truncate text-[var(--text-primary)]">
+                    {lfLabel}
+                    {health.langfuse?.environment && lfMode !== "disabled"
+                      ? ` (${health.langfuse.environment})`
+                      : ""}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-[var(--text-muted)]">Prompts</dt>
+                  <dd className="truncate text-[var(--text-primary)]">
+                    {health.langfuse?.prompt_management?.active
+                      ? `Langfuse (${health.langfuse.prompt_management.label ?? "production"})`
+                      : `Local (${health.langfuse?.prompt_management?.managed_prompts ?? 8})`}
                   </dd>
                 </div>
               </dl>

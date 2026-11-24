@@ -58,3 +58,5 @@ class FinalAnswer(BaseModel):
     total_latency_ms: float = Field(default=0.0, ge=0.0)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     trace: list[NodeTraceEvent] = Field(default_factory=list)
+    trace_id: str | None = None
+    trace_url: str | None = None

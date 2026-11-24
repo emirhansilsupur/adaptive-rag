@@ -41,6 +41,8 @@ export interface QueryRequest {
   preset?: AblationPreset;
   ablation?: AblationConfig;
   max_cost_usd?: number;
+  session_id?: string;
+  user_id?: string;
 }
 
 export interface StrategyProfile {
@@ -161,6 +163,43 @@ export interface FinalAnswer {
   total_latency_ms: number;
   usage: TokenUsage;
   trace: NodeTraceEvent[];
+  trace_id?: string | null;
+  trace_url?: string | null;
+}
+
+export interface FeedbackRequest {
+  trace_id: string;
+  score: 0 | 1;
+  comment?: string;
+  session_id?: string;
+  query?: string;
+}
+
+export interface FeedbackResponse {
+  status: "recorded";
+  trace_id: string;
+  score: number;
+  comment: string | null;
+  persisted_to_langfuse: boolean;
+  langfuse_error: string | null;
+}
+
+export interface LangfusePromptManagementHealthInfo {
+  enabled?: boolean;
+  active?: boolean;
+  mode?: "langfuse" | "local_fallback";
+  label?: string;
+  cache_ttl_seconds?: number;
+  managed_prompts?: number;
+}
+
+export interface LangfuseHealthInfo {
+  enabled?: boolean;
+  configured?: boolean;
+  mode?: "cloud" | "self_hosted" | "misconfigured" | "disabled";
+  host?: string;
+  environment?: string;
+  prompt_management?: LangfusePromptManagementHealthInfo;
 }
 
 export interface QdrantHealthInfo {
@@ -185,6 +224,7 @@ export interface HealthResponse {
   version: string;
   qdrant: QdrantHealthInfo;
   firecrawl: FirecrawlHealthInfo;
+  langfuse?: LangfuseHealthInfo;
   llm_configured: boolean;
   llm_error: string | null;
   llm_provider: string;
@@ -271,12 +311,20 @@ export interface LiveStreamStep {
   metadata: Record<string, unknown>;
 }
 
+export interface TurnFeedback {
+  score: 0 | 1;
+  comment?: string;
+  persistedToLangfuse: boolean;
+  submittedAt: number;
+}
+
 export interface ChatTurn {
   id: string;
   query: string;
   createdAt: number;
   presetLabel: string;
   result: FinalAnswer;
+  feedback?: TurnFeedback;
 }
 
 export interface ChatSession {

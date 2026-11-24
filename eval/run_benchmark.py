@@ -35,7 +35,7 @@ from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
 from adaptiverag.ingestion.chunker import chunk_documents, count_tokens
 from adaptiverag.ingestion.loader import LoadedDocument, load_directory
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
-from adaptiverag.observability.tracing import configure_logging
+from adaptiverag.observability.tracing import LangfuseObservability, configure_logging
 from adaptiverag.retrieval.dynamic_k import select_dynamic_top_k
 from adaptiverag.retrieval.embeddings import DenseEmbedder
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore, RetrievalMode
@@ -50,6 +50,7 @@ from eval.datasets import (
     load_golden_jsonl,
     load_huggingface_dataset,
 )
+from eval.langfuse_eval import publish_benchmark_report_to_langfuse
 from eval.metrics import (
     aggregate_config_summary,
     build_ablation_chart_html,
@@ -402,6 +403,8 @@ async def run_live_ablation_benchmark(
                     query.query,
                     ablation=ablation,
                     cost_tracker=shared_tracker,
+                    preset_name=config_name,
+                    trace_tags=["mode:benchmark", f"stratum:{query.stratum.value}"],
                 )
                 cfg_queries.append(query)
                 cfg_answers.append(answer)
@@ -630,6 +633,26 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=Path("eval/reports"),
         help="Directory where JSON, Markdown, and Plotly HTML reports are saved.",
     )
+    parser.add_argument(
+        "--langfuse-sync",
+        action="store_true",
+        help=(
+            "Sync golden dataset items and publish ablation + RAGAS results to Langfuse "
+            "Datasets & Experiments (requires LANGFUSE_ENABLED=true and API keys)."
+        ),
+    )
+    parser.add_argument(
+        "--langfuse-dataset",
+        type=str,
+        default="adaptiverag-golden-set",
+        help="Target Langfuse Dataset name when --langfuse-sync is enabled.",
+    )
+    parser.add_argument(
+        "--langfuse-experiment",
+        type=str,
+        default=None,
+        help="Optional experiment run name prefix in Langfuse (defaults to benchmark run_id).",
+    )
     return parser.parse_args(argv)
 
 
@@ -707,6 +730,29 @@ async def _run_cli(args: argparse.Namespace) -> int:
     markdown = render_markdown_report(report)
     print(markdown)
     print(f"Saved artifacts: {', '.join(f'{k}={v}' for k, v in artifacts.items())}")
+
+    if args.langfuse_sync:
+        obs = LangfuseObservability.from_settings(settings)
+        lf_client = obs.get_client()
+        if lf_client is None:
+            print(
+                "Langfuse sync skipped: set LANGFUSE_ENABLED=true, LANGFUSE_PUBLIC_KEY, "
+                "LANGFUSE_SECRET_KEY, and LANGFUSE_HOST in .env.",
+                file=sys.stderr,
+            )
+            return 2
+        summary = publish_benchmark_report_to_langfuse(
+            lf_client,
+            report,
+            queries,
+            dataset_name=args.langfuse_dataset,
+            experiment_prefix=args.langfuse_experiment,
+        )
+        run_list = ", ".join(f"{r.config_name}({r.items_evaluated})" for r in summary.runs)
+        print(
+            f"Published to Langfuse dataset '{summary.dataset_name}' "
+            f"(items={summary.items_synced}, prefix={summary.experiment_prefix}): {run_list}"
+        )
     return 0
 
 

@@ -3,6 +3,8 @@ import type {
   ChatMessage,
   DeleteDocumentResponse,
   DocumentListResponse,
+  FeedbackRequest,
+  FeedbackResponse,
   FinalAnswer,
   HealthResponse,
   IngestRequest,
@@ -46,6 +48,7 @@ export function buildQueryPayload(params: {
   preset: PresetSelection;
   customAblation: AblationConfig;
   maxCostUsd: number | null;
+  sessionId?: string;
 }): QueryRequest {
   const payload: QueryRequest = {
     query: params.query.trim(),
@@ -58,6 +61,9 @@ export function buildQueryPayload(params: {
   }
   if (params.maxCostUsd !== null && Number.isFinite(params.maxCostUsd)) {
     payload.max_cost_usd = params.maxCostUsd;
+  }
+  if (params.sessionId && params.sessionId.trim()) {
+    payload.session_id = params.sessionId.trim();
   }
   return payload;
 }
@@ -296,4 +302,22 @@ export async function uploadFiles(
     throw new Error(await parseErrorDetail(resp));
   }
   return (await resp.json()) as IngestResponse;
+}
+
+export async function submitFeedback(
+  apiBaseUrl: string,
+  payload: FeedbackRequest
+): Promise<FeedbackResponse> {
+  const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/feedback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    throw new Error(await parseErrorDetail(resp));
+  }
+  return (await resp.json()) as FeedbackResponse;
 }

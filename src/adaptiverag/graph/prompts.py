@@ -1,13 +1,29 @@
-"""Multilingual (TR + EN) prompt builders for routing, transformation, synthesis & recovery."""
+"""Multilingual (TR + EN) prompt builders for routing, transformation, synthesis & recovery.
+
+Supports both Langfuse-managed versioned prompts (via ``PromptManager``) and zero-downtime
+local canonical fallback templates defined in ``adaptiverag.observability.prompts``.
+"""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from adaptiverag.observability.prompts import (
+    DEFAULT_PROMPTS,
+    PROMPT_CONVERSATIONAL,
+    PROMPT_CORRECTIVE_REWRITE,
+    PROMPT_DECOMPOSE,
+    PROMPT_GROUNDED_SYNTHESIS,
+    PROMPT_ROUTER,
+    PROMPT_STRICT_REGENERATION,
+    PromptManager,
+    ResolvedPrompt,
+    compile_mustache_template,
+)
 from adaptiverag.schemas.citation import CitationReport, ClaimVerdict
 from adaptiverag.schemas.query import ChatMessage, QueryType
 from adaptiverag.schemas.retrieval import ConfidenceAssessment, EvidenceChunk, SourceType
@@ -29,6 +45,25 @@ _TR_HINT_WORDS = {
 }
 
 _CONTEXT_CHUNK_CHAR_LIMIT = 2400
+
+
+def _resolve_system_prompt(
+    name: str,
+    *,
+    variables: Mapping[str, Any] | None = None,
+    prompt_manager: PromptManager | None = None,
+) -> ResolvedPrompt:
+    if prompt_manager is not None:
+        return prompt_manager.resolve(name, variables=variables)
+    defn = DEFAULT_PROMPTS[name]
+    return ResolvedPrompt(
+        name=name,
+        text=compile_mustache_template(defn.template, variables),
+        source="local_fallback",
+        version=None,
+        label=None,
+        langfuse_prompt=None,
+    )
 
 
 def detect_language_heuristic(text: str) -> Literal["tr", "en"]:
@@ -79,29 +114,48 @@ def format_evidence_context(chunks: Sequence[EvidenceChunk]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-def build_router_messages(
+def resolve_router_prompt(
     query: str,
     chat_history: Sequence[ChatMessage],
-) -> list[BaseMessage]:
-    """Build messages for query classification, coreference resolution & freshness detection."""
-    system_prompt = """You are the Query Router for AdaptiveRAG, a multilingual (Turkish & English) technical knowledge assistant.
-
-Classify the user query into exactly one `query_type`:
-- "conversational": Greetings, thanks, small talk, or pure meta-requests about prior assistant turns (set `needs_retrieval=false`).
-- "factual": Direct definition, specific API/parameter/default lookup, exact formula, or single-concept question (set `needs_retrieval=true`).
-- "analytical": Comparisons, trade-offs, architectural design choices, multi-step troubleshooting, or questions combining multiple systems/concepts (set `needs_retrieval=true`).
-
-Also produce:
-- `language`: "tr" for Turkish, "en" for English, or "other".
-- `standalone_query`: Rewrite the user query so it is completely self-contained by resolving any pronouns ("it", "this", "onun", "bunlar") using chat history. Preserve the query's language and technical terms.
-- `requires_fresh_web_info`: Set `true` ONLY when the query explicitly asks for current/latest releases, live benchmarks, recent news, or real-time prices unlikely to exist in static documentation. Otherwise `false`.
-- `reasoning`: One concise sentence justifying your routing choice."""
-
+    *,
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve router prompt and build messages for classification & coreference resolution."""
+    resolved = _resolve_system_prompt(PROMPT_ROUTER, prompt_manager=prompt_manager)
     user_prompt = (
         f"Conversation History:\n{format_chat_history(chat_history)}\n\n"
         f"Current User Query:\n{query.strip()}"
     )
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
+
+
+def build_router_messages(
+    query: str,
+    chat_history: Sequence[ChatMessage],
+    *,
+    prompt_manager: PromptManager | None = None,
+) -> list[BaseMessage]:
+    """Build messages for query classification, coreference resolution & freshness detection."""
+    messages, _ = resolve_router_prompt(query, chat_history, prompt_manager=prompt_manager)
+    return messages
+
+
+def resolve_decompose_prompt(
+    standalone_query: str,
+    *,
+    language: str,
+    max_sub_queries: int,
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve decomposition prompt and build messages for analytical multi-query splitting."""
+    target_max = max(2, min(5, max_sub_queries))
+    resolved = _resolve_system_prompt(
+        PROMPT_DECOMPOSE,
+        variables={"max_sub_queries": target_max, "language": language},
+        prompt_manager=prompt_manager,
+    )
+    user_prompt = f"Analytical Question:\n{standalone_query.strip()}"
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
 
 
 def build_decompose_messages(
@@ -109,32 +163,28 @@ def build_decompose_messages(
     *,
     language: str,
     max_sub_queries: int,
+    prompt_manager: PromptManager | None = None,
 ) -> list[BaseMessage]:
     """Build messages for analytical multi-query decomposition."""
-    target_max = max(2, min(5, max_sub_queries))
-    system_prompt = f"""You are a Query Decomposition Specialist for a hybrid BM25 + Vector search engine.
-
-Decompose the complex analytical question into 2 to {target_max} distinct, focused sub-queries that cover orthogonal aspects (e.g., each system/concept being compared, specific mechanisms, latency/memory/operational trade-offs).
-
-Rules:
-- Keep every sub-query concise and keyword-rich so both BM25 lexical search and dense embeddings perform well.
-- Avoid redundant duplicates.
-- Preserve exact technical terms, library names, and acronyms.
-- Write sub-queries primarily in the language of the input question (language={language}), keeping standard English technical identifiers intact."""
-
-    user_prompt = f"Analytical Question:\n{standalone_query.strip()}"
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    messages, _ = resolve_decompose_prompt(
+        standalone_query,
+        language=language,
+        max_sub_queries=max_sub_queries,
+        prompt_manager=prompt_manager,
+    )
+    return messages
 
 
-def build_corrective_rewrite_messages(
+def resolve_corrective_rewrite_prompt(
     *,
     original_query: str,
     standalone_query: str,
     prior_queries: Sequence[str],
     confidence: ConfidenceAssessment | None,
     language: str,
-) -> list[BaseMessage]:
-    """Build messages for corrective query reformulation after low/medium confidence."""
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve corrective rewrite prompt and build messages after low/medium confidence."""
     cross_lingual_rule = (
         f"- Because technical knowledge bases often mix Turkish and English documentation, "
         f"write AT LEAST ONE query in canonical English technical terminology and keep the remaining "
@@ -142,15 +192,11 @@ def build_corrective_rewrite_messages(
         if language != "en"
         else "- Use canonical English technical terminology, exact parameter/class names, and synonyms."
     )
-    system_prompt = f"""You are a Corrective Retrieval Rewriter (CRAG query optimizer) for a multilingual (TR/EN) hybrid BM25 + dense vector search engine.
-
-The initial retrieval produced low or partial confidence. Reformulate 2 to 3 improved search queries that use better technical synonyms, canonical terminology, or clearer aspect separation.
-
-Rules:
-- Do NOT simply repeat the prior queries verbatim.
-- Target any missing aspects identified in the confidence diagnosis.
-{cross_lingual_rule}
-- Keep every query concise and retrieval-oriented."""
+    resolved = _resolve_system_prompt(
+        PROMPT_CORRECTIVE_REWRITE,
+        variables={"cross_lingual_rule": cross_lingual_rule},
+        prompt_manager=prompt_manager,
+    )
 
     prior_lines = "\n".join(f"  - {q}" for q in prior_queries) if prior_queries else "  - (none)"
     diag_text = confidence.reasoning if confidence is not None else "Weak initial retrieval scores."
@@ -163,10 +209,31 @@ Rules:
         f"Confidence Score: {score_text}\n"
         f"Confidence Diagnosis: {diag_text}"
     )
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
 
 
-def build_generation_messages(
+def build_corrective_rewrite_messages(
+    *,
+    original_query: str,
+    standalone_query: str,
+    prior_queries: Sequence[str],
+    confidence: ConfidenceAssessment | None,
+    language: str,
+    prompt_manager: PromptManager | None = None,
+) -> list[BaseMessage]:
+    """Build messages for corrective query reformulation after low/medium confidence."""
+    messages, _ = resolve_corrective_rewrite_prompt(
+        original_query=original_query,
+        standalone_query=standalone_query,
+        prior_queries=prior_queries,
+        confidence=confidence,
+        language=language,
+        prompt_manager=prompt_manager,
+    )
+    return messages
+
+
+def resolve_generation_prompt(
     *,
     query: str,
     standalone_query: str,
@@ -174,23 +241,22 @@ def build_generation_messages(
     chunks: Sequence[EvidenceChunk],
     chat_history: Sequence[ChatMessage],
     query_type: QueryType,
-) -> list[BaseMessage]:
-    """Build strictly grounded synthesis messages requiring inline [C#]/[W#] citations."""
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve grounded synthesis prompt and build strictly cited generation messages."""
     style_hint = (
         "Structure your response clearly to cover comparisons, trade-offs, and key dimensions."
         if query_type == QueryType.ANALYTICAL
         else "Keep the response direct, precise, and technically accurate."
     )
-
-    system_prompt = f"""You are AdaptiveRAG, a strictly grounded technical AI assistant.
-
-Grounding & Citation Rules (MANDATORY):
-1. Answer ONLY using facts explicitly stated in the provided Evidence Passages below. Do NOT rely on unverified parametric memory.
-2. Attach exact inline citations like [C1], [W1], or [C1, C2] to EVERY factual sentence or bullet point.
-3. NEVER invent, guess, or alter citation IDs. Only use IDs that appear in the Evidence Passages.
-4. If the evidence only partially covers the question, answer the supported part with citations and explicitly note what is not covered in the provided sources.
-5. {_language_instruction(language)}
-6. {style_hint}"""
+    resolved = _resolve_system_prompt(
+        PROMPT_GROUNDED_SYNTHESIS,
+        variables={
+            "language_instruction": _language_instruction(language),
+            "style_hint": style_hint,
+        },
+        prompt_manager=prompt_manager,
+    )
 
     history_block = (
         f"\nRecent Conversation Context:\n{format_chat_history(chat_history, max_turns=4)}\n"
@@ -203,10 +269,33 @@ Grounding & Citation Rules (MANDATORY):
         f"{history_block}\n"
         f"Evidence Passages:\n{format_evidence_context(chunks)}"
     )
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
 
 
-def build_strict_regeneration_messages(
+def build_generation_messages(
+    *,
+    query: str,
+    standalone_query: str,
+    language: str,
+    chunks: Sequence[EvidenceChunk],
+    chat_history: Sequence[ChatMessage],
+    query_type: QueryType,
+    prompt_manager: PromptManager | None = None,
+) -> list[BaseMessage]:
+    """Build strictly grounded synthesis messages requiring inline [C#]/[W#] citations."""
+    messages, _ = resolve_generation_prompt(
+        query=query,
+        standalone_query=standalone_query,
+        language=language,
+        chunks=chunks,
+        chat_history=chat_history,
+        query_type=query_type,
+        prompt_manager=prompt_manager,
+    )
+    return messages
+
+
+def resolve_strict_regeneration_prompt(
     *,
     query: str,
     standalone_query: str,
@@ -214,8 +303,9 @@ def build_strict_regeneration_messages(
     chunks: Sequence[EvidenceChunk],
     previous_draft: str,
     report: CitationReport,
-) -> list[BaseMessage]:
-    """Build strict corrective regeneration messages with exact citation violation feedback."""
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve strict regeneration prompt and build messages with citation violation feedback."""
     issues: list[str] = []
     if report.invalid_citation_ids:
         issues.append(
@@ -236,18 +326,21 @@ def build_strict_regeneration_messages(
             )
 
     feedback_block = "\n".join(issues) if issues else "- Improve inline citation coverage."
-    valid_labels = ", ".join(
-        f"[{c.citation_id.upper()}]" for c in chunks if c.citation_id and c.citation_id.strip()
+    valid_labels = (
+        ", ".join(
+            f"[{c.citation_id.upper()}]" for c in chunks if c.citation_id and c.citation_id.strip()
+        )
+        or "(none)"
     )
 
-    system_prompt = f"""You are revising a draft answer that FAILED strict citation verification.
-
-Mandatory Revision Instructions:
-1. Rewrite the answer so EVERY factual statement is 100% entailed by the Evidence Passages and cites valid passage IDs inline.
-2. Allowed citation IDs ONLY: {valid_labels or "(none)"}. Never emit any other ID.
-3. REMOVE or explicitly qualify any claim that was flagged as unsupported or contradicted.
-4. Do NOT add new unsupported facts. Prefer a shorter, 100% verified answer over a longer speculative one.
-5. {_language_instruction(language)}"""
+    resolved = _resolve_system_prompt(
+        PROMPT_STRICT_REGENERATION,
+        variables={
+            "valid_labels": valid_labels,
+            "language_instruction": _language_instruction(language),
+        },
+        prompt_manager=prompt_manager,
+    )
 
     user_prompt = (
         f"User Question: {query.strip()}\n"
@@ -256,7 +349,50 @@ Mandatory Revision Instructions:
         f"Verification Violations to Fix:\n{feedback_block}\n\n"
         f"Evidence Passages:\n{format_evidence_context(chunks)}"
     )
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
+
+
+def build_strict_regeneration_messages(
+    *,
+    query: str,
+    standalone_query: str,
+    language: str,
+    chunks: Sequence[EvidenceChunk],
+    previous_draft: str,
+    report: CitationReport,
+    prompt_manager: PromptManager | None = None,
+) -> list[BaseMessage]:
+    """Build strict corrective regeneration messages with exact citation violation feedback."""
+    messages, _ = resolve_strict_regeneration_prompt(
+        query=query,
+        standalone_query=standalone_query,
+        language=language,
+        chunks=chunks,
+        previous_draft=previous_draft,
+        report=report,
+        prompt_manager=prompt_manager,
+    )
+    return messages
+
+
+def resolve_conversational_prompt(
+    *,
+    query: str,
+    language: str,
+    chat_history: Sequence[ChatMessage],
+    prompt_manager: PromptManager | None = None,
+) -> tuple[list[BaseMessage], ResolvedPrompt]:
+    """Resolve conversational prompt and build messages for zero-retrieval turns."""
+    resolved = _resolve_system_prompt(
+        PROMPT_CONVERSATIONAL,
+        variables={"language_instruction": _language_instruction(language)},
+        prompt_manager=prompt_manager,
+    )
+    user_prompt = (
+        f"Conversation History:\n{format_chat_history(chat_history)}\n\n"
+        f"User Message:\n{query.strip()}"
+    )
+    return [SystemMessage(content=resolved.text), HumanMessage(content=user_prompt)], resolved
 
 
 def build_conversational_messages(
@@ -264,19 +400,16 @@ def build_conversational_messages(
     query: str,
     language: str,
     chat_history: Sequence[ChatMessage],
+    prompt_manager: PromptManager | None = None,
 ) -> list[BaseMessage]:
     """Build messages for zero-retrieval conversational turns."""
-    system_prompt = (
-        "You are AdaptiveRAG, a helpful and concise AI engineering assistant. "
-        "Handle conversational messages, greetings, or meta-questions about prior turns naturally. "
-        "Do NOT fabricate document citations like [C1] or [W1] because no retrieval was performed. "
-        f"{_language_instruction(language)}"
+    messages, _ = resolve_conversational_prompt(
+        query=query,
+        language=language,
+        chat_history=chat_history,
+        prompt_manager=prompt_manager,
     )
-    user_prompt = (
-        f"Conversation History:\n{format_chat_history(chat_history)}\n\n"
-        f"User Message:\n{query.strip()}"
-    )
-    return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    return messages
 
 
 def build_abstention_message(

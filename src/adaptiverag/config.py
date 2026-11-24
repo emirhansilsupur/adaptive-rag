@@ -117,11 +117,16 @@ class Settings(BaseSettings):
     firecrawl_default_crawl_limit: int = Field(default=10, ge=1, le=100)
     firecrawl_allow_private_urls: bool = False
 
-    # --- Observability (Langfuse) ---
+    # --- Observability & Prompt Management (Langfuse v5 OTEL SDK: Cloud or Self-Hosted v3) ---
     langfuse_enabled: bool = False
-    langfuse_host: str = "http://localhost:3000"
+    langfuse_host: str = "https://cloud.langfuse.com"
     langfuse_public_key: str = ""
     langfuse_secret_key: SecretStr | None = None
+    langfuse_environment: str = "development"
+    langfuse_release: str | None = "0.1.0"
+    langfuse_prompt_management_enabled: bool = False
+    langfuse_prompt_label: str = "production"
+    langfuse_prompt_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
 
     # --- Paths & Logging ---
     strategies_config_path: Path = Path("configs/strategies.yaml")
@@ -134,6 +139,22 @@ class Settings(BaseSettings):
             return None
         cleaned = str(value).strip().rstrip("/")
         return cleaned or None
+
+    @field_validator("langfuse_host", mode="before")
+    @classmethod
+    def _normalize_langfuse_host(cls, value: str | None) -> str:
+        if value is None:
+            return "https://cloud.langfuse.com"
+        cleaned = str(value).strip().rstrip("/")
+        return cleaned or "https://cloud.langfuse.com"
+
+    @field_validator("langfuse_prompt_label", mode="before")
+    @classmethod
+    def _normalize_langfuse_prompt_label(cls, value: str | None) -> str:
+        if value is None:
+            return "production"
+        cleaned = str(value).strip()
+        return cleaned or "production"
 
 
 def load_strategies(path: Path | str = Path("configs/strategies.yaml")) -> StrategiesConfig:

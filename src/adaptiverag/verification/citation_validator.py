@@ -14,6 +14,12 @@ from adaptiverag.config import CitationValidationConfig
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.llm.structured import invoke_structured
+from adaptiverag.observability.prompts import (
+    DEFAULT_PROMPTS,
+    PROMPT_CITATION_ENTAILMENT,
+    PromptManager,
+    ResolvedPrompt,
+)
 from adaptiverag.schemas.citation import (
     CitationReport,
     ClaimAuditBatch,
@@ -56,21 +62,7 @@ _ABSTENTION_MARKERS = (
 
 _ENTAILMENT_EXCERPT_LIMIT = 1400
 
-_TIER2_SYSTEM_PROMPT = """You are a strict Citation Entailment Auditor for a multilingual (Turkish & English) technical RAG engine.
-
-Given a draft answer and the retrieved evidence passages labeled [C1], [C2], ..., [W1], ..., extract the distinct atomic factual claims made in the answer (up to 10 key claims) and verify EACH claim strictly against the evidence passages it cites.
-
-Verdict definitions:
-- "supported": The claim is directly and accurately entailed by the cited passage(s).
-- "partially_supported": Only part of the claim is supported by the cited passage(s), or minor extrapolations/numbers are not explicitly stated.
-- "unsupported": The claim is NOT stated in the cited passage(s), cites a non-existent ID, or makes a factual assertion with NO citation at all.
-- "contradicted": The claim directly contradicts the evidence passages.
-
-Rules:
-- Be rigorous with numbers, version strings, formulas, thresholds, and technical comparisons.
-- Do NOT judge pure greetings, section headings, or honest abstention/uncertainty statements as factual claims.
-- Record the exact citation IDs attached to each claim in `cited_ids` (uppercase, e.g. ["C1", "W1"], or [] if uncited).
-- Keep `explanation` concise (1 short sentence)."""
+_TIER2_SYSTEM_PROMPT = DEFAULT_PROMPTS[PROMPT_CITATION_ENTAILMENT].template
 
 
 def extract_citations(text: str) -> list[str]:
@@ -235,6 +227,8 @@ async def validate_citations(
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
     callbacks: list[Any] | None = None,
+    prompt_manager: PromptManager | None = None,
+    prompt_out: list[ResolvedPrompt] | None = None,
 ) -> tuple[CitationReport, TokenUsage]:
     """Run Tier-1 deterministic check followed by optional Tier-2 semantic entailment audit."""
     tier1 = validate_citations_structural(answer, evidence_chunks, config=config)
@@ -253,8 +247,20 @@ async def validate_citations(
         failed = tier1.model_copy(update={"claim_support_rate": 0.0, "passed": False})
         return failed, TokenUsage()
 
+    resolved_prompt = (
+        prompt_manager.resolve(PROMPT_CITATION_ENTAILMENT)
+        if prompt_manager is not None
+        else ResolvedPrompt(
+            name=PROMPT_CITATION_ENTAILMENT,
+            text=_TIER2_SYSTEM_PROMPT,
+            source="local_fallback",
+        )
+    )
+    if prompt_out is not None:
+        prompt_out.append(resolved_prompt)
+
     messages = [
-        SystemMessage(content=_TIER2_SYSTEM_PROMPT),
+        SystemMessage(content=resolved_prompt.text),
         HumanMessage(content=_build_entailment_user_prompt(answer, evidence_chunks)),
     ]
 
@@ -269,6 +275,8 @@ async def validate_citations(
             cache=cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
+            langfuse_prompt=resolved_prompt.langfuse_prompt,
+            prompt_metadata=resolved_prompt.telemetry_metadata(),
         )
     except BudgetExceededError:
         raise

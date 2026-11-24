@@ -2,12 +2,15 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowUp,
+  Check,
   ExternalLink,
   FileText,
   Globe,
   Microscope,
   Sparkles,
   Square,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react";
 import { DEMO_QUERIES } from "../constants/pipeline";
 import type {
@@ -35,6 +38,11 @@ interface ChatWorkspaceProps {
   onStopStream: () => void;
   onInspectTurn: (turnIndex: number, tab?: InspectorTab) => void;
   onCitationClick: (turnIndex: number, citationId: string) => void;
+  onSubmitFeedback?: (
+    turnId: string,
+    score: 0 | 1,
+    comment?: string
+  ) => Promise<void>;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
@@ -52,14 +60,42 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onStopStream,
   onInspectTurn,
   onCitationClick,
+  onSubmitFeedback,
 }) => {
   const [input, setInput] = useState("");
+  const [commentingTurnId, setCommentingTurnId] = useState<string | null>(null);
+  const [pendingScore, setPendingScore] = useState<0 | 1>(0);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [submittingFeedbackTurnId, setSubmittingFeedbackTurnId] = useState<string | null>(null);
+  const [feedbackErrorByTurn, setFeedbackErrorByTurn] = useState<Record<string, string>>({});
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const handleFeedbackSubmit = async (turnId: string, score: 0 | 1, comment?: string) => {
+    if (!onSubmitFeedback || submittingFeedbackTurnId) return;
+    setSubmittingFeedbackTurnId(turnId);
+    setFeedbackErrorByTurn((prev) => {
+      const next = { ...prev };
+      delete next[turnId];
+      return next;
+    });
+    try {
+      await onSubmitFeedback(turnId, score, comment);
+      setCommentingTurnId(null);
+      setCommentDraft("");
+    } catch (err) {
+      setFeedbackErrorByTurn((prev) => ({
+        ...prev,
+        [turnId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setSubmittingFeedbackTurnId(null);
+    }
+  };
+
   // Auto-scroll smoothly when new turns or live steps arrive
   useEffect(() => {
-    scrollEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [turns.length, isRunning, liveSteps.length]);
 
   // Auto-resize composer textarea
@@ -246,22 +282,137 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onInspectTurn(idx, "trace");
-                          }}
-                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition cursor-pointer ${
-                            isSelected
-                              ? "bg-blue-500/15 text-blue-500 dark:text-blue-300"
-                              : "text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
-                          }`}
-                        >
-                          <Microscope className="h-3.5 w-3.5" />
-                          <span>{isSelected ? "Inspecting" : `Inspect #${idx + 1}`}</span>
-                        </button>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {onSubmitFeedback && turn.result.trace_id && (
+                            <div
+                              className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                aria-label="Mark answer helpful"
+                                title="Helpful (records +1 score)"
+                                disabled={submittingFeedbackTurnId === turn.id}
+                                onClick={() => void handleFeedbackSubmit(turn.id, 1)}
+                                className={`inline-flex items-center justify-center rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
+                                  turn.feedback?.score === 1
+                                    ? "bg-emerald-500/20 text-emerald-500 dark:text-emerald-300"
+                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-emerald-500"
+                                }`}
+                              >
+                                <ThumbsUp className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Mark answer unhelpful"
+                                title="Needs improvement (records 0 score with optional note)"
+                                disabled={submittingFeedbackTurnId === turn.id}
+                                onClick={() => {
+                                  setCommentingTurnId((curr) =>
+                                    curr === turn.id ? null : turn.id
+                                  );
+                                  setPendingScore(0);
+                                  setCommentDraft(turn.feedback?.comment ?? "");
+                                }}
+                                className={`inline-flex items-center justify-center rounded-md p-1 transition cursor-pointer disabled:opacity-50 ${
+                                  turn.feedback?.score === 0 || commentingTurnId === turn.id
+                                    ? "bg-rose-500/20 text-rose-500 dark:text-rose-300"
+                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-rose-500"
+                                }`}
+                              >
+                                <ThumbsDown className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )}
+
+                          {turn.feedback && (
+                            <span
+                              className="hidden items-center gap-1 rounded-md bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)] sm:inline-flex"
+                              title={
+                                turn.feedback.comment
+                                  ? `Feedback note: ${turn.feedback.comment}`
+                                  : undefined
+                              }
+                            >
+                              <Check className="h-2.5 w-2.5 text-emerald-500" />
+                              <span>
+                                {turn.feedback.persistedToLangfuse ? "Langfuse" : "Recorded"}
+                              </span>
+                            </span>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onInspectTurn(idx, "trace");
+                            }}
+                            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition cursor-pointer ${
+                              isSelected
+                                ? "bg-blue-500/15 text-blue-500 dark:text-blue-300"
+                                : "text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+                            }`}
+                          >
+                            <Microscope className="h-3.5 w-3.5" />
+                            <span>{isSelected ? "Inspecting" : `Inspect #${idx + 1}`}</span>
+                          </button>
+                        </div>
                       </div>
+
+                      {commentingTurnId === turn.id && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/65 p-2.5"
+                        >
+                          <input
+                            type="text"
+                            value={commentDraft}
+                            onChange={(e) => setCommentDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void handleFeedbackSubmit(
+                                  turn.id,
+                                  pendingScore,
+                                  commentDraft.trim() || undefined
+                                );
+                              }
+                            }}
+                            placeholder="Optional note: missing citation, stale source, wrong route..."
+                            className="min-w-[200px] flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-blue-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={submittingFeedbackTurnId === turn.id}
+                            onClick={() =>
+                              void handleFeedbackSubmit(
+                                turn.id,
+                                pendingScore,
+                                commentDraft.trim() || undefined
+                              )
+                            }
+                            className="rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                          >
+                            {submittingFeedbackTurnId === turn.id ? "Saving..." : "Send Feedback"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCommentingTurnId(null);
+                              setCommentDraft("");
+                            }}
+                            className="rounded-lg px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {feedbackErrorByTurn[turn.id] && (
+                        <p className="mt-2 text-[11px] text-rose-500">
+                          Feedback error: {feedbackErrorByTurn[turn.id]}
+                        </p>
+                      )}
                     </div>
                   </article>
                 );

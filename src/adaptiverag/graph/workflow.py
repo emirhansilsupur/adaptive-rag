@@ -23,7 +23,8 @@ from adaptiverag.graph.state import AblationConfig, AgentState, merge_token_usag
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import CostTracker
 from adaptiverag.llm.factory import ModelBundle, create_model_bundle
-from adaptiverag.observability.tracing import get_langfuse_callback
+from adaptiverag.observability.prompts import PromptManager
+from adaptiverag.observability.tracing import LangfuseObservability, TraceRunHandle
 from adaptiverag.retrieval.fallback import FallbackRetriever, WebFallbackRetriever
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.retrieval.reranker import FastEmbedCrossEncoderReranker, Reranker
@@ -106,7 +107,13 @@ def build_adaptive_rag_graph(
     return builder.compile()
 
 
-def _state_to_final_answer(state: dict[str, Any], total_latency_ms: float) -> FinalAnswer:
+def _state_to_final_answer(
+    state: dict[str, Any],
+    total_latency_ms: float,
+    *,
+    trace_id: str | None = None,
+    trace_url: str | None = None,
+) -> FinalAnswer:
     plan = state.get("query_plan")
     query_type = plan.query_type if plan is not None else QueryType.FACTUAL
     language = plan.language if plan is not None else "en"
@@ -128,6 +135,8 @@ def _state_to_final_answer(state: dict[str, Any], total_latency_ms: float) -> Fi
         total_latency_ms=round(total_latency_ms, 2),
         usage=state.get("usage") or TokenUsage(),
         trace=list(state.get("trace") or []),
+        trace_id=trace_id,
+        trace_url=trace_url,
     )
 
 
@@ -150,6 +159,8 @@ class AdaptiveRAGWorkflow:
         fallback_retriever: FallbackRetriever | None = None,
         cache: SQLiteLLMCache | None = None,
         cost_tracker: CostTracker | None = None,
+        observability: LangfuseObservability | None = None,
+        prompt_manager: PromptManager | None = None,
         in_memory_store: bool = False,
     ) -> AdaptiveRAGWorkflow:
         """Instantiate a full AdaptiveRAGWorkflow wired from Settings & strategies.yaml."""
@@ -171,6 +182,11 @@ class AdaptiveRAGWorkflow:
             else (SQLiteLLMCache(settings.llm_cache_path) if settings.llm_cache_enabled else None)
         )
         resolved_cost_tracker = cost_tracker or CostTracker(max_cost_usd=settings.max_run_cost_usd)
+        resolved_observability = observability or LangfuseObservability.from_settings(settings)
+        resolved_prompts = prompt_manager or PromptManager.from_settings(
+            settings,
+            observability=resolved_observability,
+        )
 
         runtime = GraphRuntime(
             settings=settings,
@@ -181,6 +197,8 @@ class AdaptiveRAGWorkflow:
             fallback_retriever=resolved_fallback,
             cache=resolved_cache,
             cost_tracker=resolved_cost_tracker,
+            observability=resolved_observability,
+            prompt_manager=resolved_prompts,
         )
         return cls(runtime)
 
@@ -207,11 +225,19 @@ class AdaptiveRAGWorkflow:
             trace=[],
         )
 
+    def _get_observability(self) -> LangfuseObservability:
+        if self._runtime.observability is None:
+            self._runtime.observability = LangfuseObservability.from_settings(
+                self._runtime.settings
+            )
+        return self._runtime.observability
+
     def _build_run_config(
         self,
         *,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
+        trace_handle: TraceRunHandle | None = None,
     ) -> RunnableConfig:
         merged_callbacks: list[Any] = []
         if callbacks:
@@ -219,9 +245,8 @@ class AdaptiveRAGWorkflow:
         elif self._runtime.callbacks:
             merged_callbacks.extend(self._runtime.callbacks)
 
-        langfuse_cb = get_langfuse_callback(self._runtime.settings)
-        if langfuse_cb is not None:
-            merged_callbacks.append(langfuse_cb)
+        if trace_handle is not None and trace_handle.callback_handler is not None:
+            merged_callbacks.append(trace_handle.callback_handler)
 
         configurable: dict[str, Any] = {}
         if cost_tracker is not None:
@@ -232,6 +257,8 @@ class AdaptiveRAGWorkflow:
             config["callbacks"] = merged_callbacks
         if configurable:
             config["configurable"] = configurable
+        if trace_handle is not None and trace_handle.langfuse_metadata:
+            config["metadata"] = dict(trace_handle.langfuse_metadata)
         return config
 
     async def arun(
@@ -242,18 +269,48 @@ class AdaptiveRAGWorkflow:
         ablation: AblationConfig | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        preset_name: str | None = None,
+        trace_tags: Sequence[str] | None = None,
     ) -> FinalAnswer:
         """Execute the full AdaptiveRAG graph and return a Glass-Box FinalAnswer."""
         started = time.perf_counter()
+        resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
             query,
             chat_history=chat_history,
-            ablation=ablation,
+            ablation=resolved_ablation,
         )
-        run_config = self._build_run_config(cost_tracker=cost_tracker, callbacks=callbacks)
-        final_state = await self._graph.ainvoke(initial_state, config=run_config)
+        observability = self._get_observability()
+        trace_handle = observability.start_trace(
+            query=initial_state["query"],
+            session_id=session_id,
+            user_id=user_id,
+            preset_name=preset_name,
+            ablation=resolved_ablation.model_dump(mode="json"),
+            tags=list(trace_tags) if trace_tags else ["mode:batch"],
+        )
+        run_config = self._build_run_config(
+            cost_tracker=cost_tracker,
+            callbacks=callbacks,
+            trace_handle=trace_handle,
+        )
+        try:
+            final_state = await self._graph.ainvoke(initial_state, config=run_config)
+        except Exception as exc:
+            observability.finish_trace(trace_handle, error=exc)
+            raise
+
         total_ms = (time.perf_counter() - started) * 1000.0
-        return _state_to_final_answer(dict(final_state), total_ms)
+        final_answer = _state_to_final_answer(
+            dict(final_state),
+            total_ms,
+            trace_id=trace_handle.trace_id,
+            trace_url=trace_handle.trace_url,
+        )
+        observability.finish_trace(trace_handle, answer=final_answer)
+        return final_answer
 
     async def astream_events(
         self,
@@ -263,52 +320,89 @@ class AdaptiveRAGWorkflow:
         ablation: AblationConfig | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        preset_name: str | None = None,
+        trace_tags: Sequence[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream structured node_update events followed by a final_answer payload (SSE-ready)."""
         started = time.perf_counter()
+        resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
             query,
             chat_history=chat_history,
-            ablation=ablation,
+            ablation=resolved_ablation,
         )
-        run_config = self._build_run_config(cost_tracker=cost_tracker, callbacks=callbacks)
+        observability = self._get_observability()
+        trace_handle = observability.start_trace(
+            query=initial_state["query"],
+            session_id=session_id,
+            user_id=user_id,
+            preset_name=preset_name,
+            ablation=resolved_ablation.model_dump(mode="json"),
+            tags=list(trace_tags) if trace_tags else ["mode:stream"],
+        )
+        run_config = self._build_run_config(
+            cost_tracker=cost_tracker,
+            callbacks=callbacks,
+            trace_handle=trace_handle,
+        )
 
         accumulated: dict[str, Any] = dict(initial_state)
         accumulated["trace"] = []
         accumulated["usage"] = TokenUsage()
+        completed = False
 
-        async for chunk in self._graph.astream(
-            initial_state,
-            config=run_config,
-            stream_mode="updates",
-        ):
-            if not isinstance(chunk, dict):
-                continue
-            for node_name, delta in chunk.items():
-                if not isinstance(delta, dict):
+        try:
+            async for chunk in self._graph.astream(
+                initial_state,
+                config=run_config,
+                stream_mode="updates",
+            ):
+                if not isinstance(chunk, dict):
                     continue
+                for node_name, delta in chunk.items():
+                    if not isinstance(delta, dict):
+                        continue
 
-                node_traces: list[NodeTraceEvent] = list(delta.get("trace") or [])
-                node_usage: TokenUsage = delta.get("usage") or TokenUsage()
+                    node_traces: list[NodeTraceEvent] = list(delta.get("trace") or [])
+                    node_usage: TokenUsage = delta.get("usage") or TokenUsage()
 
-                for key, value in delta.items():
-                    if key == "trace":
-                        accumulated["trace"].extend(node_traces)
-                    elif key == "usage":
-                        accumulated["usage"] = merge_token_usage(accumulated["usage"], node_usage)
-                    else:
-                        accumulated[key] = value
+                    for key, value in delta.items():
+                        if key == "trace":
+                            accumulated["trace"].extend(node_traces)
+                        elif key == "usage":
+                            accumulated["usage"] = merge_token_usage(
+                                accumulated["usage"], node_usage
+                            )
+                        else:
+                            accumulated[key] = value
 
-                yield {
-                    "event": "node_update",
-                    "node": node_name,
-                    "trace": [t.model_dump(mode="json") for t in node_traces],
-                    "usage": node_usage.model_dump(mode="json"),
-                }
+                    yield {
+                        "event": "node_update",
+                        "node": node_name,
+                        "trace": [t.model_dump(mode="json") for t in node_traces],
+                        "usage": node_usage.model_dump(mode="json"),
+                    }
 
-        total_ms = (time.perf_counter() - started) * 1000.0
-        final_answer = _state_to_final_answer(accumulated, total_ms)
-        yield {
-            "event": "final_answer",
-            "data": final_answer.model_dump(mode="json"),
-        }
+            total_ms = (time.perf_counter() - started) * 1000.0
+            final_answer = _state_to_final_answer(
+                accumulated,
+                total_ms,
+                trace_id=trace_handle.trace_id,
+                trace_url=trace_handle.trace_url,
+            )
+            observability.finish_trace(trace_handle, answer=final_answer)
+            completed = True
+            yield {
+                "event": "final_answer",
+                "data": final_answer.model_dump(mode="json"),
+            }
+        except Exception as exc:
+            observability.finish_trace(trace_handle, error=exc)
+            completed = True
+            raise
+        finally:
+            if not completed:
+                # Ensure open root spans are closed if the SSE client disconnects mid-stream.
+                observability.finish_trace(trace_handle)
