@@ -48,34 +48,12 @@ Static, single-path RAG pipelines fail in production along three predictable axe
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    START(["User Query + Chat History"]) --> CLASSIFY["1. classify_and_plan (Query Router & Planner)"]
-
-    CLASSIFY -->|"conversational (needs_retrieval = false)"| CONV["conversational_respond (Zero-Retrieval Fast Path)"]
-    CONV --> END_NODE(["FinalAnswer + Glass-Box Trace"])
-
-    CLASSIFY -->|"factual (single-query)"| RETRIEVE["3. hybrid_retrieve (Qdrant Dense + BM25 + RRF)"]
-    CLASSIFY -->|"analytical (multi-hop)"| DECOMPOSE["2. decompose_queries (2-4 Atomic Sub-Queries)"]
-    DECOMPOSE --> RETRIEVE
-
-    RETRIEVE --> RERANK["4. rerank_and_select_k (Cross-Encoder + 3-Stage Dynamic Top-K)"]
-    RERANK --> CONF["5. score_confidence (Multi-Signal + Ambiguous-Band CRAG)"]
-
-    CONF -->|"HIGH (C >= 0.72) or SUFFICIENT"| GEN["7. generate_answer (Grounded Inline Citations)"]
-    CONF -->|"MEDIUM / PARTIAL and rewrites < 1"| REWRITE["6a. corrective_rewrite (Expand / Rephrase Query)"]
-    REWRITE --> RETRIEVE
-
-    CONF -->|"LOW (C < 0.38) or rewrites exhausted"| FALLBACK["6b. web_fallback_search (Tavily / DuckDuckGo)"]
-    FALLBACK -->|"Web evidence found"| GEN
-    FALLBACK -->|"Still insufficient / disabled"| ABSTAIN["abstain_response (Language-Matched Abstention)"]
-    ABSTAIN --> END_NODE
-
-    GEN --> CITE["8. validate_citations (Tier-1 Regex/ID + Tier-2 Entailment)"]
-    CITE -->|"Passed or regens >= 1"| END_NODE
-    CITE -->|"Unsupported claim / phantom ID"| REGEN["9. regenerate_strict (Strict Evidence Repair)"]
-    REGEN --> CITE
-```
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="AdaptiveRAG bounded cyclic Agentic StateGraph architecture flowchart from User Query and Query Router through Qdrant Hybrid Retrieve, ONNX Rerank and Dynamic Top-K, Multi-Signal CRAG Gate, Corrective Rewrite, Web Search Fallback, Grounded Synthesis, and 2-Tier Citation Audit" width="100%" />
+</p>
+<p align="center">
+  <sub><strong>Bounded Cyclic Agentic StateGraph:</strong> Query-complexity routing (<code>conversational</code> fast-path, single-query <code>factual</code>, decomposed <code>analytical</code>), Qdrant Dense + BM25 RRF retrieval, ONNX Cross-Encoder Dynamic Top-K, multi-signal CRAG gating with bounded rewrite/web fallback, and Two-Tier Citation Auditing.</sub>
+</p>
 
 ### Core Engineering Pillars
 
@@ -376,7 +354,7 @@ adaptiverag/
 ├── data/
 │   ├── raw/                   # Bundled 10-doc sample & benchmark corpus (8 EN + 2 TR)
 │   └── eval/golden_set.jsonl  # 66-query stratified multilingual benchmark dataset
-├── docs/assets/               # Studio, Ablation Arena & Langfuse screenshots
+├── docs/assets/               # Architecture, Studio, Ablation Arena & Langfuse visuals
 ├── src/adaptiverag/
 │   ├── schemas/               # Pydantic v2 contracts (query, retrieval, citation, response)
 │   ├── llm/                   # Provider factory, structured output, WAL SQLite cache, CostTracker
