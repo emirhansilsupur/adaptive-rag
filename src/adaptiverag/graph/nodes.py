@@ -26,7 +26,7 @@ from adaptiverag.graph.state import AblationConfig, AgentState
 from adaptiverag.ingestion.chunker import count_tokens
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
-from adaptiverag.llm.factory import ModelBundle
+from adaptiverag.llm.factory import LLMNotConfiguredError, ModelBundle
 from adaptiverag.llm.structured import invoke_structured, invoke_text
 from adaptiverag.observability.prompts import PromptManager, ResolvedPrompt
 from adaptiverag.observability.tracing import LangfuseObservability
@@ -72,7 +72,9 @@ class GraphRuntime:
 
     settings: Settings
     strategies: StrategiesConfig
-    models: ModelBundle
+    # The server's own models, or None when the server has no LLM configured. Then every run
+    # must bring its own bundle (bring-your-own-key), and no run's bundle ever fills this in.
+    models: ModelBundle | None
     store: QdrantHybridStore
     reranker: Reranker
     fallback_retriever: FallbackRetriever
@@ -117,6 +119,11 @@ def _resolve_llm_runtime(
     configurable = (config or {}).get("configurable") or {}
     raw_models = configurable.get("models")
     models = raw_models if isinstance(raw_models, ModelBundle) else runtime.models
+    if models is None:
+        raise LLMNotConfiguredError(
+            "No LLM for this run: the server has no model of its own and the request "
+            "didn't bring one."
+        )
 
     raw_temp = configurable.get("temperature")
     if isinstance(raw_temp, (int, float)):

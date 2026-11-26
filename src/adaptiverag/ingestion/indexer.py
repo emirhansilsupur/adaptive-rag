@@ -56,12 +56,17 @@ async def index_documents(
     doc_list = list(docs)
     chunks = await asyncio.to_thread(chunk_documents, doc_list, config=chunk_config)
 
-    created = await store.ensure_collection(recreate=recreate)
-    upserted = await store.upsert_chunks(
-        chunks,
-        batch_size=batch_size,
-        replace_existing_docs=not recreate,
-    )
+    if recreate:
+        # Built next to the live collection; it takes over only once every chunk is stored.
+        upserted = await store.rebuild_collection(chunks, batch_size=batch_size)
+        created = True
+    else:
+        created = await store.ensure_collection()
+        upserted = await store.upsert_chunks(
+            chunks,
+            batch_size=batch_size,
+            replace_existing_docs=True,
+        )
     total_points = await store.count_points()
     elapsed = round(time.perf_counter() - started, 3)
 
@@ -241,7 +246,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--recreate",
         action="store_true",
-        help="Drop and recreate the Qdrant collection before indexing.",
+        help=(
+            "Replace everything in the collection with these sources. They're indexed into a "
+            "new collection that takes over only when indexing succeeds."
+        ),
     )
     parser.add_argument(
         "--max-tokens",

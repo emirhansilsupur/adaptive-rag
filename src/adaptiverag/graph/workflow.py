@@ -22,7 +22,7 @@ from adaptiverag.graph.nodes import GraphRuntime, create_nodes
 from adaptiverag.graph.state import AblationConfig, AgentState, merge_token_usage
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import CostTracker
-from adaptiverag.llm.factory import ModelBundle, create_model_bundle
+from adaptiverag.llm.factory import ModelBundle, check_provider_configured, create_model_bundle
 from adaptiverag.observability.prompts import PromptManager
 from adaptiverag.observability.tracing import LangfuseObservability, TraceRunHandle
 from adaptiverag.retrieval.fallback import FallbackRetriever, WebFallbackRetriever
@@ -167,10 +167,20 @@ class AdaptiveRAGWorkflow:
         observability: LangfuseObservability | None = None,
         prompt_manager: PromptManager | None = None,
         in_memory_store: bool = False,
+        require_models: bool = True,
     ) -> AdaptiveRAGWorkflow:
-        """Instantiate a full AdaptiveRAGWorkflow wired from Settings & strategies.yaml."""
+        """Instantiate a full AdaptiveRAGWorkflow wired from Settings & strategies.yaml.
+
+        Without ``models``, the server's own models are built from ``settings``. With
+        ``require_models=False`` the workflow is built even when the server's provider isn't
+        configured; it then has no default models, and every run must pass its own.
+        """
         resolved_strategies = strategies or load_strategies(settings.strategies_config_path)
-        resolved_models = models or create_model_bundle(settings)
+        resolved_models = models
+        if resolved_models is None:
+            server_llm_ready, _ = check_provider_configured(settings, settings.llm_provider)
+            if server_llm_ready or require_models:
+                resolved_models = create_model_bundle(settings)
         resolved_store = store or QdrantHybridStore.from_settings(
             settings,
             in_memory=in_memory_store,

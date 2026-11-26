@@ -40,6 +40,7 @@ from adaptiverag.api.schemas import (
     QueryRequest,
 )
 from adaptiverag.api.security import api_auth_enabled, local_only_mode
+from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
 from adaptiverag.ingestion.chunker import ChunkingConfig
 from adaptiverag.ingestion.indexer import (
     index_corpus,
@@ -82,14 +83,22 @@ def _resolve_workflow_or_503(
     container: AppContainer,
     *,
     models_override: ModelBundle | None = None,
-) -> Any:
+) -> AdaptiveRAGWorkflow:
     try:
-        return container.ensure_workflow(models_override=models_override)
+        workflow = container.ensure_workflow()
     except (ValueError, ImportError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    if models_override is None and workflow.runtime.models is None:
+        # The server has no LLM of its own and this request didn't bring a key.
+        _, reason = container.check_llm_configured()
+        detail = reason or "This server has no LLM configured."
+        if container.settings.allow_client_provider_keys:
+            detail += " API clients can send their own key in the X-Provider-API-Key header."
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+    return workflow
 
 
 def _resolve_llm_override_or_400(

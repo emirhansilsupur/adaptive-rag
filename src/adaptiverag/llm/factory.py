@@ -24,6 +24,10 @@ SUPPORTED_PROVIDERS: tuple[LLMProvider, ...] = (
 )
 
 
+class LLMNotConfiguredError(RuntimeError):
+    """A run has no models: the server has no LLM of its own and the request brought none."""
+
+
 class ModelTier(StrEnum):
     """Tiered model selection for FinOps optimization."""
 

@@ -9,6 +9,7 @@ from uuid import UUID, uuid5
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -16,16 +17,45 @@ from pydantic import Field, SecretStr
 
 from adaptiverag.api.dependencies import AppContainer
 from adaptiverag.api.main import create_app
+from adaptiverag.api.routes import _resolve_llm_override_or_400, _resolve_workflow_or_503
 from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.ingestion.chunker import DocumentChunk
-from adaptiverag.llm import CostTracker, ModelBundle, resolve_effective_settings
+from adaptiverag.llm import (
+    CostTracker,
+    LLMNotConfiguredError,
+    ModelBundle,
+    resolve_effective_settings,
+)
 from adaptiverag.retrieval.embeddings import SparseVectorData
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.schemas.response import FinalAnswer
 from adaptiverag.schemas.retrieval import EvidenceChunk
 
 _NS = UUID("11223344-5566-7788-99aa-bbccddeeff00")
+
+_ROUTER_FACTUAL = json.dumps(
+    {
+        "query_type": "factual",
+        "needs_retrieval": True,
+        "language": "en",
+        "standalone_query": "How does Qdrant hybrid search work?",
+        "requires_fresh_web_info": False,
+        "reasoning": "Direct lookup.",
+    }
+)
+_ENTAIL_OK = json.dumps(
+    {
+        "verifications": [
+            {
+                "claim": "Qdrant fuses dense and BM25 sparse rankings with RRF.",
+                "cited_ids": ["C1"],
+                "verdict": "supported",
+                "explanation": "Explicitly supported by [C1].",
+            }
+        ]
+    }
+)
 
 
 class _TaggingChatModel(BaseChatModel):
@@ -186,28 +216,8 @@ async def test_models_catalog_and_per_request_llm_override_api(tmp_path: Path) -
         ]
     )
 
-    router_factual = json.dumps(
-        {
-            "query_type": "factual",
-            "needs_retrieval": True,
-            "language": "en",
-            "standalone_query": "How does Qdrant hybrid search work?",
-            "requires_fresh_web_info": False,
-            "reasoning": "Direct lookup.",
-        }
-    )
-    entail_ok = json.dumps(
-        {
-            "verifications": [
-                {
-                    "claim": "Qdrant fuses dense and BM25 sparse rankings with RRF.",
-                    "cited_ids": ["C1"],
-                    "verdict": "supported",
-                    "explanation": "Explicitly supported by [C1].",
-                }
-            ]
-        }
-    )
+    router_factual = _ROUTER_FACTUAL
+    entail_ok = _ENTAIL_OK
 
     default_fast = _TaggingChatModel(responses=[router_factual, entail_ok])
     default_gen = _TaggingChatModel(
@@ -422,5 +432,173 @@ async def test_models_catalog_and_per_request_llm_override_api(tmp_path: Path) -
             )
             assert r_forbidden.status_code == 403
             assert "ALLOW_CLIENT_PROVIDER_KEYS" in r_forbidden.json()["detail"]
+    finally:
+        await container.aclose()
+
+
+def _byok_only_settings(collection: str) -> Settings:
+    """A server whose provider is OpenRouter but which has no OpenRouter key of its own."""
+    return Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        llm_provider="openrouter",
+        openrouter_api_key=None,
+        allow_client_provider_keys=True,
+        api_auth_key=None,
+        llm_cache_enabled=False,
+        langfuse_enabled=False,
+        qdrant_collection=collection,
+    )
+
+
+def _bundle_factory_recording_keys(
+    built_for_keys: list[str | None],
+    *,
+    fast_model: BaseChatModel,
+    generation_model: BaseChatModel,
+) -> Any:
+    def _factory(eff: Settings) -> ModelBundle:
+        key = eff.openrouter_api_key
+        built_for_keys.append(key.get_secret_value() if key is not None else None)
+        return ModelBundle(
+            fast_model=fast_model,
+            fast_model_name=eff.llm_fast_model,
+            generation_model=generation_model,
+            generation_model_name=eff.llm_generation_model,
+            provider=eff.llm_provider,
+            temperature=eff.llm_temperature,
+        )
+
+    return _factory
+
+
+@pytest.mark.asyncio
+async def test_a_visitor_key_never_becomes_the_server_default() -> None:
+    """The first request's own key used to become the shared workflow's models (backlog #1)."""
+    settings = _byok_only_settings("byok_leak_test")
+    built_for_keys: list[str | None] = []
+    unused = _TaggingChatModel(responses=["unused"])
+    container = AppContainer(
+        settings=settings,
+        strategies=load_strategies(Path("configs/strategies.yaml")),
+        store=QdrantHybridStore.from_settings(
+            settings,
+            dense_embedder=_StubDense(),  # type: ignore[arg-type]
+            sparse_embedder=_StubSparse(),  # type: ignore[arg-type]
+            in_memory=True,
+        ),
+        fallback_retriever=_EmptyFallback(),  # type: ignore[arg-type]
+        model_bundle_factory=_bundle_factory_recording_keys(
+            built_for_keys, fast_model=unused, generation_model=unused
+        ),
+        owns_firecrawl=False,
+    )
+    try:
+        # Visitor A sends a key: it builds a bundle for their request only.
+        bundle_a, _ = _resolve_llm_override_or_400(
+            None, container, provider_api_key="sk-or-visitor-a"
+        )
+        assert bundle_a is not None
+        assert built_for_keys == ["sk-or-visitor-a"]
+        workflow = _resolve_workflow_or_503(container, models_override=bundle_a)
+        assert workflow.runtime.models is None
+        assert container.check_llm_configured()[0] is False
+
+        # Visitor B sends nothing: a clear 503 instead of a run on visitor A's key.
+        bundle_b, _ = _resolve_llm_override_or_400(None, container, provider_api_key=None)
+        assert bundle_b is None
+        with pytest.raises(HTTPException) as rejected:
+            _resolve_workflow_or_503(container, models_override=bundle_b)
+        assert rejected.value.status_code == 503
+        assert "OPENROUTER_API_KEY" in rejected.value.detail
+        assert "X-Provider-API-Key" in rejected.value.detail
+        assert built_for_keys == ["sk-or-visitor-a"]
+        assert container.check_llm_configured()[0] is False
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_byok_only_server_answers_with_the_visitor_key_and_rejects_keyless_queries() -> None:
+    settings = _byok_only_settings("byok_only_test")
+    strategies = load_strategies(Path("configs/strategies.yaml"))
+    store = QdrantHybridStore.from_settings(
+        settings,
+        dense_embedder=_StubDense(),  # type: ignore[arg-type]
+        sparse_embedder=_StubSparse(),  # type: ignore[arg-type]
+        in_memory=True,
+    )
+    await store.ensure_collection(recreate=True)
+    await store.upsert_chunks(
+        [
+            DocumentChunk(
+                chunk_id=str(uuid5(_NS, "doc1::0")),
+                doc_id="qdrant_hybrid",
+                title="Qdrant Hybrid Search",
+                section_path="RRF",
+                text="Qdrant fuses dense and BM25 sparse rankings with RRF.",
+                chunk_index=0,
+                token_count=14,
+                metadata={"language": "en"},
+            )
+        ]
+    )
+    visitor_fast = _TaggingChatModel(responses=[_ROUTER_FACTUAL, _ENTAIL_OK])
+    visitor_gen = _TaggingChatModel(
+        responses=["Visitor-key answer: Qdrant fuses dense and sparse via RRF [C1]."]
+    )
+    built_for_keys: list[str | None] = []
+    workflow = AdaptiveRAGWorkflow(
+        GraphRuntime(
+            settings=settings,
+            strategies=strategies,
+            models=None,
+            store=store,
+            reranker=_HighScoreReranker(),  # type: ignore[arg-type]
+            fallback_retriever=_EmptyFallback(),  # type: ignore[arg-type]
+            cache=None,
+        )
+    )
+    container = AppContainer(
+        settings=settings,
+        strategies=strategies,
+        store=store,
+        fallback_retriever=_EmptyFallback(),  # type: ignore[arg-type]
+        workflow=workflow,
+        model_bundle_factory=_bundle_factory_recording_keys(
+            built_for_keys, fast_model=visitor_fast, generation_model=visitor_gen
+        ),
+        owns_firecrawl=False,
+    )
+    app = create_app(container=container)
+    question = {"query": "How does Qdrant hybrid search work?", "preset": "full"}
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            answered = await client.post(
+                "/v1/query",
+                headers={"X-Provider-API-Key": "sk-or-visitor-a"},
+                json=question,
+            )
+            assert answered.status_code == 200
+            assert "Visitor-key answer" in FinalAnswer.model_validate(answered.json()).answer
+            assert built_for_keys == ["sk-or-visitor-a"]
+            assert container.workflow is workflow
+            assert workflow.runtime.models is None
+
+            for path in ("/v1/query", "/v1/query/stream"):
+                keyless = await client.post(path, json=question)
+                assert keyless.status_code == 503, path
+                assert "OPENROUTER_API_KEY" in keyless.json()["detail"]
+            assert visitor_gen.call_count == 1
+
+            health = await client.get("/v1/health")
+            assert health.json()["llm_configured"] is False
+
+        # Callers outside the API get a typed error rather than someone else's models.
+        with pytest.raises(LLMNotConfiguredError):
+            await workflow.arun("How does Qdrant hybrid search work?")
     finally:
         await container.aclose()

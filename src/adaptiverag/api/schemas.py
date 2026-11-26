@@ -229,7 +229,11 @@ class IngestRequest(BaseModel):
     )
     recreate_collection: bool = Field(
         default=False,
-        description="If true, drop and recreate the Qdrant collection before upserting.",
+        description=(
+            "If true, replace everything in the collection with these documents. They're "
+            "indexed into a new collection that takes over only when indexing succeeds, so a "
+            "failure leaves the current one untouched."
+        ),
     )
     max_tokens: int = Field(default=512, ge=64, le=4096)
     overlap_tokens: int = Field(default=64, ge=0, le=512)

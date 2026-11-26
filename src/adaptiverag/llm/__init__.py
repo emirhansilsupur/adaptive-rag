@@ -5,6 +5,7 @@ from adaptiverag.llm.cost import BudgetExceededError, CostTracker, estimate_cost
 from adaptiverag.llm.factory import (
     PROVIDER_CATALOG,
     SUPPORTED_PROVIDERS,
+    LLMNotConfiguredError,
     LLMProvider,
     ModelBundle,
     ModelTier,
@@ -30,6 +31,7 @@ __all__ = [
     "BudgetExceededError",
     "CachedResponse",
     "CostTracker",
+    "LLMNotConfiguredError",
     "LLMProvider",
     "LLMStructuredResult",
     "LLMTextResult",

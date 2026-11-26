@@ -462,8 +462,8 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                 onChange={setParentChildChunking}
               />
               <Switch
-                label="Clear the collection first"
-                description="Deletes every indexed passage before indexing. This can't be undone."
+                label="Replace everything in the collection"
+                description="Keeps only these files. Current passages stay searchable until indexing succeeds, then they're deleted. This can't be undone."
                 checked={recreateCollection}
                 onChange={setRecreateCollection}
               />

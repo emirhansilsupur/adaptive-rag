@@ -77,12 +77,13 @@ class AppContainer:
                 )
         return self.prompt_manager
 
-    def ensure_workflow(
-        self,
-        *,
-        models_override: ModelBundle | None = None,
-    ) -> AdaptiveRAGWorkflow:
-        """Return the active AdaptiveRAGWorkflow, building it lazily on first query."""
+    def ensure_workflow(self) -> AdaptiveRAGWorkflow:
+        """Return the shared AdaptiveRAGWorkflow, building it lazily on first query.
+
+        It only ever holds the server's own models, or none when the server has no LLM
+        configured. A request that brings its own key passes that bundle for its run only,
+        so one visitor's key never becomes the default for later requests.
+        """
         if self.workflow is not None:
             return self.workflow
         with self._workflow_lock:
@@ -90,11 +91,11 @@ class AppContainer:
                 self.workflow = AdaptiveRAGWorkflow.from_settings(
                     self.settings,
                     strategies=self.strategies,
-                    models=models_override,
                     store=self.store,
                     fallback_retriever=self.fallback_retriever,
                     observability=self.get_observability(),
                     prompt_manager=self.get_prompt_manager(),
+                    require_models=False,
                 )
             return self.workflow
 
@@ -133,9 +134,10 @@ class AppContainer:
             api_key_override=cleaned_key or None,
         )
 
-        # If effective selection matches server default (and no client key override), skip rebuild.
+        # If the server's own models already match the selection (and no client key), reuse them.
         if (
             self.workflow is not None
+            and self.workflow.runtime.models is not None
             and not cleaned_key
             and effective.llm_provider == self.settings.llm_provider
             and effective.llm_fast_model == self.settings.llm_fast_model
@@ -181,8 +183,8 @@ class AppContainer:
         return await alist_local_models(self.settings.ollama_base_url)
 
     def check_llm_configured(self) -> tuple[bool, str | None]:
-        """Check whether LLM credentials/runtime are configured without executing API calls."""
-        if self.workflow is not None:
+        """Report whether the server has an LLM of its own; keys sent by clients never count."""
+        if self.workflow is not None and self.workflow.runtime.models is not None:
             return True, None
         return check_provider_configured(self.settings, self.settings.llm_provider)
 

@@ -35,6 +35,7 @@ from adaptiverag.graph.workflow import AdaptiveRAGWorkflow
 from adaptiverag.ingestion.chunker import ChunkingConfig, chunk_documents, count_tokens
 from adaptiverag.ingestion.loader import LoadedDocument, load_directory
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
+from adaptiverag.llm.factory import LLMNotConfiguredError
 from adaptiverag.observability.tracing import LangfuseObservability, configure_logging
 from adaptiverag.retrieval.dynamic_k import select_dynamic_top_k
 from adaptiverag.retrieval.embeddings import (
@@ -644,13 +645,18 @@ async def run_live_ablation_benchmark(
 
         ragas_by_id: dict[str, RagasScores] = {}
         if with_ragas and cfg_answers and not budget_exceeded:
+            judge_models = workflow.runtime.models
+            if judge_models is None:
+                raise LLMNotConfiguredError(
+                    "RAGAS scoring uses the server's own fast model as its judge; configure one."
+                )
             embedder = ragas_dense_embedder or workflow.runtime.store.dense_embedder
             ragas_by_id = await aevaluate_with_ragas(
                 cfg_queries,
                 cfg_answers,
-                judge_llm=workflow.runtime.models.fast_model,
+                judge_llm=judge_models.fast_model,
                 dense_embedder=embedder,
-                judge_model_name=workflow.runtime.models.fast_model_name,
+                judge_model_name=judge_models.fast_model_name,
             )
 
         cfg_records: list[QueryEvalRecord] = [

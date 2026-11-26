@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -123,6 +125,10 @@ class QdrantHybridStore:
         self._dense = dense_embedder
         self._sparse = sparse_embedder
         self._is_local_mode = is_local_mode
+        # Writes run one at a time in this process, so an upload can't land in a collection
+        # that a running rebuild is about to replace. A second process (the CLI indexer
+        # running next to the API) isn't covered.
+        self._write_lock = asyncio.Lock()
 
     @classmethod
     def from_settings(
@@ -177,24 +183,143 @@ class QdrantHybridStore:
         """Close the underlying async Qdrant client connection."""
         await self._client.close()
 
+    @property
+    def _backing_prefix(self) -> str:
+        return f"{self._collection_name}__"
+
+    def _new_backing_name(self) -> str:
+        """Name a new backing collection, e.g. ``adaptiverag_docs__20261126190501_3f9a1c``."""
+        stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        return f"{self._backing_prefix}{stamp}_{secrets.token_hex(3)}"
+
+    def _alias_switch(self, backing: str) -> list[models.AliasOperations]:
+        """Alias operations that point the collection name at ``backing`` in one update."""
+        return [
+            models.DeleteAliasOperation(
+                delete_alias=models.DeleteAlias(alias_name=self._collection_name)
+            ),
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(
+                    collection_name=backing,
+                    alias_name=self._collection_name,
+                )
+            ),
+        ]
+
     async def ensure_collection(self, *, recreate: bool = False) -> bool:
         """Ensure the hybrid collection exists with dense COSINE + sparse IDF vectors.
 
-        Returns True if the collection was newly created (or recreated), False if it
-        already existed.
-        """
-        exists = await self._client.collection_exists(self._collection_name)
-        if exists and recreate:
-            logger.info("qdrant_recreating_collection", collection=self._collection_name)
-            await self._client.delete_collection(self._collection_name)
-            exists = False
+        A new collection is stored under a dated backing name and the configured name becomes
+        a Qdrant alias for it, so ``rebuild_collection`` can later switch to a fresh copy in
+        one step. ``recreate=True`` swaps in an empty collection that way.
 
-        if exists:
+        Returns True if a collection was created (or recreated), False if it already existed.
+        """
+        if recreate:
+            await self.rebuild_collection([])
+            return True
+        if await self._client.collection_exists(self._collection_name):
             return False
 
+        async with self._write_lock:
+            if await self._client.collection_exists(self._collection_name):
+                return False
+            backing = self._new_backing_name()
+            try:
+                await self._create_backing_collection(backing)
+                await self._client.update_collection_aliases(
+                    change_aliases_operations=self._alias_switch(backing)
+                )
+            except BaseException:
+                await self._drop_collection_quietly(backing)
+                raise
+            return True
+
+    async def rebuild_collection(
+        self,
+        chunks: Sequence[DocumentChunk],
+        *,
+        batch_size: int = 64,
+    ) -> int:
+        """Replace everything in the collection with ``chunks``; return how many were stored.
+
+        The chunks go into a new backing collection while searches keep using the current
+        one. Only when every batch is stored does the collection name move to the new copy,
+        in a single alias update, and the old copy get dropped. If embedding or upserting
+        fails, the new copy is dropped and the current collection is left as it was.
+        """
+        async with self._write_lock:
+            backing = self._new_backing_name()
+            try:
+                await self._create_backing_collection(backing)
+                upserted = await self._upsert_into(
+                    backing,
+                    chunks,
+                    batch_size=batch_size,
+                    replace_existing_docs=False,
+                )
+            except BaseException:
+                await self._drop_collection_quietly(backing)
+                raise
+
+            try:
+                previous = await self._point_name_at(backing)
+            except Exception:
+                logger.error(
+                    "qdrant_alias_switch_failed",
+                    collection=self._collection_name,
+                    backing_collection=backing,
+                    detail="The new copy is complete, but the collection name doesn't point at "
+                    "it. Point the alias at it in Qdrant, or rebuild again.",
+                )
+                raise
+
+            if previous is not None and previous.startswith(self._backing_prefix):
+                await self._drop_collection_quietly(previous)
+            elif previous is not None:
+                logger.warning(
+                    "qdrant_previous_collection_kept",
+                    collection=self._collection_name,
+                    previous_collection=previous,
+                    detail="The alias pointed at a collection AdaptiveRAG didn't create, "
+                    "so it was left in place.",
+                )
+            logger.info(
+                "qdrant_collection_rebuilt",
+                collection=self._collection_name,
+                backing_collection=backing,
+                replaced_collection=previous,
+                points=upserted,
+            )
+            return upserted
+
+    async def _point_name_at(self, backing: str) -> str | None:
+        """Make the collection name an alias of ``backing``; return the collection it named."""
+        aliases = await self._client.get_aliases()
+        previous = next(
+            (a.collection_name for a in aliases.aliases if a.alias_name == self._collection_name),
+            None,
+        )
+        if previous is None and await self._client.collection_exists(self._collection_name):
+            # The name is still a plain collection from before aliases were used. Qdrant can't
+            # give an alias a name that a collection holds, so drop it first: searches miss for
+            # the moment between the two calls. This happens once, on the first rebuild.
+            logger.warning(
+                "qdrant_collection_migrating_to_alias",
+                collection=self._collection_name,
+                backing_collection=backing,
+            )
+            await self._client.delete_collection(self._collection_name)
+        await self._client.update_collection_aliases(
+            change_aliases_operations=self._alias_switch(backing)
+        )
+        return previous
+
+    async def _create_backing_collection(self, name: str) -> None:
+        """Create an empty collection with this store's dense + sparse vector layout."""
         dim = self._dense.dimension
         await self._client.create_collection(
-            collection_name=self._collection_name,
+            collection_name=name,
             vectors_config={
                 DENSE_VECTOR_NAME: models.VectorParams(
                     size=dim,
@@ -212,7 +337,7 @@ class QdrantHybridStore:
         if not self._is_local_mode:
             for field_name in ("doc_id", "language", "parent_id"):
                 await self._client.create_payload_index(
-                    collection_name=self._collection_name,
+                    collection_name=name,
                     field_name=field_name,
                     field_schema=models.PayloadSchemaType.KEYWORD,
                 )
@@ -220,14 +345,25 @@ class QdrantHybridStore:
         logger.info(
             "qdrant_collection_created",
             collection=self._collection_name,
+            backing_collection=name,
             dense_dim=dim,
             dense_model=self._dense.model_name,
             sparse_model=self._sparse.model_name,
         )
-        return True
+
+    async def _drop_collection_quietly(self, name: str) -> None:
+        """Delete a backing collection; if that fails it's only left behind, so log it."""
+        try:
+            await self._client.delete_collection(name)
+        except Exception as exc:
+            logger.warning("qdrant_collection_drop_failed", backing_collection=name, error=str(exc))
 
     async def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> None:
         """Delete existing chunks belonging to specified doc_ids before clean re-upsert."""
+        async with self._write_lock:
+            await self._delete_by_doc_ids(doc_ids)
+
+    async def _delete_by_doc_ids(self, doc_ids: Sequence[str]) -> None:
         unique_ids = list(dict.fromkeys(d for d in doc_ids if d))
         if not unique_ids:
             return
@@ -241,19 +377,20 @@ class QdrantHybridStore:
 
     async def _list_point_ids_by_doc_ids(
         self,
+        collection_name: str,
         doc_ids: Sequence[str],
     ) -> list[models.ExtendedPointId]:
         """Collect existing Qdrant point IDs belonging to ``doc_ids`` without loading vectors or text."""
         unique_ids = list(dict.fromkeys(d for d in doc_ids if d))
         flt = _build_filter(doc_ids=unique_ids)
-        if flt is None or not await self._client.collection_exists(self._collection_name):
+        if flt is None or not await self._client.collection_exists(collection_name):
             return []
 
         found_ids: list[models.ExtendedPointId] = []
         offset: Any = None
         while True:
             records, next_offset = await self._client.scroll(
-                collection_name=self._collection_name,
+                collection_name=collection_name,
                 scroll_filter=flt,
                 limit=256,
                 offset=offset,
@@ -274,13 +411,29 @@ class QdrantHybridStore:
         replace_existing_docs: bool = True,
     ) -> int:
         """Embed and batch-upsert DocumentChunks into Qdrant (crash-safe & zero-gap re-indexing)."""
+        async with self._write_lock:
+            return await self._upsert_into(
+                self._collection_name,
+                chunks,
+                batch_size=batch_size,
+                replace_existing_docs=replace_existing_docs,
+            )
+
+    async def _upsert_into(
+        self,
+        collection_name: str,
+        chunks: Sequence[DocumentChunk],
+        *,
+        batch_size: int,
+        replace_existing_docs: bool,
+    ) -> int:
         if not chunks:
             return 0
 
         existing_ids: list[models.ExtendedPointId] = []
         if replace_existing_docs:
             doc_ids = [c.doc_id for c in chunks]
-            existing_ids = await self._list_point_ids_by_doc_ids(doc_ids)
+            existing_ids = await self._list_point_ids_by_doc_ids(collection_name, doc_ids)
 
         total_upserted = 0
         for start in range(0, len(chunks), batch_size):
@@ -324,7 +477,7 @@ class QdrantHybridStore:
                 )
 
             await self._client.upsert(
-                collection_name=self._collection_name,
+                collection_name=collection_name,
                 points=points,
                 wait=True,
             )
@@ -339,14 +492,14 @@ class QdrantHybridStore:
             ]
             if stale_ids:
                 await self._client.delete(
-                    collection_name=self._collection_name,
+                    collection_name=collection_name,
                     points_selector=models.PointIdsList(points=stale_ids),
                     wait=True,
                 )
 
         logger.info(
             "qdrant_chunks_upserted",
-            collection=self._collection_name,
+            collection=collection_name,
             count=total_upserted,
         )
         return total_upserted
@@ -557,12 +710,12 @@ class QdrantHybridStore:
         if not cleaned or not await self._client.collection_exists(self._collection_name):
             return 0, 0
 
-        existing_count = await self.count_by_doc_id(cleaned)
-        if existing_count == 0:
-            return 0, await self.count_points()
-
-        await self.delete_by_doc_ids([cleaned])
-        remaining = await self.count_points()
+        async with self._write_lock:
+            existing_count = await self.count_by_doc_id(cleaned)
+            if existing_count == 0:
+                return 0, await self.count_points()
+            await self._delete_by_doc_ids([cleaned])
+            remaining = await self.count_points()
         logger.info(
             "qdrant_document_deleted",
             collection=self._collection_name,
