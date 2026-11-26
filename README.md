@@ -2,7 +2,7 @@
 
 # AdaptiveRAG
 
-**Production-grade, query-aware Agentic RAG engine with verifiable citations and glass-box observability.**  
+**Query-aware Agentic RAG engine with verifiable citations and glass-box observability.**  
 Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranking, 3-stage Dynamic Top-K, CRAG confidence gating, Langfuse v5 OTEL, and multilingual/cross-lingual (`EN ↔ TR`) evaluation.
 
 [![CI](https://github.com/emirhansilsupur/adaptive-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/emirhansilsupur/adaptive-rag/actions/workflows/ci.yml)

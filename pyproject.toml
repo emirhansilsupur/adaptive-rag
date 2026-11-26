@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "adaptiverag"
 version = "0.1.0"
-description = "Production-grade, query-aware Agentic RAG engine with verifiable citations, native Qdrant hybrid search, local ONNX reranking, 3-stage dynamic top-k, CRAG gating, and Langfuse v5 OTEL observability."
+description = "Query-aware Agentic RAG engine with verifiable citations, native Qdrant hybrid search, local ONNX reranking, 3-stage dynamic top-k, CRAG gating, and Langfuse v5 OTEL observability."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

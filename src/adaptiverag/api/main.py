@@ -99,7 +99,7 @@ def create_app(
     application = FastAPI(
         title="AdaptiveRAG API",
         version="0.1.0",
-        summary="Production-grade, query-aware Agentic RAG engine with verifiable citations and glass-box observability.",
+        summary="Query-aware Agentic RAG engine with verifiable citations and glass-box observability.",
         description=(
             "Domain-agnostic Agentic RAG engine featuring native Qdrant hybrid search (Dense + BM25 RRF), "
             "local ONNX cross-encoder reranking, 3-stage dynamic top-k & hierarchical parent-child retrieval, "
