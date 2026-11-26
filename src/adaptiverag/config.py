@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     llm_generation_model: str = "deepseek/deepseek-v3.2"
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     llm_request_timeout: float = Field(default=45.0, gt=1.0)
+    allow_client_provider_keys: bool = True
 
     # --- FinOps Budget & Cache ---
     llm_cache_enabled: bool = True

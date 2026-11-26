@@ -5,6 +5,7 @@ import { ChatWorkspace } from "../components/ChatWorkspace";
 import { GlassBoxInspector } from "../components/GlassBoxInspector";
 import { KnowledgeBaseView } from "../components/KnowledgeBaseView";
 import { MarkdownWithCitations } from "../components/MarkdownWithCitations";
+import { ModelSelectorPopover } from "../components/ModelSelectorPopover";
 import {
   buildAuthHeaders,
   buildQueryPayload,
@@ -19,7 +20,13 @@ import {
   DEFAULT_THREAD_CONTEXT,
   resolveEffectiveInstructions,
 } from "../constants/pipeline";
-import type { ChatTurn, EvidenceChunk, ThreadContextConfig } from "../types/api";
+import type {
+  ChatTurn,
+  EvidenceChunk,
+  LLMOverride,
+  ModelsCatalogResponse,
+  ThreadContextConfig,
+} from "../types/api";
 
 describe("SseStreamParser", () => {
   it("parses chunked node_update and final_answer events across split frames", () => {
@@ -85,17 +92,20 @@ describe("API payload helpers", () => {
     expect(crawl.parent_child).toBe(true);
   });
 
-  it("attaches X-API-Key header when studio API key is configured", () => {
+  it("attaches X-API-Key and X-Provider-API-Key headers cleanly when configured", () => {
     setStudioApiKey("  prod-secret-42  ");
     try {
-      expect(buildAuthHeaders({ Accept: "application/json" })).toEqual({
+      expect(
+        buildAuthHeaders({ Accept: "application/json" }, undefined, "  sk-byok-99  ")
+      ).toEqual({
         Accept: "application/json",
         "X-API-Key": "prod-secret-42",
+        "X-Provider-API-Key": "sk-byok-99",
       });
     } finally {
       setStudioApiKey("");
     }
-    expect(buildAuthHeaders({ Accept: "application/json" })).toEqual({
+    expect(buildAuthHeaders({ Accept: "application/json" }, undefined, "   ")).toEqual({
       Accept: "application/json",
     });
   });
@@ -122,11 +132,23 @@ describe("API payload helpers", () => {
       maxCostUsd: null,
       customInstructions: "  Summarize in 3 bullets.  ",
       docIds: [" doc_a ", "doc_a", "doc_b"],
+      llmOverride: {
+        provider: "openrouter",
+        fast_model: " google/gemini-2.5-flash ",
+        generation_model: " deepseek/deepseek-v3.2 ",
+        temperature: 0.2,
+      },
     });
     expect(customReq.preset).toBeUndefined();
     expect(customReq.ablation?.retrieval_mode).toBe("dense_only");
     expect(customReq.custom_instructions).toBe("Summarize in 3 bullets.");
     expect(customReq.doc_ids).toEqual(["doc_a", "doc_b"]);
+    expect(customReq.llm_override).toEqual({
+      provider: "openrouter",
+      fast_model: "google/gemini-2.5-flash",
+      generation_model: "deepseek/deepseek-v3.2",
+      temperature: 0.2,
+    });
 
     const emptyCtxReq = buildQueryPayload({
       query: "What is RRF?",
@@ -136,9 +158,11 @@ describe("API payload helpers", () => {
       maxCostUsd: null,
       customInstructions: "   ",
       docIds: [],
+      llmOverride: { fast_model: "  " },
     });
     expect(emptyCtxReq.custom_instructions).toBeUndefined();
     expect(emptyCtxReq.doc_ids).toBeUndefined();
+    expect(emptyCtxReq.llm_override).toBeUndefined();
   });
 });
 
@@ -649,5 +673,198 @@ describe("Langfuse Trace Link & Human-in-the-Loop Feedback UI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Vendor MSA Contract/i }));
     expect(currentCtx.scopedDocIds).toEqual(["msa_contract"]);
+  });
+});
+
+describe("ModelSelectorPopover", () => {
+  const sampleCatalog: ModelsCatalogResponse = {
+    default_provider: "openrouter",
+    default_fast_model: "qwen/qwen3-30b-a3b-instruct-2507",
+    default_generation_model: "deepseek/deepseek-v3.2",
+    default_temperature: 0.0,
+    ollama_base_url: "http://localhost:8080/v1",
+    allow_client_provider_keys: true,
+    providers: [
+      {
+        id: "openrouter",
+        label: "OpenRouter",
+        is_local: false,
+        requires_api_key: true,
+        sdk_installed: true,
+        configured: true,
+        reachable: null,
+        status_detail: null,
+        default_fast_model: "qwen/qwen3-30b-a3b-instruct-2507",
+        default_generation_model: "deepseek/deepseek-v3.2",
+        recommended_fast_models: ["qwen/qwen3-30b-a3b-instruct-2507", "google/gemini-2.5-flash"],
+        recommended_generation_models: ["deepseek/deepseek-v3.2", "anthropic/claude-sonnet-4"],
+        detected_models: [],
+      },
+      {
+        id: "ollama",
+        label: "Local (Ollama / llama-server)",
+        is_local: true,
+        requires_api_key: false,
+        sdk_installed: true,
+        configured: true,
+        reachable: true,
+        status_detail: null,
+        default_fast_model: "inkling-2-mini",
+        default_generation_model: "inkling-2-mini",
+        recommended_fast_models: ["inkling-2-mini"],
+        recommended_generation_models: ["inkling-2-mini"],
+        detected_models: ["inkling-2-mini"],
+      },
+      {
+        id: "openai",
+        label: "OpenAI",
+        is_local: false,
+        requires_api_key: true,
+        sdk_installed: true,
+        configured: false,
+        reachable: null,
+        status_detail: "Set OPENAI_API_KEY in .env or enter a session API key to use OpenAI.",
+        default_fast_model: "gpt-4o-mini",
+        default_generation_model: "gpt-4.1",
+        recommended_fast_models: ["gpt-4o-mini"],
+        recommended_generation_models: ["gpt-4.1"],
+        detected_models: [],
+      },
+      {
+        id: "gemini",
+        label: "Google Gemini",
+        is_local: false,
+        requires_api_key: true,
+        sdk_installed: false,
+        configured: false,
+        reachable: null,
+        status_detail:
+          "Install optional extra 'providers' (`uv sync --extra providers`) to use Google Gemini.",
+        default_fast_model: "gemini-2.5-flash",
+        default_generation_model: "gemini-2.5-pro",
+        recommended_fast_models: ["gemini-2.5-flash"],
+        recommended_generation_models: ["gemini-2.5-pro"],
+        detected_models: [],
+      },
+    ],
+  };
+
+  it("opens from top header trigger, supports BYOK session API keys, and switches to detected local model", () => {
+    let activeOverride: LLMOverride | null = null;
+    let sessionKeys: Partial<Record<"openrouter" | "ollama" | "openai" | "gemini" | "anthropic", string>> = {};
+    const onOverrideChange = vi.fn((next: LLMOverride | null) => {
+      activeOverride = next;
+    });
+    const onProviderApiKeyChange = vi.fn((prov: "openrouter" | "ollama" | "openai" | "gemini" | "anthropic", key: string) => {
+      sessionKeys = { ...sessionKeys, [prov]: key };
+    });
+
+    const { rerender } = render(
+      <ModelSelectorPopover
+        catalog={sampleCatalog}
+        catalogLoading={false}
+        health={null}
+        override={activeOverride}
+        providerApiKeys={sessionKeys}
+        onOverrideChange={onOverrideChange}
+        onProviderApiKeyChange={onProviderApiKeyChange}
+        onRefreshCatalog={vi.fn()}
+      />
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: "Configure LLM provider and models",
+    });
+    expect(trigger).toHaveTextContent("deepseek-v3.2");
+    fireEvent.click(trigger);
+
+    expect(screen.getByTestId("model-selector-popover")).toBeInTheDocument();
+    expect(screen.getByText(/sent via X-Provider-API-Key header only/i)).toBeInTheDocument();
+
+    // OpenAI is selectable when BYOK is enabled and prompts for a session-only API key
+    const openAiBtn = screen.getByRole("button", { name: "OpenAI" });
+    expect(openAiBtn).not.toBeDisabled();
+    fireEvent.click(openAiBtn);
+    expect(onOverrideChange).toHaveBeenLastCalledWith({
+      provider: "openai",
+      fast_model: "gpt-4o-mini",
+      generation_model: "gpt-4.1",
+      temperature: 0,
+    });
+
+    rerender(
+      <ModelSelectorPopover
+        catalog={sampleCatalog}
+        catalogLoading={false}
+        health={null}
+        override={activeOverride}
+        providerApiKeys={sessionKeys}
+        onOverrideChange={onOverrideChange}
+        onProviderApiKeyChange={onProviderApiKeyChange}
+        onRefreshCatalog={vi.fn()}
+      />
+    );
+    expect(screen.getByText("key required")).toBeInTheDocument();
+    const keyInput = screen.getByLabelText(/OpenAI API Key/i);
+    fireEvent.change(keyInput, { target: { value: "sk-session-openai-123" } });
+    expect(onProviderApiKeyChange).toHaveBeenLastCalledWith("openai", "sk-session-openai-123");
+
+    // Re-render with active session key -> shows BYOK badge
+    rerender(
+      <ModelSelectorPopover
+        catalog={sampleCatalog}
+        catalogLoading={false}
+        health={null}
+        override={activeOverride}
+        providerApiKeys={sessionKeys}
+        onOverrideChange={onOverrideChange}
+        onProviderApiKeyChange={onProviderApiKeyChange}
+        onRefreshCatalog={vi.fn()}
+      />
+    );
+    expect(screen.getByText("byok")).toBeInTheDocument();
+    expect(screen.getByText("session key active")).toBeInTheDocument();
+
+    // Switch to Local runtime with detected inkling-2-mini model
+    fireEvent.click(screen.getByRole("button", { name: "Local" }));
+    expect(onOverrideChange).toHaveBeenLastCalledWith({
+      provider: "ollama",
+      fast_model: "inkling-2-mini",
+      generation_model: "inkling-2-mini",
+      temperature: 1.0,
+    });
+
+    // Re-render and test Reset button
+    rerender(
+      <ModelSelectorPopover
+        catalog={sampleCatalog}
+        catalogLoading={false}
+        health={null}
+        override={activeOverride}
+        providerApiKeys={sessionKeys}
+        onOverrideChange={onOverrideChange}
+        onProviderApiKeyChange={onProviderApiKeyChange}
+        onRefreshCatalog={vi.fn()}
+      />
+    );
+    expect(screen.getByText("override")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Reset/i }));
+    expect(onOverrideChange).toHaveBeenLastCalledWith(null);
+
+    // When server disables BYOK (allow_client_provider_keys=false), unconfigured OpenAI is disabled
+    rerender(
+      <ModelSelectorPopover
+        catalog={{ ...sampleCatalog, allow_client_provider_keys: false }}
+        catalogLoading={false}
+        health={null}
+        override={null}
+        providerApiKeys={{}}
+        onOverrideChange={onOverrideChange}
+        onProviderApiKeyChange={onProviderApiKeyChange}
+        onRefreshCatalog={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("button", { name: "OpenAI" })).toBeDisabled();
+    expect(screen.getByText(/BYOK disabled by server policy/i)).toBeInTheDocument();
   });
 });

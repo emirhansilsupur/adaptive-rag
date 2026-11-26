@@ -109,6 +109,25 @@ def _resolve_controls(
     return cost_tracker, None
 
 
+def _resolve_llm_runtime(
+    runtime: GraphRuntime,
+    config: RunnableConfig | None,
+) -> tuple[ModelBundle, float]:
+    """Resolve concurrency-safe per-request ModelBundle & temperature overrides."""
+    configurable = (config or {}).get("configurable") or {}
+    raw_models = configurable.get("models")
+    models = raw_models if isinstance(raw_models, ModelBundle) else runtime.models
+
+    raw_temp = configurable.get("temperature")
+    if isinstance(raw_temp, (int, float)):
+        temperature = float(raw_temp)
+    elif models.temperature is not None:
+        temperature = float(models.temperature)
+    else:
+        temperature = runtime.settings.llm_temperature
+    return models, temperature
+
+
 def _effective_chunk_score(chunk: EvidenceChunk) -> float:
     if chunk.rerank_score is not None:
         return min(1.0, max(0.0, float(chunk.rerank_score)))
@@ -248,13 +267,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             query,
             chat_history,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         try:
             res = await invoke_structured(
-                runtime.models.fast_model,
+                models.fast_model,
                 RouterClassification,
                 messages,
-                model_name=runtime.models.fast_model_name,
-                temperature=runtime.settings.llm_temperature,
+                model_name=models.fast_model_name,
+                temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
@@ -344,11 +364,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             chat_history=chat_history,
             custom_instructions=custom_instructions,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         res = await invoke_text(
-            runtime.models.fast_model,
+            models.fast_model,
             messages,
-            model_name=runtime.models.fast_model_name,
-            temperature=runtime.settings.llm_temperature,
+            model_name=models.fast_model_name,
+            temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
@@ -359,9 +380,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         event = NodeTraceEvent(
             node="conversational_respond",
             latency_ms=_elapsed_ms(started),
-            summary=f"Direct conversational reply via {runtime.models.fast_model_name} (0 retrieval calls)",
+            summary=f"Direct conversational reply via {models.fast_model_name} (0 retrieval calls)",
             metadata={
-                "model": runtime.models.fast_model_name,
+                "model": models.fast_model_name,
                 "from_cache": res.from_cache,
                 "custom_instructions_active": bool(
                     custom_instructions and custom_instructions.strip()
@@ -393,13 +414,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             language=plan.language,
             max_sub_queries=max_subs,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         try:
             res = await invoke_structured(
-                runtime.models.fast_model,
+                models.fast_model,
                 SubQueryDecomposition,
                 messages,
-                model_name=runtime.models.fast_model_name,
-                temperature=runtime.settings.llm_temperature,
+                model_name=models.fast_model_name,
+                temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
@@ -599,6 +621,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 reasoning="Confidence gating disabled by ablation config.",
             )
         else:
+            models, temperature = _resolve_llm_runtime(runtime, config)
             web_enabled = (
                 runtime.settings.web_fallback_enabled
                 and ablation.enable_web_fallback
@@ -612,9 +635,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 rewrite_attempts=rewrite_attempts,
                 web_fallback_enabled=web_enabled,
                 requires_fresh_web_info=plan.requires_fresh_web_info,
-                fast_model=runtime.models.fast_model,
-                fast_model_name=runtime.models.fast_model_name,
-                temperature=runtime.settings.llm_temperature,
+                fast_model=models.fast_model,
+                fast_model_name=models.fast_model_name,
+                temperature=temperature,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
@@ -671,13 +694,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             confidence=confidence,
             language=plan.language,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         try:
             res = await invoke_structured(
-                runtime.models.fast_model,
+                models.fast_model,
                 CorrectiveRewriteResult,
                 messages,
-                model_name=runtime.models.fast_model_name,
-                temperature=runtime.settings.llm_temperature,
+                model_name=models.fast_model_name,
+                temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
@@ -814,11 +838,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             query_type=plan.query_type,
             custom_instructions=custom_instructions,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         res = await invoke_text(
-            runtime.models.generation_model,
+            models.generation_model,
             messages,
-            model_name=runtime.models.generation_model_name,
-            temperature=runtime.settings.llm_temperature,
+            model_name=models.generation_model_name,
+            temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
@@ -830,11 +855,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             node="generate_answer",
             latency_ms=_elapsed_ms(started),
             summary=(
-                f"Generated grounded answer via {runtime.models.generation_model_name} "
+                f"Generated grounded answer via {models.generation_model_name} "
                 f"using {len(chunks)} evidence chunk(s)"
             ),
             metadata={
-                "model": runtime.models.generation_model_name,
+                "model": models.generation_model_name,
                 "evidence_count": len(chunks),
                 "from_cache": res.from_cache,
                 "custom_instructions_active": bool(
@@ -867,13 +892,14 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 config=runtime.strategies.citation_validation,
             )
         else:
+            models, temperature = _resolve_llm_runtime(runtime, config)
             report, node_usage = await validate_citations(
                 answer=draft_answer,
                 evidence_chunks=chunks,
                 config=runtime.strategies.citation_validation,
-                fast_model=runtime.models.fast_model,
-                fast_model_name=runtime.models.fast_model_name,
-                temperature=runtime.settings.llm_temperature,
+                fast_model=models.fast_model,
+                fast_model_name=models.fast_model_name,
+                temperature=temperature,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
                 callbacks=callbacks,
@@ -936,11 +962,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             report=report,
             custom_instructions=custom_instructions,
         )
+        models, temperature = _resolve_llm_runtime(runtime, config)
         res = await invoke_text(
-            runtime.models.generation_model,
+            models.generation_model,
             messages,
-            model_name=runtime.models.generation_model_name,
-            temperature=runtime.settings.llm_temperature,
+            model_name=models.generation_model_name,
+            temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
@@ -952,12 +979,12 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             node="regenerate_strict",
             latency_ms=_elapsed_ms(started),
             summary=(
-                f"Strict regeneration #{attempt} via {runtime.models.generation_model_name} "
+                f"Strict regeneration #{attempt} via {models.generation_model_name} "
                 f"to fix citation violations"
             ),
             metadata={
                 "attempt": attempt,
-                "model": runtime.models.generation_model_name,
+                "model": models.generation_model_name,
                 "from_cache": res.from_cache,
                 "custom_instructions_active": bool(
                     custom_instructions and custom_instructions.strip()

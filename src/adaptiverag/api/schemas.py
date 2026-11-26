@@ -8,9 +8,52 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from adaptiverag.graph.state import AblationConfig
 from adaptiverag.ingestion.pdf_parser import PdfOcrMode
+from adaptiverag.llm.factory import LLMProvider
 from adaptiverag.schemas.query import ChatMessage
 
 AblationPreset = Literal["full", "adaptive_routing", "hybrid_rerank", "naive_dense"]
+
+
+class LLMOverride(BaseModel):
+    """Optional concurrency-safe per-request LLM provider, tier models & temperature override."""
+
+    provider: LLMProvider | None = Field(
+        default=None,
+        description="Override server default LLM provider (must be configured in server .env).",
+    )
+    fast_model: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Override fast-tier model ID (Router, Decompose, CRAG, Citation Audit).",
+    )
+    generation_model: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Override generation-tier model ID (Grounded Synthesis & Strict Regen).",
+    )
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description="Override LLM sampling temperature (0.0 for grounded RAG, 1.0 for reasoning models).",
+    )
+
+    @field_validator("fast_model", "generation_model")
+    @classmethod
+    def _strip_optional_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @property
+    def is_empty(self) -> bool:
+        return (
+            self.provider is None
+            and self.fast_model is None
+            and self.generation_model is None
+            and self.temperature is None
+        )
 
 
 class QueryRequest(BaseModel):
@@ -50,6 +93,13 @@ class QueryRequest(BaseModel):
         description=(
             "Optional list of indexed doc_ids scoping retrieval for this request/thread "
             "(works with both named presets and custom ablation)."
+        ),
+    )
+    llm_override: LLMOverride | None = Field(
+        default=None,
+        description=(
+            "Optional per-request LLM provider/model/temperature override "
+            "(uses server-managed API keys from .env; never accepts raw secrets or custom URLs)."
         ),
     )
     session_id: str | None = Field(
@@ -307,6 +357,36 @@ class DeleteDocumentResponse(BaseModel):
     doc_id: str
     deleted_chunks: int = Field(ge=0)
     remaining_collection_points: int = Field(ge=0)
+
+
+class ProviderCatalogItem(BaseModel):
+    """Non-secret provider readiness and curated/detected models for GET /v1/models."""
+
+    id: LLMProvider
+    label: str
+    is_local: bool
+    requires_api_key: bool = True
+    sdk_installed: bool = True
+    configured: bool
+    reachable: bool | None = None
+    status_detail: str | None = None
+    default_fast_model: str
+    default_generation_model: str
+    recommended_fast_models: list[str] = Field(default_factory=list)
+    recommended_generation_models: list[str] = Field(default_factory=list)
+    detected_models: list[str] = Field(default_factory=list)
+
+
+class ModelsCatalogResponse(BaseModel):
+    """Response payload for GET /v1/models exposing safe runtime defaults & configured providers."""
+
+    default_provider: LLMProvider
+    default_fast_model: str
+    default_generation_model: str
+    default_temperature: float
+    ollama_base_url: str
+    allow_client_provider_keys: bool = True
+    providers: list[ProviderCatalogItem] = Field(default_factory=list)
 
 
 class FeedbackRequest(BaseModel):

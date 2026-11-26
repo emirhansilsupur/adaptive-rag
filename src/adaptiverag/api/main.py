@@ -30,6 +30,7 @@ _SERVICE_METADATA: dict[str, Any] = {
     "docs": "/docs",
     "endpoints": [
         "GET /v1/health",
+        "GET /v1/models",
         "POST /v1/query",
         "POST /v1/query/stream",
         "POST /v1/feedback",

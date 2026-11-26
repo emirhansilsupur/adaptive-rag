@@ -17,6 +17,7 @@ export type AblationPreset =
 
 export type PresetSelection = AblationPreset | "custom";
 export type PdfOcrMode = "auto" | "ocria_nano" | "vision_llm" | "off";
+export type LLMProvider = "openrouter" | "ollama" | "openai" | "gemini" | "anthropic";
 export type InstructionPresetId =
   | "default"
   | "executive"
@@ -24,6 +25,41 @@ export type InstructionPresetId =
   | "analyst"
   | "tutor"
   | "custom";
+
+export interface LLMOverride {
+  provider?: LLMProvider;
+  fast_model?: string;
+  generation_model?: string;
+  temperature?: number;
+}
+
+export type ProviderApiKeys = Partial<Record<LLMProvider, string>>;
+
+export interface ProviderCatalogItem {
+  id: LLMProvider;
+  label: string;
+  is_local: boolean;
+  requires_api_key?: boolean;
+  sdk_installed?: boolean;
+  configured: boolean;
+  reachable: boolean | null;
+  status_detail: string | null;
+  default_fast_model: string;
+  default_generation_model: string;
+  recommended_fast_models: string[];
+  recommended_generation_models: string[];
+  detected_models: string[];
+}
+
+export interface ModelsCatalogResponse {
+  default_provider: LLMProvider;
+  default_fast_model: string;
+  default_generation_model: string;
+  default_temperature: number;
+  ollama_base_url: string;
+  allow_client_provider_keys?: boolean;
+  providers: ProviderCatalogItem[];
+}
 
 export interface ThreadContextConfig {
   instructionPreset: InstructionPresetId;
@@ -59,6 +95,7 @@ export interface QueryRequest {
   max_cost_usd?: number;
   custom_instructions?: string;
   doc_ids?: string[];
+  llm_override?: LLMOverride;
   session_id?: string;
   user_id?: string;
 }

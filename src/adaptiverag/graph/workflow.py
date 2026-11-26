@@ -293,6 +293,8 @@ class AdaptiveRAGWorkflow:
     def _build_run_config(
         self,
         *,
+        models: ModelBundle | None = None,
+        temperature: float | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
         trace_handle: TraceRunHandle | None = None,
@@ -308,6 +310,10 @@ class AdaptiveRAGWorkflow:
 
         resolved_tracker = self._resolve_run_cost_tracker(cost_tracker)
         configurable: dict[str, Any] = {"cost_tracker": resolved_tracker}
+        if models is not None:
+            configurable["models"] = models
+        if temperature is not None:
+            configurable["temperature"] = float(temperature)
 
         config: RunnableConfig = {"recursion_limit": 25}
         if merged_callbacks:
@@ -325,6 +331,8 @@ class AdaptiveRAGWorkflow:
         chat_history: Sequence[ChatMessage] | None = None,
         ablation: AblationConfig | None = None,
         custom_instructions: str | None = None,
+        models: ModelBundle | None = None,
+        temperature: float | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
         session_id: str | None = None,
@@ -358,6 +366,8 @@ class AdaptiveRAGWorkflow:
             tags=list(trace_tags) if trace_tags else ["mode:batch"],
         )
         run_config = self._build_run_config(
+            models=models,
+            temperature=temperature,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
             trace_handle=trace_handle,
@@ -385,6 +395,8 @@ class AdaptiveRAGWorkflow:
         chat_history: Sequence[ChatMessage] | None = None,
         ablation: AblationConfig | None = None,
         custom_instructions: str | None = None,
+        models: ModelBundle | None = None,
+        temperature: float | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
         session_id: str | None = None,
@@ -418,6 +430,8 @@ class AdaptiveRAGWorkflow:
             tags=list(trace_tags) if trace_tags else ["mode:stream"],
         )
         run_config = self._build_run_config(
+            models=models,
+            temperature=temperature,
             cost_tracker=cost_tracker,
             callbacks=callbacks,
             trace_handle=trace_handle,

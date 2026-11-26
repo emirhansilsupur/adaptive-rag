@@ -13,6 +13,7 @@ import { ChatWorkspace } from "./components/ChatWorkspace";
 import { CompareArena } from "./components/CompareArena";
 import { GlassBoxInspector } from "./components/GlassBoxInspector";
 import { KnowledgeBaseView } from "./components/KnowledgeBaseView";
+import { ModelSelectorPopover } from "./components/ModelSelectorPopover";
 import { Sidebar } from "./components/Sidebar";
 import {
   DEFAULT_API_URL,
@@ -26,6 +27,7 @@ import {
   buildQueryPayload,
   fetchDocuments,
   fetchHealth,
+  fetchModelsCatalog,
   runQueryBatch,
   setStudioApiKey,
   streamQuery,
@@ -49,7 +51,11 @@ import type {
   HealthResponse,
   InspectorTab,
   LiveStreamStep,
+  LLMOverride,
+  LLMProvider,
+  ModelsCatalogResponse,
   PresetSelection,
+  ProviderApiKeys,
   ThreadContextConfig,
   TokenUsage,
 } from "./types/api";
@@ -58,7 +64,37 @@ const STORAGE_SESSIONS_KEY = "adaptiverag_studio_sessions_v1";
 const STORAGE_COMPARE_KEY = "adaptiverag_studio_compare_v1";
 const STORAGE_THEME_KEY = "adaptiverag_studio_theme_v1";
 const STORAGE_API_URL_KEY = "adaptiverag_studio_api_url_v1";
+const STORAGE_LLM_OVERRIDE_KEY = "adaptiverag_studio_llm_override_v1";
 const SESSION_API_KEY_STORAGE_KEY = "adaptiverag_studio_api_key_v1";
+const SESSION_PROVIDER_KEYS_STORAGE_KEY = "adaptiverag_studio_provider_keys_v1";
+
+function loadInitialLlmOverride(): LLMOverride | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_LLM_OVERRIDE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LLMOverride | null;
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function loadInitialProviderApiKeys(): ProviderApiKeys {
+  try {
+    const raw = sessionStorage.getItem(SESSION_PROVIDER_KEYS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as ProviderApiKeys | null;
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return {};
+}
 
 function loadInitialCompareRuns(): CompareRun[] {
   try {
@@ -158,6 +194,13 @@ export default function App() {
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
 
+  const [modelsCatalog, setModelsCatalog] = useState<ModelsCatalogResponse | null>(null);
+  const [modelsCatalogLoading, setModelsCatalogLoading] = useState(false);
+  const [llmOverride, setLlmOverride] = useState<LLMOverride | null>(loadInitialLlmOverride);
+  const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeys>(
+    loadInitialProviderApiKeys
+  );
+
   // Sessions & turns
   const [sessions, setSessions] = useState<ChatSession[]>(loadInitialSessions);
   const [activeSessionId, setActiveSessionId] = useState<string>(
@@ -242,7 +285,7 @@ export default function App() {
     }
   }, [sessions]);
 
-  // Persist API URL & session-scoped API Key
+  // Persist API URL & LLM override
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_API_URL_KEY, apiUrl);
@@ -250,6 +293,49 @@ export default function App() {
       // ignore
     }
   }, [apiUrl]);
+
+  useEffect(() => {
+    try {
+      if (llmOverride) {
+        localStorage.setItem(STORAGE_LLM_OVERRIDE_KEY, JSON.stringify(llmOverride));
+      } else {
+        localStorage.removeItem(STORAGE_LLM_OVERRIDE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [llmOverride]);
+
+  const handleProviderApiKeyChange = useCallback(
+    (provider: LLMProvider, nextKey: string) => {
+      setProviderApiKeys((prev) => {
+        const next: ProviderApiKeys = { ...prev };
+        const cleaned = nextKey.trim();
+        if (cleaned) {
+          next[provider] = cleaned;
+        } else {
+          delete next[provider];
+        }
+        try {
+          if (Object.keys(next).length > 0) {
+            sessionStorage.setItem(SESSION_PROVIDER_KEYS_STORAGE_KEY, JSON.stringify(next));
+          } else {
+            sessionStorage.removeItem(SESSION_PROVIDER_KEYS_STORAGE_KEY);
+          }
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const activeEffectiveProvider = (llmOverride?.provider ??
+    modelsCatalog?.default_provider ??
+    health?.llm_provider ??
+    "openrouter") as LLMProvider;
+  const activeProviderApiKey = providerApiKeys[activeEffectiveProvider]?.trim() || undefined;
 
   const handleApiKeyChange = useCallback((nextKey: string) => {
     const cleaned = nextKey.trim();
@@ -293,9 +379,21 @@ export default function App() {
     }
   }, [apiUrl, apiKey]);
 
+  const refreshModelsCatalog = useCallback(async () => {
+    setModelsCatalogLoading(true);
+    try {
+      const data = await fetchModelsCatalog(apiUrl);
+      setModelsCatalog(data);
+    } catch {
+      // keep previous catalog or null gracefully
+    } finally {
+      setModelsCatalogLoading(false);
+    }
+  }, [apiUrl, apiKey]);
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshHealth(), refreshDocuments()]);
-  }, [refreshHealth, refreshDocuments]);
+    await Promise.all([refreshHealth(), refreshDocuments(), refreshModelsCatalog()]);
+  }, [refreshHealth, refreshDocuments, refreshModelsCatalog]);
 
   useEffect(() => {
     void refreshAll();
@@ -544,6 +642,7 @@ export default function App() {
         customAblation,
         maxCostUsd: enableBudgetCap ? maxCostUsd : null,
         sessionId: `${runId}_${side}`,
+        llmOverride,
       });
 
       try {
@@ -584,10 +683,16 @@ export default function App() {
                 });
               },
             },
-            controller.signal
+            controller.signal,
+            activeProviderApiKey
           );
         } else {
-          answer = await runQueryBatch(apiUrl, payload, controller.signal);
+          answer = await runQueryBatch(
+            apiUrl,
+            payload,
+            controller.signal,
+            activeProviderApiKey
+          );
         }
 
         updateSide(side, (prev) => ({
@@ -687,6 +792,7 @@ export default function App() {
       sessionId: targetSessionId,
       customInstructions: effectiveInstructions,
       docIds: scopedDocIds,
+      llmOverride,
     });
 
     const controller = new AbortController();
@@ -735,10 +841,16 @@ export default function App() {
               }
             },
           },
-          controller.signal
+          controller.signal,
+          activeProviderApiKey
         );
       } else {
-        answer = await runQueryBatch(apiUrl, payload, controller.signal);
+        answer = await runQueryBatch(
+          apiUrl,
+          payload,
+          controller.signal,
+          activeProviderApiKey
+        );
       }
 
       const newTurn: ChatTurn = {
@@ -904,6 +1016,17 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            <ModelSelectorPopover
+              catalog={modelsCatalog}
+              catalogLoading={modelsCatalogLoading}
+              health={health}
+              override={llmOverride}
+              providerApiKeys={providerApiKeys}
+              onOverrideChange={setLlmOverride}
+              onProviderApiKeyChange={handleProviderApiKeyChange}
+              onRefreshCatalog={() => void refreshModelsCatalog()}
+            />
 
             <button
               type="button"

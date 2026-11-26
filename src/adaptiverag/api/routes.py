@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -33,6 +34,9 @@ from adaptiverag.api.schemas import (
     IndexedDocumentInfo,
     IngestRequest,
     IngestResponse,
+    LLMOverride,
+    ModelsCatalogResponse,
+    ProviderCatalogItem,
     QueryRequest,
 )
 from adaptiverag.ingestion.chunker import ChunkingConfig
@@ -54,6 +58,13 @@ from adaptiverag.ingestion.web_loader import (
     UnsafeURLError,
 )
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
+from adaptiverag.llm.factory import (
+    PROVIDER_CATALOG,
+    SUPPORTED_PROVIDERS,
+    ModelBundle,
+    check_provider_configured,
+    check_provider_sdk_installed,
+)
 from adaptiverag.schemas.response import FinalAnswer
 from adaptiverag.verification.guardrails import (
     GuardrailDecision,
@@ -66,12 +77,45 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["AdaptiveRAG"])
 
 
-def _resolve_workflow_or_503(container: AppContainer) -> Any:
+def _resolve_workflow_or_503(
+    container: AppContainer,
+    *,
+    models_override: ModelBundle | None = None,
+) -> Any:
     try:
-        return container.ensure_workflow()
+        return container.ensure_workflow(models_override=models_override)
     except (ValueError, ImportError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+def _resolve_llm_override_or_400(
+    override: LLMOverride | None,
+    container: AppContainer,
+    *,
+    provider_api_key: str | None = None,
+) -> tuple[ModelBundle | None, float | None]:
+    cleaned_key = provider_api_key.strip() if provider_api_key else None
+    if (override is None or override.is_empty) and not cleaned_key:
+        return None, None
+    try:
+        return container.resolve_model_bundle(
+            provider=override.provider if override is not None else None,
+            fast_model=override.fast_model if override is not None else None,
+            generation_model=override.generation_model if override is not None else None,
+            temperature=override.temperature if override is not None else None,
+            api_key_override=cleaned_key,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except (ValueError, ImportError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
 
@@ -197,10 +241,110 @@ async def health_check(
     )
 
 
+@router.get(
+    "/models",
+    response_model=ModelsCatalogResponse,
+    summary="List configured LLM providers, curated models, and live local models",
+)
+async def list_models_catalog(
+    container: AppContainer = Depends(get_container),  # noqa: B008
+) -> ModelsCatalogResponse:
+    """Return safe, non-secret provider readiness and recommended/detected model lists."""
+    settings = container.settings
+    local_reachable, local_detected, local_err = await container.probe_local_models()
+
+    items: list[ProviderCatalogItem] = []
+    for provider_id in SUPPORTED_PROVIDERS:
+        entry = PROVIDER_CATALOG[provider_id]
+        sdk_ok, _ = check_provider_sdk_installed(provider_id)
+        configured, cfg_detail = check_provider_configured(settings, provider_id)
+        is_default = provider_id == settings.llm_provider
+
+        rec_fast = list(entry.recommended_fast_models)
+        rec_gen = list(entry.recommended_generation_models)
+        if is_default:
+            if settings.llm_fast_model and settings.llm_fast_model not in rec_fast:
+                rec_fast.insert(0, settings.llm_fast_model)
+            if settings.llm_generation_model and settings.llm_generation_model not in rec_gen:
+                rec_gen.insert(0, settings.llm_generation_model)
+
+        if provider_id == "ollama":
+            for detected_id in reversed(local_detected):
+                if detected_id not in rec_fast:
+                    rec_fast.insert(0, detected_id)
+                if detected_id not in rec_gen:
+                    rec_gen.insert(0, detected_id)
+            status_detail = (
+                cfg_detail if not configured else (None if local_reachable else local_err)
+            )
+            items.append(
+                ProviderCatalogItem(
+                    id=provider_id,
+                    label=entry.label,
+                    is_local=True,
+                    requires_api_key=False,
+                    sdk_installed=sdk_ok,
+                    configured=configured,
+                    reachable=local_reachable,
+                    status_detail=status_detail,
+                    default_fast_model=(
+                        settings.llm_fast_model
+                        if is_default
+                        else (local_detected[0] if local_detected else entry.default_fast_model)
+                    ),
+                    default_generation_model=(
+                        settings.llm_generation_model
+                        if is_default
+                        else (
+                            local_detected[0] if local_detected else entry.default_generation_model
+                        )
+                    ),
+                    recommended_fast_models=rec_fast,
+                    recommended_generation_models=rec_gen,
+                    detected_models=local_detected,
+                )
+            )
+        else:
+            items.append(
+                ProviderCatalogItem(
+                    id=provider_id,
+                    label=entry.label,
+                    is_local=False,
+                    requires_api_key=True,
+                    sdk_installed=sdk_ok,
+                    configured=configured,
+                    reachable=None,
+                    status_detail=cfg_detail,
+                    default_fast_model=(
+                        settings.llm_fast_model if is_default else entry.default_fast_model
+                    ),
+                    default_generation_model=(
+                        settings.llm_generation_model
+                        if is_default
+                        else entry.default_generation_model
+                    ),
+                    recommended_fast_models=rec_fast,
+                    recommended_generation_models=rec_gen,
+                    detected_models=[],
+                )
+            )
+
+    return ModelsCatalogResponse(
+        default_provider=settings.llm_provider,
+        default_fast_model=settings.llm_fast_model,
+        default_generation_model=settings.llm_generation_model,
+        default_temperature=settings.llm_temperature,
+        ollama_base_url=settings.ollama_base_url,
+        allow_client_provider_keys=settings.allow_client_provider_keys,
+        providers=items,
+    )
+
+
 @router.post("/query", response_model=FinalAnswer, summary="Run AdaptiveRAG query (batch JSON)")
 async def run_query(
     payload: QueryRequest,
     response: Response,
+    provider_api_key: str | None = Header(default=None, alias="X-Provider-API-Key"),
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> FinalAnswer:
     """Execute the full AdaptiveRAG agentic pipeline and return a Glass-Box FinalAnswer."""
@@ -208,7 +352,12 @@ async def run_query(
     if guardrail.redacted:
         response.headers["X-Guardrail-PII-Redacted"] = ",".join(guardrail.pii_types)
 
-    workflow = _resolve_workflow_or_503(container)
+    models_override, temp_override = _resolve_llm_override_or_400(
+        payload.llm_override,
+        container,
+        provider_api_key=provider_api_key,
+    )
+    workflow = _resolve_workflow_or_503(container, models_override=models_override)
     ablation = payload.resolve_ablation()
     effective_max_cost = (
         payload.max_cost_usd
@@ -223,6 +372,8 @@ async def run_query(
             chat_history=guardrail.sanitized_history,
             ablation=ablation,
             custom_instructions=guardrail.sanitized_custom_instructions,
+            models=models_override,
+            temperature=temp_override,
             cost_tracker=request_tracker,
             session_id=payload.session_id,
             user_id=payload.user_id,
@@ -245,11 +396,17 @@ async def run_query(
 async def stream_query(
     payload: QueryRequest,
     http_request: Request,
+    provider_api_key: str | None = Header(default=None, alias="X-Provider-API-Key"),
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> EventSourceResponse:
     """Stream live ``node_update`` events followed by the complete ``final_answer`` over SSE."""
     guardrail = _screen_query_or_400(payload, container)
-    workflow = _resolve_workflow_or_503(container)
+    models_override, temp_override = _resolve_llm_override_or_400(
+        payload.llm_override,
+        container,
+        provider_api_key=provider_api_key,
+    )
+    workflow = _resolve_workflow_or_503(container, models_override=models_override)
     ablation = payload.resolve_ablation()
     effective_max_cost = (
         payload.max_cost_usd
@@ -265,6 +422,8 @@ async def stream_query(
                 chat_history=guardrail.sanitized_history,
                 ablation=ablation,
                 custom_instructions=guardrail.sanitized_custom_instructions,
+                models=models_override,
+                temperature=temp_override,
                 cost_tracker=request_tracker,
                 session_id=payload.session_id,
                 user_id=payload.user_id,

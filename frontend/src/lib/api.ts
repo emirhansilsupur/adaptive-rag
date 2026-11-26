@@ -9,6 +9,8 @@ import type {
   HealthResponse,
   IngestRequest,
   IngestResponse,
+  LLMOverride,
+  ModelsCatalogResponse,
   PdfOcrMode,
   PresetSelection,
   QueryRequest,
@@ -29,13 +31,19 @@ export function getStudioApiKey(): string {
 
 export function buildAuthHeaders(
   base: Record<string, string> = {},
-  explicitApiKey?: string
+  explicitApiKey?: string,
+  providerApiKey?: string | null
 ): Record<string, string> {
+  const headers: Record<string, string> = { ...base };
   const resolved = (explicitApiKey ?? activeStudioApiKey).trim();
-  if (!resolved) {
-    return base;
+  if (resolved) {
+    headers["X-API-Key"] = resolved;
   }
-  return { ...base, "X-API-Key": resolved };
+  const cleanedProviderKey = providerApiKey?.trim() ?? "";
+  if (cleanedProviderKey) {
+    headers["X-Provider-API-Key"] = cleanedProviderKey;
+  }
+  return headers;
 }
 
 function normalizeBase(apiBaseUrl: string): string {
@@ -73,6 +81,7 @@ export function buildQueryPayload(params: {
   sessionId?: string;
   customInstructions?: string | null;
   docIds?: string[] | null;
+  llmOverride?: LLMOverride | null;
 }): QueryRequest {
   const payload: QueryRequest = {
     query: params.query.trim(),
@@ -95,6 +104,30 @@ export function buildQueryPayload(params: {
     );
     if (uniqueDocIds.length > 0) {
       payload.doc_ids = uniqueDocIds;
+    }
+  }
+  if (params.llmOverride) {
+    const cleanedOverride: LLMOverride = {};
+    if (params.llmOverride.provider) {
+      cleanedOverride.provider = params.llmOverride.provider;
+    }
+    if (params.llmOverride.fast_model && params.llmOverride.fast_model.trim()) {
+      cleanedOverride.fast_model = params.llmOverride.fast_model.trim();
+    }
+    if (
+      params.llmOverride.generation_model &&
+      params.llmOverride.generation_model.trim()
+    ) {
+      cleanedOverride.generation_model = params.llmOverride.generation_model.trim();
+    }
+    if (
+      typeof params.llmOverride.temperature === "number" &&
+      Number.isFinite(params.llmOverride.temperature)
+    ) {
+      cleanedOverride.temperature = params.llmOverride.temperature;
+    }
+    if (Object.keys(cleanedOverride).length > 0) {
+      payload.llm_override = cleanedOverride;
     }
   }
   if (params.sessionId && params.sessionId.trim()) {
@@ -168,17 +201,37 @@ export async function fetchHealth(
   return (await resp.json()) as HealthResponse;
 }
 
+export async function fetchModelsCatalog(
+  apiBaseUrl: string,
+  signal?: AbortSignal
+): Promise<ModelsCatalogResponse> {
+  const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/models`, {
+    method: "GET",
+    headers: buildAuthHeaders({ Accept: "application/json" }),
+    signal,
+  });
+  if (!resp.ok) {
+    throw new Error(await parseErrorDetail(resp));
+  }
+  return (await resp.json()) as ModelsCatalogResponse;
+}
+
 export async function runQueryBatch(
   apiBaseUrl: string,
   payload: QueryRequest,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  providerApiKey?: string | null
 ): Promise<FinalAnswer> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/query`, {
     method: "POST",
-    headers: buildAuthHeaders({
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    }),
+    headers: buildAuthHeaders(
+      {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      undefined,
+      providerApiKey
+    ),
     body: JSON.stringify(payload),
     signal,
   });
@@ -198,14 +251,19 @@ export async function streamQuery(
   apiBaseUrl: string,
   payload: QueryRequest,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  providerApiKey?: string | null
 ): Promise<FinalAnswer> {
   const resp = await fetch(`${normalizeBase(apiBaseUrl)}/v1/query/stream`, {
     method: "POST",
-    headers: buildAuthHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-    }),
+    headers: buildAuthHeaders(
+      {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      undefined,
+      providerApiKey
+    ),
     body: JSON.stringify(payload),
     signal,
   });
