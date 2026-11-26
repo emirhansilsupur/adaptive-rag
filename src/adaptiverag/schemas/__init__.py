@@ -5,6 +5,7 @@ from adaptiverag.schemas.citation import (
     ClaimAuditBatch,
     ClaimVerdict,
     ClaimVerification,
+    SemanticAuditStatus,
 )
 from adaptiverag.schemas.query import (
     ChatMessage,
@@ -46,6 +47,7 @@ __all__ = [
     "QueryPlan",
     "QueryType",
     "RouterClassification",
+    "SemanticAuditStatus",
     "SourceType",
     "StrategyProfile",
     "SubQueryDecomposition",

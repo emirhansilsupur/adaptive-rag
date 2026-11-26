@@ -21,6 +21,7 @@ import {
   getContextTokens,
   getPresetShortLabel,
 } from "../lib/compare";
+import { AUDIT_LABEL, type AuditState } from "../lib/audit";
 import { formatDuration, formatInt, formatUsd } from "../lib/format";
 import type {
   AblationPreset,
@@ -96,6 +97,20 @@ function LaneTile({ lane, className }: { lane: "A" | "B"; className?: string }) 
       {lane}
     </span>
   );
+}
+
+const AUDIT_DELTA_TONE: Record<AuditState, Tone> = {
+  passed: "ok",
+  flagged: "bad",
+  unverified: "warn",
+  structural: "neutral",
+};
+
+/** One side of the audit delta; an unverified side has no claim-support figure to show. */
+function auditSideValue(state: AuditState | null, claimSupport: number | null): string {
+  if (state === null || claimSupport === null) return "Off";
+  if (state === "unverified") return "—";
+  return `${Math.round(claimSupport * 100)}%`;
 }
 
 function DeltaCell({
@@ -641,21 +656,9 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
                   />
                   <DeltaCell
                     label="Citation audit"
-                    value={`${delta.leftClaimSupport !== null ? `${Math.round(delta.leftClaimSupport * 100)}%` : "Off"} → ${delta.rightClaimSupport !== null ? `${Math.round(delta.rightClaimSupport * 100)}%` : "Off"}`}
-                    delta={
-                      delta.rightAuditPassed === true
-                        ? "B: passed"
-                        : delta.rightAuditPassed === false
-                          ? "B: flagged"
-                          : "Not run"
-                    }
-                    tone={
-                      delta.rightAuditPassed === true
-                        ? "ok"
-                        : delta.rightAuditPassed === false
-                          ? "bad"
-                          : "neutral"
-                    }
+                    value={`${auditSideValue(delta.leftAudit, delta.leftClaimSupport)} → ${auditSideValue(delta.rightAudit, delta.rightClaimSupport)}`}
+                    delta={delta.rightAudit ? `B: ${AUDIT_LABEL[delta.rightAudit].toLowerCase()}` : "Not run"}
+                    tone={delta.rightAudit ? AUDIT_DELTA_TONE[delta.rightAudit] : "neutral"}
                   />
                   <DeltaCell
                     label="Time"

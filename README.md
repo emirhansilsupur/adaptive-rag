@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-168%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-210%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `168` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `210` `$0` CI tests</sub> |
 
 ---
 
@@ -68,10 +68,10 @@ Static, single-path RAG pipelines fail in production along three predictable axe
 | **4. Dynamic Top-K & Parent-Child** | 3-stage cutoff (`τ_min` floor, relative drop & elbow gap, token budget) + opt-in **Small-to-Big** (`≤256`-tok children → deduplicated `≤1000`-tok parents). | `-68.3%` context tokens on flat chunks; `+9.7 pp` analytical fact coverage with Parent-Child. |
 | **5. Multi-Signal CRAG Gate** | Deterministic composite score auto-passes `HIGH (≥ 0.72)` and auto-routes `LOW (< 0.38)` at `$0`; calls CRAG LLM grader *only* inside `[0.38, 0.72)`. | Eliminates redundant grader calls on clear hits and obvious misses. |
 | **6. Web Fallback & Abstention** | `FallbackRetriever` (**Tavily** primary → **DuckDuckGo** zero-key backup) yielding `[W1]..[Wn]` chunks, or language-matched abstention. | Prevents fabrication on fresh or out-of-domain queries (`100%` OOC caught). |
-| **7. Two-Tier Citation Audit** | **Tier-1 (`0 ms`, `$0`):** Regex check for phantom IDs & uncited claims. **Tier-2:** Claim entailment (`SUPPORTED` / `CONTRADICTED`) + max `1` `regenerate_strict` pass. | Enforces verifiable `[Cn]` / `[Wn]` grounding (`100%` citation precision). |
+| **7. Two-Tier Citation Audit** | **Tier-1 (`0 ms`, `$0`):** Regex check for phantom IDs & uncited claims. **Tier-2:** Claim entailment (`SUPPORTED` / `CONTRADICTED`) + max `1` `regenerate_strict` pass. Fails closed: if the judge errors, the answer is reported `Unverified`, never `Passed`. | Enforces verifiable `[Cn]` / `[Wn]` grounding (`100%` citation precision). |
 | **8. FinOps & Langfuse v5 OTEL** | Tiered routing (`qwen3-30b-a3b` + `deepseek-v3.2`), WAL `SQLiteLLMCache`, isolated per-request `CostTracker` (`HTTP 402`), and versioned Prompt Management. | Predictable sub-millicent query cost with full trace-to-prompt lineage. |
 | **9. Adaptive 2-Tier PDF & OCR** | `LiteParse` Rust/PDFium layout Markdown (`~3 ms/page`, `$0`) → Tier-1 process-isolated `OCRia-nano-1` ONNX + `TableNet` (`$0`) → Tier-2 multimodal `Vision-LLM` fallback. | Preserves `#` headings, `\|...\|` tables, and `EN`/`TR` diacritics across digital & scanned PDFs without PyTorch bloat. |
-| **10. Multi-Layer Guardrails** | Constant-time `API_AUTH_KEY`, per-IP rate limiter, `$0` EN/TR injection & PII screening, `<evidence>` isolation, and fail-closed async SSRF/path sandboxing. | Hardened single-container deployment serving FastAPI + React SPA on port `8000`. |
+| **10. Multi-Layer Guardrails** | Local-only mode until `API_AUTH_KEY` is set, constant-time key check, per-IP rate limiter, `$0` EN/TR injection & PII screening, `<evidence>` isolation, and fail-closed async SSRF/path sandboxing. | Hardened single-container deployment serving FastAPI + React SPA on port `8000`. |
 
 <details>
 <summary><strong>Mathematical Formulation (3-Stage Dynamic Top-K &amp; Multi-Signal Confidence)</strong></summary>
@@ -105,7 +105,7 @@ The React 19 + TypeScript + Tailwind CSS v4 workbench (`make ui` on `:5173`, or 
   - **`Retrieval`:** Dynamic top-k ledger (`Kept`, `Top score`, `Cutoff score`, `Context`), `Small→Big` expansion stats, and click-to-inspect cross-encoder score bars against the `τ` floor.
   - **`Confidence`:** Calibrated score on a gate scale with the `0.38` / `0.72` zones, grader verdict, and weighted signal breakdown.
   - **`Evidence`:** Documents/Web filter, parent-section lineage, source URLs, and a highlighter sweep on the passage a citation points to.
-  - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 claim entailment verdicts.
+  - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 claim entailment verdicts, with an `Unverified` warning when the judge fails to run.
 - **Knowledge base & ingestion:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` re-index, **Firecrawl Local** page import and whole-site crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and a searchable document inventory (`Small→Big` badges) with 2-step deletion.
 - **Side-by-Side Ablation Arena:** Executes any two presets concurrently over SSE (`Promise.allSettled`), computing a live **`A → B` "What changed" scorecard** across context tokens, passages kept, CRAG confidence, citation audit (`Fail → Pass`), time, and cost.
 
@@ -252,6 +252,7 @@ make ui
 
 - **Studio UI:** `http://localhost:5173` *(optional legacy Streamlit inspector: `make ui-legacy` on `:8501`)*
 - **OpenAPI Docs:** `http://localhost:8000/docs`
+- **Local-only by default:** everything binds to `127.0.0.1`, and without `API_AUTH_KEY` the API answers only requests addressed to `localhost` from the Studio origin or non-browser tools. Set `API_AUTH_KEY` before running `make api API_HOST=0.0.0.0`.
 
 ---
 
@@ -269,6 +270,7 @@ make docker-build
 
 | Security Layer | Key Environment Variables | Enforcement Behavior |
 | :--- | :--- | :--- |
+| **Local-Only Mode** | `CORS_ALLOW_ORIGINS`, `ALLOWED_HOSTS_WITHOUT_AUTH` | Active while `API_AUTH_KEY` is unset: only loopback `Host` headers (stops LAN clients and DNS rebinding) and allowed browser `Origin`s (stops cross-site multipart/form POSTs, which skip the CORS preflight) get through; others get `HTTP 403`. CORS never defaults to `*`, and Compose publishes every port on `127.0.0.1`. |
 | **API Authentication** | `API_AUTH_KEY` | Constant-time (`hmac.compare_digest`) `X-API-Key` / `Bearer` check on `/v1/*`; keeps `/v1/health` and SPA public; built-in Studio key prompt. |
 | **Sliding-Window Rate Limit** | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_TRUST_PROXY_HEADERS` | Thread-safe per-IP ASGI limiter returning `X-RateLimit-*` headers and `HTTP 429` (`Retry-After`) with zero SSE stream buffering. |
 | **Prompt-Injection Defense** | `GUARDRAILS_ENABLED`, `GUARDRAILS_BLOCK_PROMPT_INJECTION` | `$0` NFKC/zero-width-normalized EN+TR override/jailbreak/exfiltration blocking (`HTTP 400`) + `sanitize_untrusted_passage` & `<evidence>` XML isolation. |
@@ -281,7 +283,7 @@ make docker-build
 
 AdaptiveRAG integrates a fail-open **Langfuse v5 OpenTelemetry** layer (`observability/tracing.py`, `observability/prompts.py`, `eval/langfuse_eval.py`) spanning four production loops:
 
-1. **Deep OTEL Tracing & 12 Automated Online Scores:** Manual-lifecycle root `agent` spans (SSE-safe across async generators) capture LLM generations alongside custom `retriever` (Dynamic-K + Parent-Child), `span` (SQLite cache hits), `evaluator` (CRAG), and `guardrail` (Citation Audit) observations, publishing 12 online quality/cost scores plus `trace_url`.
+1. **Deep OTEL Tracing & 13 Automated Online Scores:** Manual-lifecycle root `agent` spans (SSE-safe across async generators) capture LLM generations alongside custom `retriever` (Dynamic-K + Parent-Child), `span` (SQLite cache hits), `evaluator` (CRAG), and `guardrail` (Citation Audit) observations, publishing 13 online quality/cost scores plus `trace_url`.
 2. **Human-in-the-Loop Feedback:** Studio 👍 / 👎 ratings (`POST /v1/feedback`) attach `user_feedback` directly to `trace_id` (falling back to structured logs when Langfuse is disabled).
 3. **Datasets & Experiments Sync:** `make eval-langfuse` idempotently syncs `golden_set.jsonl` (UUIDv5 item IDs) and publishes multi-preset IR (`Recall`, `MRR`, `NDCG`, `fact_coverage`) and RAGAS scores as comparable Langfuse Experiments.
 4. **Versioned Prompt Management:** All 8 canonical system prompts support label-based fetching (`LANGFUSE_PROMPT_LABEL=production`), TTL caching, native trace-to-prompt linking, automatic `SQLiteLLMCache` invalidation on version bumps, and zero-downtime local fallback.
@@ -383,7 +385,7 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `168` automated tests (`151` backend pytest + `17` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `210` automated tests (`186` backend pytest + `24` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)

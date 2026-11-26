@@ -324,7 +324,7 @@ async def test_api_applies_layer2_instructions_only_to_synthesis_and_scopes_doc_
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Scoped doc_ids + Layer-2 instructions with PII redaction
             resp = await client.post(

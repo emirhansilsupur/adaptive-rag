@@ -45,6 +45,7 @@ from adaptiverag.retrieval.embeddings import (
 from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore, RetrievalMode
 from adaptiverag.retrieval.reranker import FastEmbedCrossEncoderReranker, Reranker
+from adaptiverag.schemas.citation import SemanticAuditStatus
 from adaptiverag.schemas.query import QueryType
 from adaptiverag.schemas.response import FinalAnswer
 from adaptiverag.schemas.retrieval import EvidenceChunk
@@ -510,6 +511,12 @@ def _final_answer_to_record(
         else _estimate_context_tokens(answer.evidence_chunks)
     )
     citation = answer.citation_report
+    # A failed judge leaves only the cited-sentence share, which is not claim support.
+    claim_support_rate = (
+        citation.claim_support_rate
+        if citation is not None and citation.semantic_audit != SemanticAuditStatus.FAILED
+        else None
+    )
 
     return QueryEvalRecord(
         query_id=query.id,
@@ -530,8 +537,9 @@ def _final_answer_to_record(
         rewrite_attempts=answer.rewrite_attempts,
         regeneration_attempts=answer.regeneration_attempts,
         citation_precision=citation.citation_precision if citation is not None else None,
-        claim_support_rate=citation.claim_support_rate if citation is not None else None,
+        claim_support_rate=claim_support_rate,
         citation_passed=citation.passed if citation is not None else None,
+        citation_semantic_audit=citation.semantic_audit.value if citation is not None else None,
         latency_ms=answer.total_latency_ms,
         total_tokens=answer.usage.total_tokens,
         estimated_cost_usd=answer.usage.estimated_cost_usd,

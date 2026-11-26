@@ -309,9 +309,12 @@ def render_answer_badges(result: dict[str, Any]) -> None:
     if isinstance(citation, dict):
         passed = bool(citation.get("passed", False))
         support = float(citation.get("claim_support_rate", 0.0)) * 100.0
-        css = "ar-badge-green" if passed else "ar-badge-red"
-        icon = "✅" if passed else "⚠️"
-        badges.append((f"{icon} Citations: {support:.0f}%", css))
+        if _citation_unverified(citation):
+            badges.append(("⚠️ Citations: unverified", "ar-badge-amber"))
+        else:
+            css = "ar-badge-green" if passed else "ar-badge-red"
+            icon = "✅" if passed else "⚠️"
+            badges.append((f"{icon} Citations: {support:.0f}%", css))
 
     if result.get("fallback_used"):
         badges.append(("🌐 Web Fallback", "ar-badge-purple"))
@@ -625,6 +628,11 @@ def _render_evidence_tab(result: dict[str, Any]) -> None:
             st.markdown(str(ch.get("text", "")))
 
 
+def _citation_unverified(report: dict[str, Any]) -> bool:
+    """True when the claim judge failed but the citation structure itself was fine."""
+    return report.get("semantic_audit") == "failed" and bool(report.get("structural_passed", True))
+
+
 def _render_citation_tab(result: dict[str, Any]) -> None:
     report = result.get("citation_report")
     if not isinstance(report, dict):
@@ -632,8 +640,15 @@ def _render_citation_tab(result: dict[str, Any]) -> None:
         return
 
     passed = bool(report.get("passed", False))
+    unverified = _citation_unverified(report)
+    if report.get("semantic_audit") == "failed":
+        st.warning(
+            "The claim check didn't run: "
+            f"{report.get('semantic_audit_error') or 'the judge model failed.'} "
+            "Claims were not checked against their passages."
+        )
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Audit Status", "PASSED" if passed else "FAILED")
+    c1.metric("Audit Status", "PASSED" if passed else ("UNVERIFIED" if unverified else "FAILED"))
     c2.metric("Citation Precision", f"{float(report.get('citation_precision', 0.0)) * 100:.1f}%")
     c3.metric("Claim Support Rate", f"{float(report.get('claim_support_rate', 0.0)) * 100:.1f}%")
     c4.metric("Citations Found", int(report.get("total_citations_found", 0)))

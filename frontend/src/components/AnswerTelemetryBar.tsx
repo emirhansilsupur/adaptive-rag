@@ -1,5 +1,6 @@
 import React from "react";
 import { ArrowUpRight, Globe, RefreshCw, ShieldAlert, Wand2, Zap } from "lucide-react";
+import { AUDIT_LABEL, getAuditState, type AuditState } from "../lib/audit";
 import { capitalize, formatDuration, formatInt, formatUsd } from "../lib/format";
 import type { FinalAnswer, InspectorTab } from "../types/api";
 import { cn, Tag, type Tone } from "./ui/primitives";
@@ -14,6 +15,13 @@ const LEVEL_TONE: Record<string, Tone> = {
   high: "ok",
   medium: "warn",
   low: "bad",
+};
+
+const AUDIT_TONE: Record<AuditState, Tone> = {
+  passed: "ok",
+  flagged: "bad",
+  unverified: "warn",
+  structural: "neutral",
 };
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -82,7 +90,8 @@ export const AnswerTelemetryBar: React.FC<AnswerTelemetryBarProps> = ({
   const open = (tab: InspectorTab) => (onBadgeClick ? () => onBadgeClick(tab) : undefined);
 
   const confTone = conf ? (LEVEL_TONE[conf.level] ?? "neutral") : "neutral";
-  const auditTone: Tone = cite ? (cite.passed ? "ok" : "bad") : "neutral";
+  const auditState = cite ? getAuditState(cite) : null;
+  const auditTone: Tone = auditState ? AUDIT_TONE[auditState] : "neutral";
 
   const notes: { key: string; tone: Tone; icon: typeof Globe; label: string }[] = [];
   if (result.fallback_used) {
@@ -144,12 +153,23 @@ export const AnswerTelemetryBar: React.FC<AnswerTelemetryBarProps> = ({
           )}
         </ReceiptCell>
 
-        <ReceiptCell label="Citation audit" onClick={open("citations")} title="Open the audit">
-          {cite ? (
+        <ReceiptCell
+          label="Citation audit"
+          onClick={open("citations")}
+          title={
+            auditState === "unverified"
+              ? "The claim check didn't run. Open the audit"
+              : "Open the audit"
+          }
+        >
+          {cite && auditState === "unverified" ? (
+            // The percentage would only count cited sentences, so it is left out here.
+            <span className="text-warn">{AUDIT_LABEL.unverified}</span>
+          ) : cite && auditState ? (
             <>
               <span>{Math.round(cite.claim_support_rate * 100)}%</span>
               <span className={cn("text-small", TONE_TEXT[auditTone])}>
-                {cite.passed ? "Passed" : "Flagged"}
+                {AUDIT_LABEL[auditState]}
               </span>
             </>
           ) : (

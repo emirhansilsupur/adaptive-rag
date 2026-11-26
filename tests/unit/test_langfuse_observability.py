@@ -28,7 +28,12 @@ from adaptiverag.observability.tracing import (
 )
 from adaptiverag.retrieval.embeddings import SparseVectorData
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
-from adaptiverag.schemas.citation import CitationReport, ClaimVerdict, ClaimVerification
+from adaptiverag.schemas.citation import (
+    CitationReport,
+    ClaimVerdict,
+    ClaimVerification,
+    SemanticAuditStatus,
+)
 from adaptiverag.schemas.query import QueryType
 from adaptiverag.schemas.response import FinalAnswer, NodeTraceEvent, TokenUsage
 from adaptiverag.schemas.retrieval import (
@@ -347,6 +352,30 @@ def test_online_quality_scores_extraction() -> None:
     assert scores["estimated_cost_usd"].value == pytest.approx(0.00042)
     assert scores["latency_ms"].value == pytest.approx(412.5)
     assert scores["cache_hits"].value == 2.0
+    assert scores["citation_semantic_audit"].value == "skipped"
+    assert scores["citation_semantic_audit"].data_type == "CATEGORICAL"
+
+
+def test_online_scores_do_not_report_claim_support_when_the_judge_failed() -> None:
+    base = _sample_final_answer()
+    assert base.citation_report is not None
+    failed_report = base.citation_report.model_copy(
+        update={
+            "claim_verifications": [],
+            "passed": False,
+            "structural_passed": True,
+            "semantic_audit": SemanticAuditStatus.FAILED,
+            "semantic_audit_error": "The judge model timed out.",
+        }
+    )
+    answer = base.model_copy(update={"citation_report": failed_report})
+
+    scores = {s.name: s for s in build_online_quality_scores(answer)}
+
+    assert "claim_support_rate" not in scores
+    assert scores["citation_passed"].value == 0.0
+    assert scores["citation_passed"].comment == "Claim check failed: The judge model timed out."
+    assert scores["citation_semantic_audit"].value == "failed"
 
 
 def test_observability_root_trace_domain_spans_and_fail_open_scores() -> None:
@@ -635,7 +664,7 @@ async def test_workflow_and_api_end_to_end_langfuse_tracing_and_feedback(tmp_pat
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Health reports Langfuse mode=cloud & configured=True
             health = await client.get("/v1/health")

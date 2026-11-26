@@ -35,7 +35,7 @@ from adaptiverag.retrieval.fallback import FallbackRetriever
 from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.retrieval.reranker import Reranker
-from adaptiverag.schemas.citation import CitationReport
+from adaptiverag.schemas.citation import CitationReport, SemanticAuditStatus
 from adaptiverag.schemas.query import (
     CorrectiveRewriteResult,
     QueryPlan,
@@ -912,6 +912,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
 
         cite_meta: dict[str, Any] = {
             "passed": report.passed,
+            "structural_passed": report.structural_passed,
+            "semantic_audit": report.semantic_audit.value,
+            "semantic_audit_error": report.semantic_audit_error,
             "citation_precision": report.citation_precision,
             "claim_support_rate": report.claim_support_rate,
             "valid_citation_ids": report.valid_citation_ids,
@@ -924,15 +927,25 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         if entail_prompts:
             cite_meta["prompt"] = entail_prompts[-1].telemetry_metadata()
 
+        judge_failed = report.semantic_audit == SemanticAuditStatus.FAILED
+        if report.passed:
+            verdict = "PASSED"
+        elif judge_failed and report.structural_passed:
+            verdict = "UNVERIFIED"
+        else:
+            verdict = "FAILED"
+        summary = (
+            f"Citation audit {verdict} "
+            f"(precision={report.citation_precision:.2f}, "
+            f"support={report.claim_support_rate:.2f}, "
+            f"invalid={len(report.invalid_citation_ids)})"
+        )
+        if judge_failed:
+            summary += f"; claim check failed: {report.semantic_audit_error}"
         event = NodeTraceEvent(
             node="validate_citations",
             latency_ms=_elapsed_ms(started),
-            summary=(
-                f"Citation audit {'PASSED' if report.passed else 'FAILED'} "
-                f"(precision={report.citation_precision:.2f}, "
-                f"support={report.claim_support_rate:.2f}, "
-                f"invalid={len(report.invalid_citation_ids)})"
-            ),
+            summary=summary,
             metadata=cite_meta,
         )
         return {

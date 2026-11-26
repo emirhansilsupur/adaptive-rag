@@ -1,4 +1,5 @@
 import { ARENA_PRESET_OPTIONS } from "../constants/pipeline";
+import { getAuditState, isAuditClear, type AuditState } from "./audit";
 import type {
   AblationPreset,
   ChatTurn,
@@ -19,8 +20,8 @@ export interface CompareDeltaSummary {
   rightConfidence: number | null;
   leftConfidenceLevel: ConfidenceLevel | null;
   rightConfidenceLevel: ConfidenceLevel | null;
-  leftAuditPassed: boolean | null;
-  rightAuditPassed: boolean | null;
+  leftAudit: AuditState | null;
+  rightAudit: AuditState | null;
   leftClaimSupport: number | null;
   rightClaimSupport: number | null;
   leftInvalidCitations: number;
@@ -86,8 +87,8 @@ export function computeCompareSummary(
   const leftConfidenceLevel = left.confidence?.level ?? null;
   const rightConfidenceLevel = right.confidence?.level ?? null;
 
-  const leftAuditPassed = left.citation_report?.passed ?? null;
-  const rightAuditPassed = right.citation_report?.passed ?? null;
+  const leftAudit = left.citation_report ? getAuditState(left.citation_report) : null;
+  const rightAudit = right.citation_report ? getAuditState(right.citation_report) : null;
   const leftClaimSupport = left.citation_report?.claim_support_rate ?? null;
   const rightClaimSupport = right.citation_report?.claim_support_rate ?? null;
   const leftInvalidCitations = left.citation_report?.invalid_citation_ids?.length ?? 0;
@@ -140,7 +141,7 @@ export function computeCompareSummary(
       tone: "rose",
     });
   }
-  if (rightAuditPassed === true && leftAuditPassed === false) {
+  if (isAuditClear(rightAudit) && leftAudit === "flagged") {
     highlights.push({
       label: "Citation audit upgraded (Fail → Pass)",
       tone: "emerald",
@@ -159,8 +160,8 @@ export function computeCompareSummary(
     rightConfidence,
     leftConfidenceLevel,
     rightConfidenceLevel,
-    leftAuditPassed,
-    rightAuditPassed,
+    leftAudit,
+    rightAudit,
     leftClaimSupport,
     rightClaimSupport,
     leftInvalidCitations,

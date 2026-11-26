@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
-    strictPort: false,
+    // Fail instead of moving to 5174: the API's default CORS_ALLOW_ORIGINS lists only :5173.
+    strictPort: true,
   },
   build: {
     rollupOptions: {

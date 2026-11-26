@@ -661,7 +661,7 @@ async def test_workflow_and_health_end_to_end_with_managed_prompts(tmp_path: Pat
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             health = await client.get("/v1/health")
             assert health.status_code == 200

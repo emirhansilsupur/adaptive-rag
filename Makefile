@@ -22,8 +22,13 @@ down:
 ingest:
 	uv run python -m adaptiverag.ingestion.indexer
 
+# Loopback by default. To serve other machines, set API_AUTH_KEY first, then
+# run `make api API_HOST=0.0.0.0`; without a key the API answers only local requests.
+API_HOST ?= 127.0.0.1
+API_PORT ?= 8000
+
 api:
-	uv run uvicorn adaptiverag.api.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn adaptiverag.api.main:app --reload --host $(API_HOST) --port $(API_PORT)
 
 ui-install:
 	npm --prefix frontend install
@@ -39,7 +44,7 @@ ui-test:
 	npm --prefix frontend run test
 
 ui-legacy:
-	uv run streamlit run ui/app.py --server.port 8501
+	uv run streamlit run ui/app.py --server.address 127.0.0.1 --server.port 8501
 
 test:
 	uv run pytest

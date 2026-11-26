@@ -86,4 +86,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3)"]
 
+# 0.0.0.0 is the container's own interface and is needed for port publishing; docker-compose
+# publishes it on 127.0.0.1. Without API_AUTH_KEY the app answers only localhost requests.
 CMD ["/app/.venv/bin/uvicorn", "adaptiverag.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

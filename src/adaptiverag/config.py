@@ -146,8 +146,13 @@ class Settings(BaseSettings):
     langfuse_prompt_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
 
     # --- Production API Security, Rate Limiting & Static SPA Serving ---
+    # Without a key the API runs local-only (see api.security.LocalOnlyGuardMiddleware).
     api_auth_key: SecretStr | None = None
-    cors_allow_origins: str = "*"
+    # Browser origins allowed to call the API. "*" lets any website read answers from a
+    # visitor's browser, so it must be set explicitly; empty means the local Studio dev origins.
+    cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # Hosts answered without API_AUTH_KEY besides localhost/127.0.0.1/[::1]; "*" answers any host.
+    allowed_hosts_without_auth: str = ""
     rate_limit_enabled: bool = False
     rate_limit_requests_per_minute: int = Field(default=60, ge=1, le=10000)
     rate_limit_trust_proxy_headers: bool = False

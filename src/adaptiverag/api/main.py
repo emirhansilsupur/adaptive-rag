@@ -16,8 +16,12 @@ from adaptiverag.api.dependencies import AppContainer, create_app_container
 from adaptiverag.api.routes import router as v1_router
 from adaptiverag.api.security import (
     ApiSecurityMiddleware,
+    LocalOnlyGuardMiddleware,
     SlidingWindowRateLimiter,
+    api_auth_enabled,
+    local_only_mode,
     parse_cors_origins,
+    parse_host_list,
 )
 from adaptiverag.config import Settings, get_settings
 from adaptiverag.observability.tracing import configure_logging
@@ -57,6 +61,32 @@ def _resolve_static_ui_root(
     return None
 
 
+def _warn_about_open_access(settings: Settings) -> None:
+    """Log a warning for every setting that lets someone other than the local user in."""
+    any_origin = "*" in parse_cors_origins(settings.cors_allow_origins)
+    if api_auth_enabled(settings):
+        if any_origin:
+            logger.warning(
+                "cors_allows_any_origin",
+                detail="Any website can call this API from a visitor's browser; "
+                "requests still need the API key.",
+            )
+        return
+
+    if "*" in parse_host_list(settings.allowed_hosts_without_auth):
+        logger.warning(
+            "api_open_without_auth",
+            detail="API_AUTH_KEY is unset and ALLOWED_HOSTS_WITHOUT_AUTH=*, so anyone who can "
+            "reach this port can query, upload and delete documents.",
+        )
+    if any_origin:
+        logger.warning(
+            "cors_allows_any_origin_without_auth",
+            detail="API_AUTH_KEY is unset and CORS_ALLOW_ORIGINS=*, so any website open in a "
+            "browser on this machine can query this API and upload to it.",
+        )
+
+
 def create_app(
     container: AppContainer | None = None,
     *,
@@ -87,10 +117,13 @@ def create_app(
             mode="managed_lifespan",
             collection=managed_container.store.collection_name,
             llm_provider=settings.llm_provider,
-            api_auth_enabled=bool(settings.api_auth_key),
+            api_auth_enabled=api_auth_enabled(settings),
+            local_only_mode=local_only_mode(settings),
+            cors_allow_origins=parse_cors_origins(settings.cors_allow_origins),
             rate_limit_enabled=settings.rate_limit_enabled,
             guardrails_enabled=settings.guardrails_enabled,
         )
+        _warn_about_open_access(settings)
         try:
             yield
         finally:
@@ -124,9 +157,10 @@ def create_app(
     # Added BEFORE CORSMiddleware so CORS runs outermost and attaches CORS headers even on 401/429.
     api_key_value = (
         active_settings.api_auth_key.get_secret_value()
-        if active_settings.api_auth_key is not None
+        if api_auth_enabled(active_settings) and active_settings.api_auth_key is not None
         else None
     )
+    cors_origins = parse_cors_origins(active_settings.cors_allow_origins)
     effective_limiter = rate_limiter
     if effective_limiter is None and active_settings.rate_limit_enabled:
         effective_limiter = SlidingWindowRateLimiter(
@@ -140,10 +174,17 @@ def create_app(
             rate_limiter=effective_limiter,
             trust_proxy_headers=active_settings.rate_limit_trust_proxy_headers,
         )
+    if not api_key_value:
+        # No key: answer only this machine (loopback Host) and the allowed browser origins.
+        application.add_middleware(
+            LocalOnlyGuardMiddleware,
+            allowed_origins=cors_origins,
+            extra_hosts=parse_host_list(active_settings.allowed_hosts_without_auth),
+        )
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=parse_cors_origins(active_settings.cors_allow_origins),
+        allow_origins=cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

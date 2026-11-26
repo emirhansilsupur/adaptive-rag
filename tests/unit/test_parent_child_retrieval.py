@@ -739,7 +739,7 @@ async def test_api_ingest_and_health_expose_parent_child_controls() -> None:
     app = create_app(container=container)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         health = await client.get("/v1/health")
         assert health.status_code == 200
         pc_health = health.json()["parent_child_retrieval"]

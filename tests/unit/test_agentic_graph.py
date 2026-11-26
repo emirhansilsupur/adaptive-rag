@@ -18,15 +18,18 @@ from pydantic import Field
 
 from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AblationConfig, AdaptiveRAGWorkflow, GraphRuntime
+from adaptiverag.graph.edges import route_after_citation_validation
 from adaptiverag.ingestion.chunker import DocumentChunk
 from adaptiverag.llm import ModelBundle, SQLiteLLMCache
 from adaptiverag.retrieval.embeddings import SparseVectorData
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
 from adaptiverag.schemas import (
     ChatMessage,
+    CitationReport,
     ConfidenceLevel,
     EvidenceChunk,
     QueryType,
+    SemanticAuditStatus,
     SourceType,
 )
 
@@ -767,6 +770,83 @@ async def test_graph_regeneration_stops_at_max_regenerations_bound() -> None:
         assert result.citation_report.regeneration_triggered is True
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_judge_failure_is_unverified_not_regenerated() -> None:
+    store = await _build_in_memory_store()
+    try:
+        router_json = json.dumps(
+            {
+                "query_type": "factual",
+                "needs_retrieval": True,
+                "language": "en",
+                "standalone_query": "How does Qdrant perform hybrid search?",
+                "requires_fresh_web_info": False,
+                "reasoning": "Direct factual lookup.",
+            }
+        )
+        # The judge never returns JSON, so the semantic audit fails while the draft is well cited.
+        workflow, _, gen_model, _, _ = _make_workflow(
+            store=store,
+            fast_responses=[router_json, "sorry, I cannot produce JSON"],
+            gen_responses=[
+                "Qdrant merges dense cosine vectors and BM25 sparse vectors natively via Prefetch and RRF [C1].",
+            ],
+            reranker_scores=[0.91],
+        )
+
+        result = await workflow.arun("How does Qdrant perform hybrid search?")
+
+        report = result.citation_report
+        assert report is not None
+        assert report.passed is False
+        assert report.structural_passed is True
+        assert report.semantic_audit == SemanticAuditStatus.FAILED
+        assert result.regeneration_attempts == 0
+        assert gen_model.call_count == 1
+        nodes = [t.node for t in result.trace]
+        assert "regenerate_strict" not in nodes
+        audit_event = next(t for t in result.trace if t.node == "validate_citations")
+        assert audit_event.summary.startswith("Citation audit UNVERIFIED")
+        assert audit_event.metadata["semantic_audit"] == "failed"
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        (CitationReport(passed=True, semantic_audit=SemanticAuditStatus.COMPLETED), "end"),
+        (
+            CitationReport(passed=False, semantic_audit=SemanticAuditStatus.COMPLETED),
+            "regenerate_strict",
+        ),
+        (
+            CitationReport(
+                passed=False,
+                structural_passed=True,
+                semantic_audit=SemanticAuditStatus.FAILED,
+            ),
+            "end",
+        ),
+        (
+            CitationReport(
+                passed=False,
+                structural_passed=False,
+                invalid_citation_ids=["C9"],
+                semantic_audit=SemanticAuditStatus.FAILED,
+            ),
+            "regenerate_strict",
+        ),
+    ],
+    ids=["passed", "flagged-by-judge", "judge-failed", "judge-failed-and-broken-citations"],
+)
+def test_citation_router_regenerates_only_for_answer_problems(
+    report: CitationReport, expected: str
+) -> None:
+    state: Any = {"citation_report": report, "regeneration_attempts": 0}
+    assert route_after_citation_validation(state, max_regenerations=1) == expected
 
 
 # ---------------------------------------------------------------------------

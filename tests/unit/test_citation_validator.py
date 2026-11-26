@@ -13,7 +13,7 @@ from pydantic import Field
 
 from adaptiverag.config import CitationValidationConfig
 from adaptiverag.llm import BudgetExceededError, CostTracker
-from adaptiverag.schemas import ClaimVerdict, EvidenceChunk, SourceType
+from adaptiverag.schemas import ClaimVerdict, EvidenceChunk, SemanticAuditStatus, SourceType
 from adaptiverag.verification import (
     extract_citations,
     find_uncited_factual_sentences,
@@ -25,6 +25,7 @@ from adaptiverag.verification import (
 class _ScriptedAuditModel(BaseChatModel):
     responses: list[str] = Field(default_factory=list)
     fail_with_error: bool = False
+    fail_with_timeout: bool = False
     call_count: int = 0
 
     @property
@@ -41,6 +42,8 @@ class _ScriptedAuditModel(BaseChatModel):
         self.call_count += 1
         if self.fail_with_error:
             raise RuntimeError("Upstream OpenRouter 503 error")
+        if self.fail_with_timeout:
+            raise TimeoutError("judge did not answer in time")
         idx = min(self.call_count - 1, len(self.responses) - 1)
         msg = AIMessage(
             content=self.responses[idx],
@@ -172,6 +175,9 @@ async def test_tier2_semantic_entailment_passes_all_supported() -> None:
 
     assert model.call_count == 1
     assert report.passed is True
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.COMPLETED
+    assert report.semantic_audit_error is None
     assert report.claim_support_rate == 1.0
     assert len(report.claim_verifications) == 2
     assert usage.total_tokens == 250
@@ -279,6 +285,8 @@ async def test_tier2_finops_fast_fail_skips_llm_when_zero_valid_citations() -> N
 
     assert model.call_count == 0
     assert report.passed is False
+    assert report.structural_passed is False
+    assert report.semantic_audit == SemanticAuditStatus.SKIPPED
     assert report.claim_support_rate == 0.0
     assert usage.total_tokens == 0
 
@@ -310,7 +318,7 @@ async def test_tier2_propagates_budget_error_and_degrades_on_provider_error() ->
             cost_tracker=exhausted,
         )
 
-    # 2. Non-budget runtime error gracefully falls back to Tier-1 structural report
+    # 2. A provider error keeps the Tier-1 findings but fails closed instead of passing
     failing_model = _ScriptedAuditModel(fail_with_error=True)
     report, usage = await validate_citations(
         answer=answer,
@@ -320,6 +328,134 @@ async def test_tier2_propagates_budget_error_and_degrades_on_provider_error() ->
         fast_model_name="qwen/qwen3-30b-a3b-instruct-2507",
     )
     assert failing_model.call_count == 1
-    assert report.passed is True
+    assert report.passed is False
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.FAILED
+    assert report.semantic_audit_error == "The judge model call failed (RuntimeError)."
+    assert "503" not in report.semantic_audit_error  # provider text stays in server logs
     assert report.valid_citation_ids == ["C1"]
+    assert usage.total_tokens == 0
+
+
+_WRONG_NUMBER_EVIDENCE = [
+    EvidenceChunk(
+        citation_id="C1",
+        chunk_id="c1",
+        doc_id="qdrant_hnsw",
+        title="Qdrant HNSW",
+        text="The default value of ef_construct in Qdrant HNSW is 100.",
+        source_type=SourceType.LOCAL,
+    )
+]
+# Cites [C1] correctly but states the wrong number, so only the semantic judge can catch it.
+_WRONG_NUMBER_ANSWER = "The default value of ef_construct in Qdrant HNSW is 512 [C1]."
+
+
+@pytest.mark.asyncio
+async def test_tier2_unparsable_judge_reply_fails_closed() -> None:
+    judge = _ScriptedAuditModel(responses=["sorry, I cannot produce JSON"])
+
+    report, _ = await validate_citations(
+        answer=_WRONG_NUMBER_ANSWER,
+        evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+        config=CitationValidationConfig(),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert judge.call_count == 2  # first reply + one JSON repair attempt
+    assert report.passed is False
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.FAILED
+    assert report.semantic_audit_error is not None
+    assert "could not be parsed" in report.semantic_audit_error
+    assert report.claim_verifications == []
+
+
+@pytest.mark.asyncio
+async def test_tier2_judge_timeout_fails_closed() -> None:
+    judge = _ScriptedAuditModel(fail_with_timeout=True)
+
+    report, _ = await validate_citations(
+        answer=_WRONG_NUMBER_ANSWER,
+        evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+        config=CitationValidationConfig(),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert report.passed is False
+    assert report.semantic_audit == SemanticAuditStatus.FAILED
+    assert report.semantic_audit_error == "The judge model timed out."
+
+
+@pytest.mark.asyncio
+async def test_tier2_empty_verdicts_for_cited_answer_fails_closed() -> None:
+    judge = _ScriptedAuditModel(responses=[json.dumps({"verifications": []})])
+
+    report, usage = await validate_citations(
+        answer=_WRONG_NUMBER_ANSWER,
+        evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+        config=CitationValidationConfig(),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert report.passed is False
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.FAILED
+    assert report.semantic_audit_error is not None
+    assert "no claim verdicts" in report.semantic_audit_error
+    assert usage.total_tokens == 250  # the judge call succeeded, so its tokens still count
+
+
+@pytest.mark.asyncio
+async def test_tier2_completed_judge_catches_the_wrong_number() -> None:
+    judge = _ScriptedAuditModel(
+        responses=[
+            json.dumps(
+                {
+                    "verifications": [
+                        {
+                            "claim": "The default ef_construct in Qdrant HNSW is 512.",
+                            "cited_ids": ["C1"],
+                            "verdict": "contradicted",
+                            "explanation": "C1 says the default is 100.",
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+
+    report, _ = await validate_citations(
+        answer=_WRONG_NUMBER_ANSWER,
+        evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+        config=CitationValidationConfig(),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert report.passed is False
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_semantic_audit_disabled_reports_skipped_structural_verdict() -> None:
+    judge = _ScriptedAuditModel(responses=["{}"])
+
+    report, usage = await validate_citations(
+        answer=_WRONG_NUMBER_ANSWER,
+        evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+        config=CitationValidationConfig(enable_semantic_entailment=False),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert judge.call_count == 0
+    assert report.passed is True
+    assert report.structural_passed is True
+    assert report.semantic_audit == SemanticAuditStatus.SKIPPED
+    assert report.semantic_audit_error is None
     assert usage.total_tokens == 0

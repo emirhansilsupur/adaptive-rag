@@ -20,7 +20,12 @@ from tests.unit.test_api_endpoints import (
 
 from adaptiverag.api.dependencies import AppContainer
 from adaptiverag.api.main import create_app
-from adaptiverag.api.security import SlidingWindowRateLimiter, parse_cors_origins
+from adaptiverag.api.security import (
+    SlidingWindowRateLimiter,
+    is_loopback_host,
+    parse_cors_origins,
+    split_host_port,
+)
 from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.llm import CostTracker, ModelBundle, SQLiteLLMCache
@@ -52,6 +57,7 @@ async def _build_secured_container(
     *,
     api_auth_key: str | None = None,
     cors_allow_origins: str = "*",
+    allowed_hosts_without_auth: str = "",
     rate_limit_enabled: bool = False,
     rate_limit_rpm: int = 60,
     rate_limit_trust_proxy_headers: bool = False,
@@ -70,6 +76,7 @@ async def _build_secured_container(
         llm_cache_path=tmp_path / "sec_cache.sqlite",
         api_auth_key=SecretStr(api_auth_key) if api_auth_key is not None else None,
         cors_allow_origins=cors_allow_origins,
+        allowed_hosts_without_auth=allowed_hosts_without_auth,
         rate_limit_enabled=rate_limit_enabled,
         rate_limit_requests_per_minute=rate_limit_rpm,
         rate_limit_trust_proxy_headers=rate_limit_trust_proxy_headers,
@@ -325,11 +332,48 @@ def test_parse_cors_origins_and_settings_validators() -> None:
         "https://rag.example.com",
         "http://localhost:5173",
     ]
-    assert parse_cors_origins("   ") == ["*"]
+    # An empty value falls back to the local Studio origins, never to "*".
+    assert parse_cors_origins("   ") == ["http://localhost:5173", "http://127.0.0.1:5173"]
+    assert parse_cors_origins("http://localhost:5173/") == ["http://localhost:5173"]
+    assert parse_cors_origins("*") == ["*"]
 
     settings = Settings(api_auth_key=SecretStr("   "), static_ui_dir="   ")  # type: ignore[arg-type]
     assert settings.api_auth_key is None
     assert settings.static_ui_dir is None
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("localhost:8000", ("localhost", 8000)),
+        ("LOCALHOST.", ("localhost", None)),
+        ("127.0.0.1", ("127.0.0.1", None)),
+        ("[::1]:8000", ("::1", 8000)),
+        ("::1", ("::1", None)),
+        ("rag.example.com:443", ("rag.example.com", 443)),
+        ("localhost:\u00b2", ("localhost", None)),  # non-ASCII digit must not crash int()
+    ],
+)
+def test_split_host_port(header: str, expected: tuple[str, int | None]) -> None:
+    assert split_host_port(header) == expected
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("localhost", True),
+        ("studio.localhost", True),
+        ("127.0.0.1", True),
+        ("127.0.0.2", True),
+        ("::1", True),
+        ("0.0.0.0", False),  # the "0.0.0.0 day" address is not loopback
+        ("192.168.1.20", False),
+        ("localhost.attacker.example", False),
+        ("attacker.example", False),
+    ],
+)
+def test_is_loopback_host(host: str, expected: bool) -> None:
+    assert is_loopback_host(host) is expected
 
 
 # =============================================================================
@@ -351,7 +395,7 @@ async def test_api_key_auth_protects_v1_routes_while_keeping_health_public(
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # Public health & root metadata stay accessible without a key
             health = await client.get("/v1/health")
@@ -396,6 +440,124 @@ async def test_api_key_auth_protects_v1_routes_while_keeping_health_public(
 
 
 @pytest.mark.asyncio
+async def test_local_only_mode_rejects_lan_hosts_rebinding_and_cross_site_requests(
+    tmp_path: Path,
+) -> None:
+    container, _ = await _build_secured_container(
+        tmp_path, cors_allow_origins="http://localhost:5173"
+    )
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            health = await client.get("/v1/health")
+            assert health.status_code == 200
+            assert health.json()["security"]["local_only_mode"] is True
+
+            # Local tools on any loopback address are served.
+            for host in ("127.0.0.1:8000", "[::1]:8000", "localhost:8000"):
+                ok = await client.get("/v1/documents", headers={"Host": host})
+                assert ok.status_code == 200, host
+
+            # A LAN client, or a DNS-rebinding page whose Host is the attacker's name.
+            lan = await client.get("/v1/documents", headers={"Host": "192.168.1.20:8000"})
+            assert lan.status_code == 403
+            assert "API_AUTH_KEY" in lan.json()["detail"]
+            rebound = await client.get(
+                "/v1/documents",
+                headers={
+                    "Host": "attacker.example:8000",
+                    "Origin": "http://attacker.example:8000",
+                },
+            )
+            assert rebound.status_code == 403
+
+            # Browsers send multipart POSTs cross-site without a preflight; CORS can't stop it.
+            points_before = await container.store.count_points()
+            wipe = await client.post(
+                "/v1/ingest/upload",
+                headers={"Origin": "https://evil.example"},
+                files={"files": ("notes.md", b"# Poisoned\nInjected text.", "text/markdown")},
+                data={"recreate_collection": "true"},
+            )
+            assert wipe.status_code == 403
+            assert "CORS_ALLOW_ORIGINS" in wipe.json()["detail"]
+            assert await container.store.count_points() == points_before
+
+            sandboxed = await client.post(
+                "/v1/query", json={"query": "Hello!"}, headers={"Origin": "null"}
+            )
+            assert sandboxed.status_code == 403
+
+            # Studio on the Vite dev server is an allowed origin.
+            studio = await client.post(
+                "/v1/query",
+                json={"query": "Hello!"},
+                headers={"Origin": "http://localhost:5173"},
+            )
+            assert studio.status_code == 200
+            assert studio.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+            # The SPA bundled into the API calls its own origin.
+            bundled = await client.post(
+                "/v1/query", json={"query": "Hello!"}, headers={"Origin": "http://localhost"}
+            )
+            assert bundled.status_code == 200
+
+            # Non-browser clients send no Origin header.
+            curl = await client.post("/v1/query", json={"query": "Hello!"})
+            assert curl.status_code == 200
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_local_only_mode_extra_hosts_and_api_key_lift_the_host_check(
+    tmp_path: Path,
+) -> None:
+    lan_container, _ = await _build_secured_container(
+        tmp_path, cors_allow_origins="http://localhost:5173", allowed_hosts_without_auth="rag.lan"
+    )
+    keyed_container, _ = await _build_secured_container(
+        tmp_path / "keyed",
+        api_auth_key="top-secret-key-123",
+        cors_allow_origins="https://studio.example.com",
+    )
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(container=lan_container)),
+            base_url="http://localhost",
+        ) as client:
+            listed = await client.get("/v1/documents", headers={"Host": "rag.lan:8000"})
+            assert listed.status_code == 200
+            other = await client.get("/v1/documents", headers={"Host": "rag.example.com"})
+            assert other.status_code == 403
+            # The bundled SPA served from the listed host is same-origin.
+            bundled = await client.post(
+                "/v1/query",
+                json={"query": "Hello!"},
+                headers={"Host": "rag.lan:8000", "Origin": "http://rag.lan:8000"},
+            )
+            assert bundled.status_code == 200
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(container=keyed_container)),
+            base_url="https://rag.example.com",
+        ) as client:
+            health = await client.get("/v1/health")
+            assert health.json()["security"]["local_only_mode"] is False
+            served = await client.get("/v1/documents", headers={"X-API-Key": "top-secret-key-123"})
+            assert served.status_code == 200
+    finally:
+        await lan_container.aclose()
+        await keyed_container.aclose()
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_middleware_enforces_429_and_proxy_header_policy(
     tmp_path: Path,
 ) -> None:
@@ -412,7 +574,7 @@ async def test_rate_limit_middleware_enforces_429_and_proxy_header_policy(
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             r1 = await client.get("/v1/documents", headers={"X-Forwarded-For": "1.1.1.1"})
             assert r1.status_code == 200
@@ -456,7 +618,7 @@ async def test_query_and_sse_endpoints_enforce_guardrails_and_zero_buffer_stream
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Prompt injection is rejected at HTTP 400 with ZERO LLM invocations
             blocked_batch = await client.post(
@@ -531,7 +693,7 @@ async def test_static_spa_serving_and_api_404_isolation(tmp_path: Path) -> None:
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # Root serves built SPA index.html
             index_resp = await client.get("/")
@@ -590,7 +752,7 @@ async def test_ingest_corpus_dir_blocks_path_traversal_outside_allowed_root(
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Path outside allowed_corpus_root is rejected with HTTP 403
             escaped = await client.post(
@@ -692,7 +854,7 @@ async def test_per_request_cost_tracker_isolation_prevents_cumulative_402_lockou
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             for i in range(3):
                 resp = await client.post("/v1/query", json={"query": f"Hi turn {i}"})

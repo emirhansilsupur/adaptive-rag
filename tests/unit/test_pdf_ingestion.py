@@ -506,7 +506,7 @@ async def test_api_pdf_upload_ocr_and_budget_enforcement(tmp_path: Path) -> None
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. /v1/health exposes pdf_ocr readiness summary
             health_resp = await client.get("/v1/health")

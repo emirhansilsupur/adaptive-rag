@@ -21,6 +21,7 @@ from typing import Any, Literal
 import structlog
 
 from adaptiverag.config import Settings
+from adaptiverag.schemas.citation import SemanticAuditStatus
 from adaptiverag.schemas.response import FinalAnswer
 
 logger = structlog.get_logger(__name__)
@@ -125,27 +126,42 @@ def build_online_quality_scores(answer: FinalAnswer) -> list[OnlineScoreSpec]:
 
     if answer.citation_report is not None:
         cite = answer.citation_report
-        scores.extend(
-            [
-                OnlineScoreSpec(
-                    name="citation_precision",
-                    value=round(float(cite.citation_precision), 6),
-                    data_type="NUMERIC",
-                ),
+        judge_failed = cite.semantic_audit == SemanticAuditStatus.FAILED
+        if cite.passed:
+            passed_comment = "Passed two-tier citation audit"
+        elif judge_failed:
+            passed_comment = f"Claim check failed: {cite.semantic_audit_error}"
+        else:
+            passed_comment = f"Invalid IDs: {cite.invalid_citation_ids}"
+        scores.append(
+            OnlineScoreSpec(
+                name="citation_precision",
+                value=round(float(cite.citation_precision), 6),
+                data_type="NUMERIC",
+            )
+        )
+        # When the judge failed, claim_support_rate is only the cited-sentence share;
+        # scoring it as claim support would inflate the dashboard.
+        if not judge_failed:
+            scores.append(
                 OnlineScoreSpec(
                     name="claim_support_rate",
                     value=round(float(cite.claim_support_rate), 6),
                     data_type="NUMERIC",
-                ),
+                )
+            )
+        scores.extend(
+            [
                 OnlineScoreSpec(
                     name="citation_passed",
                     value=1.0 if cite.passed else 0.0,
                     data_type="BOOLEAN",
-                    comment=(
-                        "Passed two-tier citation audit"
-                        if cite.passed
-                        else f"Invalid IDs: {cite.invalid_citation_ids}"
-                    ),
+                    comment=passed_comment,
+                ),
+                OnlineScoreSpec(
+                    name="citation_semantic_audit",
+                    value=cite.semantic_audit.value,
+                    data_type="CATEGORICAL",
                 ),
                 OnlineScoreSpec(
                     name="fabricated_citations",
@@ -557,6 +573,9 @@ class LangfuseObservability:
                 },
                 output_payload={
                     "passed": cite.passed,
+                    "structural_passed": cite.structural_passed,
+                    "semantic_audit": cite.semantic_audit.value,
+                    "semantic_audit_error": cite.semantic_audit_error,
                     "citation_precision": cite.citation_precision,
                     "claim_support_rate": cite.claim_support_rate,
                     "valid_citation_ids": cite.valid_citation_ids,

@@ -39,6 +39,7 @@ from adaptiverag.api.schemas import (
     ProviderCatalogItem,
     QueryRequest,
 )
+from adaptiverag.api.security import api_auth_enabled, local_only_mode
 from adaptiverag.ingestion.chunker import ChunkingConfig
 from adaptiverag.ingestion.indexer import (
     index_corpus,
@@ -197,9 +198,9 @@ async def health_check(
     langfuse_info["prompt_management"] = container.get_prompt_manager().health_summary()
 
     security_info = {
-        "api_key_auth_enabled": bool(
-            settings.api_auth_key and settings.api_auth_key.get_secret_value().strip()
-        ),
+        "api_key_auth_enabled": api_auth_enabled(settings),
+        # Without a key, only loopback hosts (plus ALLOWED_HOSTS_WITHOUT_AUTH) are answered.
+        "local_only_mode": local_only_mode(settings),
         "rate_limit_enabled": settings.rate_limit_enabled,
         "rate_limit_requests_per_minute": settings.rate_limit_requests_per_minute,
         "guardrails_enabled": settings.guardrails_enabled,

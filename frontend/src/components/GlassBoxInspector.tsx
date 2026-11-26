@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { getNodeMeta, STAGE_COLORS, STAGE_LABELS } from "../constants/pipeline";
+import { AUDIT_LABEL, getAuditState, semanticAuditOf, type AuditState } from "../lib/audit";
 import {
   capitalize,
   formatDuration,
@@ -784,6 +785,39 @@ const VERDICTS: Record<string, { label: string; tone: Tone; icon: LucideIcon }> 
   unsupported: { label: "Unsupported", tone: "bad", icon: AlertCircle },
 };
 
+const AUDIT_CALLOUT: Record<
+  AuditState,
+  { tone: "ok" | "bad" | "warn" | "info"; title: string; body: string }
+> = {
+  passed: {
+    tone: "ok",
+    title: "Citation audit passed",
+    body: "Every cited ID exists and the checked claims are backed by their passages.",
+  },
+  flagged: {
+    tone: "bad",
+    title: "Citation audit flagged problems",
+    body: "Some claims aren't backed by the passages they cite, or cite passages that don't exist.",
+  },
+  unverified: {
+    tone: "warn",
+    title: "Claims weren't checked",
+    body: "The citation IDs are valid, but the claims weren't compared with their passages. Ask again, or pick another fast model under Runtime.",
+  },
+  structural: {
+    tone: "info",
+    title: "Only the citations were checked",
+    body: "Every cited ID exists and enough sentences carry a citation. This run didn't compare claims with their passages.",
+  },
+};
+
+const AUDIT_DOT: Record<AuditState, string> = {
+  passed: "bg-ok",
+  flagged: "bg-bad",
+  unverified: "bg-warn",
+  structural: "bg-ink-4",
+};
+
 function CitationAuditTab({
   result,
   onJumpToCitation,
@@ -800,15 +834,18 @@ function CitationAuditTab({
     );
   }
 
+  const state = getAuditState(report);
+  const callout = AUDIT_CALLOUT[state];
+  const claimCheckFailed = semanticAuditOf(report) === "failed";
+  const failureReason = report.semantic_audit_error || "The claim check didn't run.";
+  const claimsChecked = semanticAuditOf(report) === "completed";
+
   return (
     <div className="space-y-7">
-      <Callout
-        tone={report.passed ? "ok" : "bad"}
-        title={report.passed ? "Citation audit passed" : "Citation audit flagged problems"}
-      >
-        {report.passed
-          ? "Every cited ID exists and the checked claims are backed by their passages."
-          : "Some claims aren't backed by the passages they cite, or cite passages that don't exist."}
+      <Callout tone={callout.tone} title={callout.title}>
+        {state === "unverified" && `${failureReason} `}
+        {callout.body}
+        {state === "flagged" && claimCheckFailed && ` The claim check didn't run either. ${failureReason}`}
       </Callout>
 
       <LedgerGrid>
@@ -817,11 +854,15 @@ function CitationAuditTab({
           value={formatPct(report.citation_precision, 1)}
           tone={report.citation_precision >= 0.9 ? "ok" : "warn"}
         />
-        <LedgerCell
-          label="Claim support"
-          value={formatPct(report.claim_support_rate, 1)}
-          tone={report.claim_support_rate >= 0.8 ? "ok" : "bad"}
-        />
+        {claimsChecked ? (
+          <LedgerCell
+            label="Claim support"
+            value={formatPct(report.claim_support_rate, 1)}
+            tone={report.claim_support_rate >= 0.8 ? "ok" : "bad"}
+          />
+        ) : (
+          <LedgerCell label="Sentences cited" value={formatPct(report.claim_support_rate, 1)} />
+        )}
         <LedgerCell label="Citations found" value={report.total_citations_found} />
         <LedgerCell
           label="Fabricated IDs"
@@ -831,7 +872,7 @@ function CitationAuditTab({
       </LedgerGrid>
 
       <section className="space-y-2.5">
-        <SectionHeading>Verified citations</SectionHeading>
+        <SectionHeading>Valid citations</SectionHeading>
         {report.valid_citation_ids.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {report.valid_citation_ids.map((cid) => (
@@ -882,7 +923,13 @@ function CitationAuditTab({
       <section className="space-y-2.5">
         <SectionHeading>Claim checks ({report.claim_verifications.length})</SectionHeading>
         {report.claim_verifications.length === 0 ? (
-          <EmptyState title="No claims were checked for this answer" />
+          <EmptyState
+            title={
+              claimCheckFailed
+                ? "The claim check didn't run, so there are no verdicts"
+                : "No claims were checked for this answer"
+            }
+          />
         ) : (
           <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-paper">
             {report.claim_verifications.map((cv, idx) => {
@@ -982,7 +1029,8 @@ export const GlassBoxInspector: React.FC<GlassBoxInspectorProps> = ({
         {TABS.map(({ id, label, icon: Icon }, idx) => {
           const isActive = activeTab === id;
           const evidenceCount = activeTurn?.result.evidence_chunks.length ?? 0;
-          const citePassed = activeTurn?.result.citation_report?.passed;
+          const citeReport = activeTurn?.result.citation_report;
+          const citeState = citeReport ? getAuditState(citeReport) : null;
           return (
             <button
               key={id}
@@ -1008,10 +1056,10 @@ export const GlassBoxInspector: React.FC<GlassBoxInspectorProps> = ({
               {id === "evidence" && evidenceCount > 0 && (
                 <span className="tabular-nums text-ink-3">{evidenceCount}</span>
               )}
-              {id === "citations" && citePassed !== undefined && (
+              {id === "citations" && citeState && (
                 <span
-                  aria-label={citePassed ? "passed" : "flagged"}
-                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", citePassed ? "bg-ok" : "bg-bad")}
+                  aria-label={AUDIT_LABEL[citeState].toLowerCase()}
+                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", AUDIT_DOT[citeState])}
                 />
               )}
               {isActive && (

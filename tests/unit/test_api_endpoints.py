@@ -362,7 +362,7 @@ async def test_root_and_health_ok(tmp_path: Path) -> None:
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             root_resp = await client.get("/")
             assert root_resp.status_code == 200
@@ -400,7 +400,7 @@ async def test_health_degraded_and_query_503_when_unconfigured() -> None:
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
+        base_url="http://localhost",
     ) as client:
         health_resp = await client.get("/v1/health")
         assert health_resp.status_code == 200
@@ -432,7 +432,7 @@ async def test_ingest_inline_directory_and_validation_errors(tmp_path: Path) -> 
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Inline ingestion
             inline_resp = await client.post(
@@ -500,7 +500,7 @@ async def test_query_batch_full_preset_and_validation(tmp_path: Path) -> None:
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # Full AdaptiveRAG
             resp = await client.post(
@@ -562,7 +562,7 @@ async def test_query_budget_exceeded_returns_402(tmp_path: Path) -> None:
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             resp = await client.post(
                 "/v1/query",
@@ -585,7 +585,7 @@ async def test_query_stream_sse_emits_node_updates_and_final_answer(tmp_path: Pa
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             resp = await client.post(
                 "/v1/query/stream",
@@ -631,7 +631,7 @@ async def test_query_stream_sse_emits_error_event_on_budget_cap(tmp_path: Path) 
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             resp = await client.post(
                 "/v1/query/stream",
@@ -803,7 +803,7 @@ async def test_ingest_firecrawl_urls_crawl_and_error_handling(tmp_path: Path) ->
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Health endpoint reports Firecrawl Local as ok
             health = await client.get("/v1/health")
@@ -909,7 +909,7 @@ async def test_documents_list_delete_and_file_upload_endpoints(tmp_path: Path) -
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. Empty collection returns zero documents cleanly
             empty_resp = await client.get("/v1/documents")

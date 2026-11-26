@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from adaptiverag.graph.state import AblationConfig, AgentState
+from adaptiverag.schemas.citation import SemanticAuditStatus
 from adaptiverag.schemas.query import QueryType
 from adaptiverag.schemas.retrieval import ConfidenceAction
 
@@ -100,6 +101,11 @@ def route_after_citation_validation(
 
     report = state.get("citation_report")
     if report is None or report.passed:
+        return "end"
+
+    # A failed judge is not a failed answer: regenerating cannot fix it and only adds cost.
+    # Regenerate only when the answer itself has problems the strict prompt can address.
+    if report.semantic_audit == SemanticAuditStatus.FAILED and report.structural_passed:
         return "end"
 
     regeneration_attempts = state.get("regeneration_attempts", 0)

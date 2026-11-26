@@ -24,6 +24,7 @@ from adaptiverag.schemas.citation import (
     CitationReport,
     ClaimAuditBatch,
     ClaimVerdict,
+    SemanticAuditStatus,
 )
 from adaptiverag.schemas.response import TokenUsage
 from adaptiverag.schemas.retrieval import EvidenceChunk
@@ -200,6 +201,29 @@ def validate_citations_structural(
         claim_support_rate=structural_support_rate,
         passed=passed,
         regeneration_triggered=False,
+        structural_passed=passed,
+        semantic_audit=SemanticAuditStatus.SKIPPED,
+    )
+
+
+def _describe_judge_failure(exc: Exception) -> str:
+    """Name why the entailment judge failed without echoing provider error text to clients."""
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return "The judge model timed out."
+    if isinstance(exc, ValueError):
+        # invoke_structured raises ValueError once JSON repair attempts are exhausted.
+        return "The judge model's reply could not be parsed into claim verdicts."
+    return f"The judge model call failed ({type(exc).__name__})."
+
+
+def _semantic_audit_failed(tier1: CitationReport, reason: str) -> CitationReport:
+    """Fail closed: keep the Tier-1 findings, but never report unchecked claims as passed."""
+    return tier1.model_copy(
+        update={
+            "passed": False,
+            "semantic_audit": SemanticAuditStatus.FAILED,
+            "semantic_audit_error": reason,
+        }
     )
 
 
@@ -246,7 +270,9 @@ async def validate_citations(
     if not tier1.valid_citation_ids and (
         tier1.uncited_factual_sentences or tier1.invalid_citation_ids
     ):
-        failed = tier1.model_copy(update={"claim_support_rate": 0.0, "passed": False})
+        failed = tier1.model_copy(
+            update={"claim_support_rate": 0.0, "passed": False, "structural_passed": False}
+        )
         return failed, TokenUsage()
 
     resolved_prompt = (
@@ -284,12 +310,25 @@ async def validate_citations(
         raise
     except Exception as exc:
         logger.warning(
-            "citation_tier2_entailment_failed_falling_back_to_tier1",
+            "citation_tier2_entailment_failed",
+            error_type=type(exc).__name__,
             error=str(exc),
         )
-        return tier1, TokenUsage()
+        return _semantic_audit_failed(tier1, _describe_judge_failure(exc)), TokenUsage()
 
     verifications = audit_result.parsed.verifications
+    if not verifications and tier1.valid_citation_ids:
+        # The answer cites passages, so there are claims to check; an empty batch means
+        # the judge skipped its job, not that every claim is fine.
+        logger.warning(
+            "citation_tier2_entailment_returned_no_verdicts",
+            valid_citation_ids=tier1.valid_citation_ids,
+        )
+        failed = _semantic_audit_failed(
+            tier1, "The judge model returned no claim verdicts for a cited answer."
+        )
+        return failed, audit_result.usage
+
     if verifications:
         supported_verdicts = {ClaimVerdict.SUPPORTED}
         if config.allow_partial_as_supported:
@@ -317,6 +356,7 @@ async def validate_citations(
             "claim_verifications": verifications,
             "claim_support_rate": claim_support_rate,
             "passed": passed,
+            "semantic_audit": SemanticAuditStatus.COMPLETED,
         }
     )
     return combined, audit_result.usage

@@ -94,6 +94,8 @@ class QueryEvalRecord(BaseModel):
     citation_precision: float | None = Field(default=None, ge=0.0, le=1.0)
     claim_support_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     citation_passed: bool | None = None
+    # "completed" | "skipped" | "failed"; "failed" means the claim judge errored.
+    citation_semantic_audit: str | None = None
     latency_ms: float = Field(default=0.0, ge=0.0)
     total_tokens: int = Field(default=0, ge=0)
     estimated_cost_usd: float = Field(default=0.0, ge=0.0)

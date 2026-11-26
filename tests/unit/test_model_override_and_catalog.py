@@ -286,7 +286,7 @@ async def test_models_catalog_and_per_request_llm_override_api(tmp_path: Path) -
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
+            base_url="http://localhost",
         ) as client:
             # 1. GET /v1/models returns safe readiness + detected local models, zero secret leakage
             models_resp = await client.get("/v1/models")

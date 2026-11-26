@@ -182,6 +182,9 @@ export interface ClaimVerification {
   explanation: string;
 }
 
+/** Whether the claim judge produced the verdicts behind a citation report. */
+export type SemanticAuditStatus = "completed" | "skipped" | "failed";
+
 export interface CitationReport {
   total_citations_found: number;
   valid_citation_ids: string[];
@@ -189,9 +192,15 @@ export interface CitationReport {
   uncited_factual_sentences: string[];
   claim_verifications: ClaimVerification[];
   citation_precision: number;
+  /** Entailment support when the claim check completed; otherwise the share of cited sentences. */
   claim_support_rate: number;
+  /** Fails closed: false when the claim check was required but failed. */
   passed: boolean;
   regeneration_triggered: boolean;
+  /** The three fields below are missing on answers saved before the API reported them. */
+  structural_passed?: boolean;
+  semantic_audit?: SemanticAuditStatus;
+  semantic_audit_error?: string | null;
 }
 
 export interface TokenUsage {
