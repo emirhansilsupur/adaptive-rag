@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from adaptiverag.config import CitationValidationConfig
-from adaptiverag.llm import BudgetExceededError, CostTracker
+from adaptiverag.llm import BudgetExceededError, CostTracker, SQLiteLLMCache
 from adaptiverag.schemas import ClaimVerdict, EvidenceChunk, SemanticAuditStatus, SourceType
 from adaptiverag.verification import (
     extract_citations,
@@ -439,6 +440,41 @@ async def test_tier2_completed_judge_catches_the_wrong_number() -> None:
     assert report.passed is False
     assert report.structural_passed is True
     assert report.semantic_audit == SemanticAuditStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_tier2_verdicts_are_reused_from_the_cache(tmp_path: Path) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    judge = _ScriptedAuditModel(
+        responses=[
+            json.dumps(
+                {
+                    "verifications": [
+                        {
+                            "claim": "The default ef_construct in Qdrant HNSW is 512.",
+                            "cited_ids": ["C1"],
+                            "verdict": "contradicted",
+                            "explanation": "C1 says the default is 100.",
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+
+    for _ in range(2):
+        report, _ = await validate_citations(
+            answer=_WRONG_NUMBER_ANSWER,
+            evidence_chunks=_WRONG_NUMBER_EVIDENCE,
+            config=CitationValidationConfig(),
+            fast_model=judge,
+            fast_model_name="local-judge",
+            cache=cache,
+        )
+        assert report.semantic_audit == SemanticAuditStatus.COMPLETED
+        assert report.passed is False
+
+    assert judge.call_count == 1
 
 
 @pytest.mark.asyncio

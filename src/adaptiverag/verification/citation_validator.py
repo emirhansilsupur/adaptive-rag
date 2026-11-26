@@ -216,6 +216,15 @@ def _describe_judge_failure(exc: Exception) -> str:
     return f"The judge model call failed ({type(exc).__name__})."
 
 
+def _skipped_cited_claims(batch: ClaimAuditBatch, tier1: CitationReport) -> bool:
+    """True when the judge returned no verdicts although the answer cites passages.
+
+    The answer then has claims to check, so the empty batch means the judge skipped its job,
+    not that every claim is fine.
+    """
+    return not batch.verifications and bool(tier1.valid_citation_ids)
+
+
 def _semantic_audit_failed(tier1: CitationReport, reason: str) -> CitationReport:
     """Fail closed: keep the Tier-1 findings, but never report unchecked claims as passed."""
     return tier1.model_copy(
@@ -303,6 +312,8 @@ async def validate_citations(
             temperature=temperature,
             max_repair_attempts=1,
             cache=cache,
+            # A skipped job isn't kept, so asking the question again asks the judge again.
+            cache_if=lambda batch: not _skipped_cited_claims(batch, tier1),
             cost_tracker=cost_tracker,
             callbacks=callbacks,
             langfuse_prompt=resolved_prompt.langfuse_prompt,
@@ -320,9 +331,7 @@ async def validate_citations(
         return failed, failed_call_usage(exc)
 
     verifications = audit_result.parsed.verifications
-    if not verifications and tier1.valid_citation_ids:
-        # The answer cites passages, so there are claims to check; an empty batch means
-        # the judge skipped its job, not that every claim is fine.
+    if _skipped_cited_claims(audit_result.parsed, tier1):
         logger.warning(
             "citation_tier2_entailment_returned_no_verdicts",
             valid_citation_ids=tier1.valid_citation_ids,

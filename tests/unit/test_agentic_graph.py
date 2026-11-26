@@ -814,6 +814,62 @@ async def test_graph_judge_failure_is_unverified_not_regenerated() -> None:
         await store.close()
 
 
+@pytest.mark.asyncio
+async def test_graph_asks_the_judge_again_after_it_returned_no_verdicts(tmp_path: Path) -> None:
+    """The empty reply was cached, so asking again replayed it and stayed Unverified for good."""
+    store = await _build_in_memory_store()
+    try:
+        question = "How does Qdrant perform hybrid search?"
+        router_json = json.dumps(
+            {
+                "query_type": "factual",
+                "needs_retrieval": True,
+                "language": "en",
+                "standalone_query": question,
+                "requires_fresh_web_info": False,
+                "reasoning": "Direct factual lookup.",
+            }
+        )
+        workflow, fast_model, gen_model, _, _ = _make_workflow(
+            store=store,
+            fast_responses=[
+                router_json,
+                json.dumps({"verifications": []}),
+                json.dumps(
+                    {
+                        "verifications": [
+                            {
+                                "claim": "Qdrant merges dense and BM25 sparse vectors via RRF.",
+                                "cited_ids": ["C1"],
+                                "verdict": "supported",
+                                "explanation": "Stated in C1.",
+                            }
+                        ]
+                    }
+                ),
+            ],
+            gen_responses=[
+                "Qdrant merges dense cosine vectors and BM25 sparse vectors natively via Prefetch and RRF [C1].",
+            ],
+            reranker_scores=[0.91],
+            cache_path=tmp_path / "llm_cache.sqlite",
+        )
+
+        first = await workflow.arun(question)
+        again = await workflow.arun(question)
+
+        assert first.citation_report is not None
+        assert first.citation_report.semantic_audit == SemanticAuditStatus.FAILED
+        assert again.citation_report is not None
+        assert again.citation_report.semantic_audit == SemanticAuditStatus.COMPLETED
+        assert again.citation_report.passed is True
+        # Only the judge ran again; the route and the answer came from the cache.
+        assert fast_model.call_count == 3
+        assert gen_model.call_count == 1
+    finally:
+        await store.close()
+
+
 @pytest.mark.parametrize(
     ("report", "expected"),
     [

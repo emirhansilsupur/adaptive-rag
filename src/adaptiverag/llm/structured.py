@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -260,6 +261,7 @@ async def invoke_structured[T: BaseModel](
     temperature: float = 0.0,
     max_repair_attempts: int = 1,
     cache: SQLiteLLMCache | None = None,
+    cache_if: Callable[[T], bool] | None = None,
     cost_tracker: CostTracker | None = None,
     callbacks: list[Any] | None = None,
     langfuse_prompt: Any | None = None,
@@ -271,6 +273,10 @@ async def invoke_structured[T: BaseModel](
     Anthropic, and Ollama without depending on vendor-specific strict json_schema quirks.
     ``provider`` prices the tokens as in ``invoke_text``. If no attempt parses, raises
     StructuredOutputError carrying the usage of every attempt.
+
+    ``cache_if`` tells the cache which replies the caller can use. A reply it turns down,
+    such as a judge's empty verdict list, is neither stored nor served from an older entry,
+    so asking the same thing again reaches the model instead of replaying the reply.
     """
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
     format_instruction = SystemMessage(
@@ -293,15 +299,16 @@ async def invoke_structured[T: BaseModel](
         cached = await cache.aget(cache_key)
         if cached is not None:
             parsed = schema.model_validate_json(extract_json_payload(cached.response_text))
-            usage = TokenUsage(cache_hits=1)
-            if cost_tracker is not None:
-                cost_tracker.record(usage)
-            return LLMStructuredResult(
-                parsed=parsed,
-                raw_text=cached.response_text,
-                usage=usage,
-                from_cache=True,
-            )
+            if cache_if is None or cache_if(parsed):
+                usage = TokenUsage(cache_hits=1)
+                if cost_tracker is not None:
+                    cost_tracker.record(usage)
+                return LLMStructuredResult(
+                    parsed=parsed,
+                    raw_text=cached.response_text,
+                    usage=usage,
+                    from_cache=True,
+                )
 
     cumulative_usage = TokenUsage()
     conversation = list(enriched_messages)
@@ -330,7 +337,11 @@ async def invoke_structured[T: BaseModel](
         try:
             payload = extract_json_payload(raw_text)
             parsed = schema.model_validate_json(payload)
-            if cache is not None and cache_key is not None:
+            if (
+                cache is not None
+                and cache_key is not None
+                and (cache_if is None or cache_if(parsed))
+            ):
                 await cache.aset(
                     cache_key=cache_key,
                     model_name=model_name,

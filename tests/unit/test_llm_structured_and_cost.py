@@ -128,6 +128,55 @@ async def test_sqlite_cache_prevents_duplicate_llm_calls(tmp_path: Path) -> None
     assert second.usage.estimated_cost_usd == 0.0
 
 
+class _Steps(BaseModel):
+    steps: list[str]
+
+
+def _has_steps(reply: _Steps) -> bool:
+    return bool(reply.steps)
+
+
+_STEPS_PROMPT = [HumanMessage(content="List the indexing steps.")]
+
+
+async def test_cache_skips_a_reply_the_caller_turns_down(tmp_path: Path) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    turned_down = ScriptedChatModel(responses=['{"steps": []}'])
+
+    result = await invoke_structured(
+        turned_down, _Steps, _STEPS_PROMPT, model_name="m", cache=cache, cache_if=_has_steps
+    )
+
+    assert result.parsed.steps == []  # the caller still gets the reply to handle
+    # A call that would take any stored reply finds nothing, so nothing was stored.
+    any_reply = ScriptedChatModel(responses=['{"steps": ["embed", "index"]}'])
+    again = await invoke_structured(any_reply, _Steps, _STEPS_PROMPT, model_name="m", cache=cache)
+    assert any_reply.call_count == 1
+    assert again.from_cache is False
+    assert again.parsed.steps == ["embed", "index"]
+
+
+async def test_cache_stops_serving_a_stored_reply_the_caller_turns_down(tmp_path: Path) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    # Stored by a call that kept every reply, as every call did before cache_if existed.
+    stored_empty = ScriptedChatModel(responses=['{"steps": []}'])
+    await invoke_structured(stored_empty, _Steps, _STEPS_PROMPT, model_name="m", cache=cache)
+
+    model = ScriptedChatModel(responses=['{"steps": ["embed"]}'])
+    asked = await invoke_structured(
+        model, _Steps, _STEPS_PROMPT, model_name="m", cache=cache, cache_if=_has_steps
+    )
+    reused = await invoke_structured(
+        model, _Steps, _STEPS_PROMPT, model_name="m", cache=cache, cache_if=_has_steps
+    )
+
+    assert asked.from_cache is False
+    assert asked.parsed.steps == ["embed"]
+    assert reused.from_cache is True  # the accepted reply replaced the empty one
+    assert reused.parsed.steps == ["embed"]
+    assert model.call_count == 1
+
+
 async def test_cost_tracker_enforces_hard_budget_cap() -> None:
     tracker = CostTracker(max_cost_usd=0.0001)
     model = ScriptedChatModel(
