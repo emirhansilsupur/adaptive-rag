@@ -22,6 +22,7 @@ import {
   resolveEffectiveInstructions,
 } from "../constants/pipeline";
 import { formatInt, languageName } from "../lib/format";
+import type { ThreadSaveProblem } from "../lib/threadStore";
 import type {
   AblationConfig,
   ChatTurn,
@@ -66,6 +67,24 @@ interface ChatWorkspaceProps {
   customAblation?: AblationConfig;
   onCustomAblationChange?: (cfg: AblationConfig) => void;
   onOpenKnowledgeBase?: () => void;
+  /** Set while threads can't be saved in this browser. */
+  threadSaveProblem?: ThreadSaveProblem | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Unsaved threads                                                            */
+/* -------------------------------------------------------------------------- */
+
+function ThreadSaveNotice({ problem }: { problem: ThreadSaveProblem }) {
+  return (
+    <Callout live tone="warn" title="Threads aren't being saved" className="mb-2">
+      {problem.kind === "full"
+        ? "Browser storage for this site is full. Delete threads you no longer need; until a save goes through, reloading loses new answers."
+        : problem.kind === "unavailable"
+          ? `This browser won't let the Studio store data (${problem.detail}), so reloading loses the answers in this tab.`
+          : `The last save failed (${problem.detail}). The Studio tries again with your next change; until then, reloading loses new answers.`}
+    </Callout>
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -155,6 +174,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   customAblation,
   onCustomAblationChange,
   onOpenKnowledgeBase,
+  threadSaveProblem = null,
 }) => {
   const [input, setInput] = useState("");
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
@@ -496,6 +516,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-b from-transparent to-paper"
         />
         <div className="mx-auto w-full max-w-[47rem] sm:pl-[3rem]">
+          {threadSaveProblem && <ThreadSaveNotice problem={threadSaveProblem} />}
+
           {onThreadContextChange && contextPanelOpen && (
             <ThreadContextPanel
               context={activeContext}

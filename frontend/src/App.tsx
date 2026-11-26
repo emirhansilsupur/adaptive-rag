@@ -26,6 +26,7 @@ import {
   submitFeedback,
 } from "./lib/api";
 import { createCompareInspectorTurns, getPresetShortLabel } from "./lib/compare";
+import type { ThreadSaveProblem, ThreadStore } from "./lib/threadStore";
 import type {
   AblationConfig,
   AblationPreset,
@@ -49,7 +50,6 @@ import type {
   TokenUsage,
 } from "./types/api";
 
-const STORAGE_SESSIONS_KEY = "adaptiverag_studio_sessions_v1";
 const STORAGE_COMPARE_KEY = "adaptiverag_studio_compare_v1";
 const STORAGE_THEME_KEY = "adaptiverag_studio_theme_v1";
 const STORAGE_API_URL_KEY = "adaptiverag_studio_api_url_v1";
@@ -116,20 +116,6 @@ function createEmptySession(): ChatSession {
   };
 }
 
-function loadInitialSessions(): ChatSession[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_SESSIONS_KEY);
-    if (!raw) return [createEmptySession()];
-    const parsed = JSON.parse(raw) as ChatSession[];
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
-    }
-  } catch {
-    // fallback to clean session
-  }
-  return [createEmptySession()];
-}
-
 function loadInitialTheme(): "dark" | "light" {
   try {
     const saved = localStorage.getItem(STORAGE_THEME_KEY);
@@ -158,7 +144,12 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-export default function App() {
+interface AppProps {
+  /** Opened before the first render, so a saved list is never replaced by an empty one. */
+  threadStore: ThreadStore;
+}
+
+export default function App({ threadStore }: AppProps) {
   /* ------------------------------------------------------------------------ */
   /* Theme: saved choice, otherwise the operating system's preference          */
   /* ------------------------------------------------------------------------ */
@@ -245,7 +236,12 @@ export default function App() {
   /* ------------------------------------------------------------------------ */
   /* Threads                                                                   */
   /* ------------------------------------------------------------------------ */
-  const [sessions, setSessions] = useState<ChatSession[]>(loadInitialSessions);
+  const [sessions, setSessions] = useState<ChatSession[]>(() =>
+    threadStore.threads.length > 0 ? threadStore.threads : [createEmptySession()]
+  );
+  const [threadSaveProblem, setThreadSaveProblem] = useState<ThreadSaveProblem | null>(
+    threadStore.problem
+  );
   const [activeSessionId, setActiveSessionId] = useState<string>(() => sessions[0].id);
   const [selectedTurnIndex, setSelectedTurnIndex] = useState<number>(() =>
     Math.max(0, (sessions[0]?.turns.length ?? 1) - 1)
@@ -323,13 +319,16 @@ export default function App() {
     [sessions, activeSessionId]
   );
 
+  // Every thread is kept, and a failed save stays on screen until a later one goes through.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(sessions.slice(0, 20)));
-    } catch {
-      // ignore quota errors
-    }
-  }, [sessions]);
+    let current = true;
+    void threadStore.save(sessions).then((problem) => {
+      if (current) setThreadSaveProblem(problem);
+    });
+    return () => {
+      current = false;
+    };
+  }, [sessions, threadStore]);
 
   useEffect(() => {
     try {
@@ -1138,6 +1137,7 @@ export default function App() {
               customAblation={customAblation}
               onCustomAblationChange={setCustomAblation}
               onOpenKnowledgeBase={() => handleChangeView("knowledge")}
+              threadSaveProblem={threadSaveProblem}
             />
           )}
         </main>
