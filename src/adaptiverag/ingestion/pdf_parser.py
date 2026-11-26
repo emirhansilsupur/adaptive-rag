@@ -231,6 +231,7 @@ def build_vision_ocr_fn(
             chat_model,
             messages,
             model_name=vision_model_name,
+            provider=resolved.llm_provider,
             temperature=0.0,
             cost_tracker=cost_tracker,
         )

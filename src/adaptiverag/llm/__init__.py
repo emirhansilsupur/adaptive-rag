@@ -20,7 +20,9 @@ from adaptiverag.llm.factory import (
 from adaptiverag.llm.structured import (
     LLMStructuredResult,
     LLMTextResult,
+    StructuredOutputError,
     extract_json_payload,
+    failed_call_usage,
     invoke_structured,
     invoke_text,
 )
@@ -39,6 +41,7 @@ __all__ = [
     "ModelTier",
     "ProviderCatalogEntry",
     "SQLiteLLMCache",
+    "StructuredOutputError",
     "alist_local_models",
     "check_provider_configured",
     "check_provider_sdk_installed",
@@ -46,6 +49,7 @@ __all__ = [
     "create_model_bundle",
     "estimate_cost_usd",
     "extract_json_payload",
+    "failed_call_usage",
     "invoke_structured",
     "invoke_text",
     "resolve_effective_settings",

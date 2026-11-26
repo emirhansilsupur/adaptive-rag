@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from adaptiverag.config import CitationValidationConfig
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
-from adaptiverag.llm.structured import invoke_structured
+from adaptiverag.llm.structured import failed_call_usage, invoke_structured
 from adaptiverag.observability.prompts import (
     DEFAULT_PROMPTS,
     PROMPT_CITATION_ENTAILMENT,
@@ -249,6 +249,7 @@ async def validate_citations(
     config: CitationValidationConfig,
     fast_model: BaseChatModel | None = None,
     fast_model_name: str = "",
+    fast_model_provider: str | None = None,
     temperature: float = 0.0,
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
@@ -298,6 +299,7 @@ async def validate_citations(
             ClaimAuditBatch,
             messages,
             model_name=fast_model_name or "unknown",
+            provider=fast_model_provider,
             temperature=temperature,
             max_repair_attempts=1,
             cache=cache,
@@ -314,7 +316,8 @@ async def validate_citations(
             error_type=type(exc).__name__,
             error=str(exc),
         )
-        return _semantic_audit_failed(tier1, _describe_judge_failure(exc)), TokenUsage()
+        failed = _semantic_audit_failed(tier1, _describe_judge_failure(exc))
+        return failed, failed_call_usage(exc)
 
     verifications = audit_result.parsed.verifications
     if not verifications and tier1.valid_citation_ids:

@@ -12,14 +12,18 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import BaseModel, Field
 
 from adaptiverag.llm import (
+    PROVIDER_CATALOG,
     BudgetExceededError,
     CostTracker,
     SQLiteLLMCache,
+    StructuredOutputError,
     estimate_cost_usd,
     extract_json_payload,
+    failed_call_usage,
     invoke_structured,
     invoke_text,
 )
+from adaptiverag.llm.cost import LOCAL_PROVIDERS
 from adaptiverag.schemas import QueryType, RouterClassification
 
 
@@ -148,3 +152,40 @@ def test_estimate_cost_zero_for_ollama_and_free_tier() -> None:
         "qwen/qwen3-30b-a3b-instruct-2507", 1_000_000, 1_000_000
     ) == pytest.approx(0.40)
     assert estimate_cost_usd("deepseek/deepseek-v3.2", 1_000_000, 1_000_000) == pytest.approx(0.64)
+
+
+def test_a_local_provider_is_free_whatever_the_model_is_called() -> None:
+    assert estimate_cost_usd("inkling-2-mini", 10_000, 5_000, provider="ollama") == 0.0
+    # Without the provider, an unknown name still gets the fallback rate.
+    assert estimate_cost_usd("inkling-2-mini", 10_000, 5_000) > 0.0
+    assert estimate_cost_usd(
+        "deepseek/deepseek-v3.2", 1_000_000, 1_000_000, provider="openrouter"
+    ) == pytest.approx(0.64)
+
+
+def test_local_providers_match_the_provider_catalog() -> None:
+    catalog_local = {pid for pid, entry in PROVIDER_CATALOG.items() if entry.is_local}
+    assert catalog_local == LOCAL_PROVIDERS
+
+
+async def test_a_failed_structured_call_reports_the_tokens_it_used() -> None:
+    model = ScriptedChatModel(responses=["not json", "still not json"])
+    tracker = CostTracker(max_cost_usd=1.0)
+
+    with pytest.raises(StructuredOutputError) as excinfo:
+        await invoke_structured(
+            model,
+            SimpleOutput,
+            [HumanMessage(content="Classify this.")],
+            model_name="deepseek/deepseek-v3.2",
+            max_repair_attempts=1,
+            cost_tracker=tracker,
+        )
+
+    # Callers that catch ValueError still catch it.
+    assert isinstance(excinfo.value, ValueError)
+    usage = failed_call_usage(excinfo.value)
+    assert model.call_count == 2
+    assert usage.total_tokens == 2 * 150
+    assert usage == tracker.usage
+    assert failed_call_usage(RuntimeError("network down")).total_tokens == 0

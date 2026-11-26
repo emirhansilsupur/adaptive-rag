@@ -913,4 +913,45 @@ describe("ModelSelectorPopover", () => {
     expect(screen.getByRole("button", { name: "OpenAI" })).toBeDisabled();
     expect(screen.getByText(/BYOK disabled by server policy/i)).toBeInTheDocument();
   });
+
+  it("keeps the spend cap slider within the server's limit", () => {
+    render(
+      <ModelSelectorPopover
+        catalog={sampleCatalog}
+        catalogLoading={false}
+        health={{
+          status: "ok",
+          version: "0.1.0",
+          qdrant: { status: "ok" },
+          firecrawl: { status: "disabled" },
+          llm_configured: true,
+          llm_error: null,
+          llm_provider: "openrouter",
+          fast_model: "qwen/qwen3-30b-a3b-instruct-2507",
+          generation_model: "deepseek/deepseek-v3.2",
+          dense_embedding_model: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+          sparse_embedding_model: "Qdrant/bm25",
+          reranker_model: "BAAI/bge-reranker-v2-m3-int8",
+          web_fallback_enabled: false,
+          web_fallback_providers: [],
+          langfuse_enabled: false,
+          llm_cache_enabled: true,
+          default_max_run_cost_usd: 0.2,
+        }}
+        override={null}
+        onOverrideChange={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+        enableBudgetCap
+        onEnableBudgetCapChange={vi.fn()}
+        maxCostUsd={0.4}
+        onMaxCostUsdChange={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Configure LLM provider and models" }));
+
+    const slider = screen.getByLabelText("Cap") as HTMLInputElement;
+    expect(slider.max).toBe("0.2");
+    expect(slider.value).toBe("0.2");
+    expect(screen.getByText("This server allows at most $0.20 per question.")).toBeInTheDocument();
+  });
 });

@@ -262,6 +262,10 @@ export default function App() {
   const [useStreaming, setUseStreaming] = useState(true);
   const [enableBudgetCap, setEnableBudgetCap] = useState(false);
   const [maxCostUsd, setMaxCostUsd] = useState(0.05);
+  // The server caps every question at MAX_RUN_COST_USD; a cap set here can only go lower.
+  const budgetCap = enableBudgetCap
+    ? Math.min(maxCostUsd, health?.default_max_run_cost_usd ?? maxCostUsd)
+    : null;
 
   /* ------------------------------------------------------------------------ */
   /* Active run                                                                */
@@ -690,7 +694,7 @@ export default function App() {
         chatHistory: [],
         preset: sidePreset,
         customAblation,
-        maxCostUsd: enableBudgetCap ? maxCostUsd : null,
+        maxCostUsd: budgetCap,
         sessionId: `${runId}_${side}`,
         llmOverride,
       });
@@ -816,7 +820,7 @@ export default function App() {
       chatHistory,
       preset,
       customAblation,
-      maxCostUsd: enableBudgetCap ? maxCostUsd : null,
+      maxCostUsd: budgetCap,
       sessionId: targetSessionId,
       customInstructions: effectiveInstructions,
       docIds: scopedDocIds,
@@ -924,7 +928,7 @@ export default function App() {
 
   const showInspectorToggle = activeView === "workbench" || activeView === "compare";
   const inspectorVisible = showInspectorToggle && inspectorOpen;
-  const budgetCapLabel = enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null;
+  const budgetCapLabel = budgetCap !== null ? `$${budgetCap.toFixed(2)}` : null;
 
   const sidebar = (
     <Sidebar

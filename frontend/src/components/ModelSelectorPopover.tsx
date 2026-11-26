@@ -22,6 +22,10 @@ import {
   type Tone,
 } from "./ui/primitives";
 
+/** Range of the per-question spend cap slider, in USD. */
+const SPEND_CAP_MIN = 0.01;
+const SPEND_CAP_SLIDER_MAX = 0.5;
+
 interface ModelSelectorPopoverProps {
   catalog: ModelsCatalogResponse | null;
   catalogLoading: boolean;
@@ -123,6 +127,13 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
   const defaultGen = catalog?.default_generation_model ?? health?.generation_model ?? "";
   const defaultTemp = catalog?.default_temperature ?? 0.0;
   const allowClientKeys = catalog?.allow_client_provider_keys ?? true;
+  // The server caps every question at MAX_RUN_COST_USD, so the slider can't go above it.
+  const serverCostCap = health?.default_max_run_cost_usd;
+  const capSliderMax = Math.max(
+    SPEND_CAP_MIN,
+    Math.min(SPEND_CAP_SLIDER_MAX, serverCostCap ?? SPEND_CAP_SLIDER_MAX)
+  );
+  const shownCap = typeof maxCostUsd === "number" ? Math.min(maxCostUsd, capSliderMax) : undefined;
 
   const activeProvider: LLMProvider = override?.provider ?? defaultProvider;
   const providers: ProviderCatalogItem[] = catalog?.providers ?? [];
@@ -546,24 +557,29 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
                     checked={Boolean(enableBudgetCap)}
                     onChange={onEnableBudgetCapChange}
                   />
-                  {enableBudgetCap && onMaxCostUsdChange && typeof maxCostUsd === "number" && (
+                  {enableBudgetCap && onMaxCostUsdChange && shownCap !== undefined && (
                     <div className="mt-2.5">
                       <div className="mb-1 flex items-center justify-between text-small">
                         <label htmlFor="studio-spend-cap" className="text-ink-2">
                           Cap
                         </label>
-                        <span className="font-medium tabular-nums text-ink">${maxCostUsd.toFixed(2)}</span>
+                        <span className="font-medium tabular-nums text-ink">${shownCap.toFixed(2)}</span>
                       </div>
                       <input
                         id="studio-spend-cap"
                         type="range"
-                        min={0.01}
-                        max={0.5}
+                        min={SPEND_CAP_MIN}
+                        max={capSliderMax}
                         step={0.01}
-                        value={maxCostUsd}
+                        value={shownCap}
                         onChange={(e) => onMaxCostUsdChange(Number(e.target.value))}
                         className="ar-range w-full"
                       />
+                      {serverCostCap !== undefined && serverCostCap < SPEND_CAP_SLIDER_MAX && (
+                        <p className="mt-1 text-small text-ink-3">
+                          This server allows at most ${serverCostCap.toFixed(2)} per question.
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

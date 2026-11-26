@@ -27,7 +27,7 @@ from adaptiverag.ingestion.chunker import count_tokens
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
 from adaptiverag.llm.factory import LLMNotConfiguredError, ModelBundle
-from adaptiverag.llm.structured import invoke_structured, invoke_text
+from adaptiverag.llm.structured import failed_call_usage, invoke_structured, invoke_text
 from adaptiverag.observability.prompts import PromptManager, ResolvedPrompt
 from adaptiverag.observability.tracing import LangfuseObservability
 from adaptiverag.retrieval.dynamic_k import assign_citation_ids, select_dynamic_top_k
@@ -281,6 +281,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 RouterClassification,
                 messages,
                 model_name=models.fast_model_name,
+                provider=models.provider,
                 temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
@@ -312,6 +313,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         except BudgetExceededError:
             raise
         except Exception as exc:
+            node_usage = failed_call_usage(exc)
             logger.warning("query_router_failed_falling_back_to_factual", error=str(exc))
             lang = detect_language_heuristic(query)
             strategy = runtime.strategies.for_query_type(QueryType.FACTUAL)
@@ -376,6 +378,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             models.fast_model,
             messages,
             model_name=models.fast_model_name,
+            provider=models.provider,
             temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,
@@ -428,6 +431,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 SubQueryDecomposition,
                 messages,
                 model_name=models.fast_model_name,
+                provider=models.provider,
                 temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
@@ -444,6 +448,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         except BudgetExceededError:
             raise
         except Exception as exc:
+            node_usage = failed_call_usage(exc)
             logger.warning("decompose_queries_failed_using_standalone", error=str(exc))
 
         updated_plan = plan.model_copy(update={"sub_queries": sub_queries})
@@ -643,6 +648,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 requires_fresh_web_info=plan.requires_fresh_web_info,
                 fast_model=models.fast_model,
                 fast_model_name=models.fast_model_name,
+                fast_model_provider=models.provider,
                 temperature=temperature,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
@@ -707,6 +713,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 CorrectiveRewriteResult,
                 messages,
                 model_name=models.fast_model_name,
+                provider=models.provider,
                 temperature=temperature,
                 max_repair_attempts=1,
                 cache=runtime.cache,
@@ -724,6 +731,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         except BudgetExceededError:
             raise
         except Exception as exc:
+            node_usage = failed_call_usage(exc)
             logger.warning("corrective_rewrite_failed_retaining_queries", error=str(exc))
 
         event = NodeTraceEvent(
@@ -849,6 +857,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             models.generation_model,
             messages,
             model_name=models.generation_model_name,
+            provider=models.provider,
             temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,
@@ -905,6 +914,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 config=runtime.strategies.citation_validation,
                 fast_model=models.fast_model,
                 fast_model_name=models.fast_model_name,
+                fast_model_provider=models.provider,
                 temperature=temperature,
                 cache=runtime.cache,
                 cost_tracker=cost_tracker,
@@ -986,6 +996,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             models.generation_model,
             messages,
             model_name=models.generation_model_name,
+            provider=models.provider,
             temperature=temperature,
             cache=runtime.cache,
             cost_tracker=cost_tracker,

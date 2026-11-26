@@ -46,6 +46,10 @@ MODEL_PRICING: dict[str, ModelPricing] = {
 
 DEFAULT_FALLBACK_PRICING = ModelPricing(0.30, 1.00)
 
+# Providers that serve models from your own hardware, so their tokens have no price whatever
+# the model is called. Must match the ``is_local`` entries of the provider catalog.
+LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+
 
 class BudgetExceededError(RuntimeError):
     """Raised when cumulative LLM spend exceeds the configured budget cap."""
@@ -55,8 +59,17 @@ def estimate_cost_usd(
     model_name: str,
     prompt_tokens: int,
     completion_tokens: int,
+    *,
+    provider: str | None = None,
 ) -> float:
-    """Estimate USD cost for a single LLM invocation."""
+    """Estimate USD cost for a single LLM invocation.
+
+    A model from a local provider is free whatever it's called. Without ``provider``, only
+    names can tell: ``ollama/...``, ``fake...``, ``mock...`` and ``...:free`` cost nothing,
+    and an unknown name is priced at a fallback rate.
+    """
+    if provider is not None and provider in LOCAL_PROVIDERS:
+        return 0.0
     normalized = model_name.strip().lower()
     if normalized.startswith(("ollama/", "fake", "mock")) or ":free" in normalized:
         return 0.0

@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from adaptiverag.config import ConfidenceConfig
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import BudgetExceededError, CostTracker
-from adaptiverag.llm.structured import invoke_structured
+from adaptiverag.llm.structured import failed_call_usage, invoke_structured
 from adaptiverag.observability.prompts import (
     DEFAULT_PROMPTS,
     PROMPT_CRAG_GRADER,
@@ -170,6 +170,7 @@ async def assess_retrieval_confidence(
     requires_fresh_web_info: bool = False,
     fast_model: BaseChatModel | None = None,
     fast_model_name: str = "",
+    fast_model_provider: str | None = None,
     temperature: float = 0.0,
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
@@ -286,6 +287,7 @@ async def assess_retrieval_confidence(
         )
 
     # Ambiguous band [low_threshold, high_threshold): invoke CRAG grader if enabled
+    grader_usage = TokenUsage()
     if config.enable_crag_grader_in_ambiguous_band and fast_model is not None:
         resolved_prompt = (
             await prompt_manager.aresolve(PROMPT_CRAG_GRADER)
@@ -308,6 +310,7 @@ async def assess_retrieval_confidence(
                 CRAGJudgment,
                 messages,
                 model_name=fast_model_name or "unknown",
+                provider=fast_model_provider,
                 temperature=temperature,
                 max_repair_attempts=1,
                 cache=cache,
@@ -391,6 +394,7 @@ async def assess_retrieval_confidence(
         except BudgetExceededError:
             raise
         except Exception as exc:
+            grader_usage = failed_call_usage(exc)
             logger.warning(
                 "crag_grader_failed_falling_back_to_deterministic",
                 error=str(exc),
@@ -419,5 +423,5 @@ async def assess_retrieval_confidence(
                 f"(CRAG grader inactive); recommending {action.value}."
             ),
         ),
-        TokenUsage(),
+        grader_usage,
     )

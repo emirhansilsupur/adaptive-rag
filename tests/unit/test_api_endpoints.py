@@ -25,7 +25,7 @@ from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.ingestion.chunker import DocumentChunk
 from adaptiverag.ingestion.web_loader import FirecrawlClient
-from adaptiverag.llm import CostTracker, ModelBundle, SQLiteLLMCache
+from adaptiverag.llm import CostTracker, LLMProvider, ModelBundle, SQLiteLLMCache
 from adaptiverag.retrieval.embeddings import SparseVectorData
 from adaptiverag.retrieval.qdrant_store import QdrantHybridStore, RetrievalMode
 from adaptiverag.schemas import EvidenceChunk, FinalAnswer, QueryType
@@ -243,9 +243,11 @@ async def _build_test_container(
     cost_tracker: CostTracker | None = None,
     seed_docs: bool = True,
     firecrawl_client: FirecrawlClient | None = None,
+    provider: LLMProvider = "openrouter",
+    max_run_cost_usd: float = 0.50,
 ) -> AppContainer:
     settings = Settings(
-        llm_provider="openrouter",
+        llm_provider=provider,
         openrouter_api_key=None,
         llm_fast_model=fast_model_name,
         llm_generation_model=gen_model_name,
@@ -253,6 +255,7 @@ async def _build_test_container(
         llm_cache_enabled=True,
         llm_cache_path=tmp_path / "api_cache.sqlite",
         allowed_corpus_root=tmp_path,
+        max_run_cost_usd=max_run_cost_usd,
     )
     strategies = load_strategies(Path("configs/strategies.yaml"))
     store = QdrantHybridStore.from_settings(
@@ -335,6 +338,7 @@ async def _build_test_container(
             fast_model_name=fast_model_name,
             generation_model=gen_llm,
             generation_model_name=gen_model_name,
+            provider=provider,
         ),
         store=store,
         reranker=_StubReranker(),
@@ -666,6 +670,80 @@ async def test_query_budget_exceeded_returns_402(tmp_path: Path) -> None:
             )
             assert resp.status_code == 402
             assert "budget" in resp.json()["detail"].lower()
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_request_cannot_raise_the_servers_spend_cap(tmp_path: Path) -> None:
+    """A request's max_cost_usd used to replace MAX_RUN_COST_USD, up to $50 (backlog #7)."""
+    container = await _build_test_container(
+        tmp_path,
+        fast_model_name="deepseek/deepseek-v3.2",
+        gen_model_name="deepseek/deepseek-v3.2",
+        max_run_cost_usd=0.000001,
+    )
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            resp = await client.post(
+                "/v1/query",
+                json={"query": "How does Qdrant hybrid search work?", "max_cost_usd": 50},
+            )
+            assert resp.status_code == 402
+            assert "budget" in resp.json()["detail"].lower()
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_local_model_costs_nothing_whatever_it_is_called(tmp_path: Path) -> None:
+    """Prices went by model name, so local models got the fallback rate (backlog #7)."""
+    container = await _build_test_container(
+        tmp_path,
+        provider="ollama",
+        fast_model_name="inkling-2-mini",
+        gen_model_name="inkling-2-mini",
+    )
+    assert container.workflow is not None
+
+    try:
+        # A tiny cap: phantom prices used to stop local runs with BudgetExceededError.
+        answer = await container.workflow.arun(
+            "How does Qdrant hybrid search combine dense and BM25?",
+            cost_tracker=CostTracker(max_cost_usd=0.000001),
+        )
+        assert answer.usage.total_tokens > 0
+        assert answer.usage.estimated_cost_usd == 0.0
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_answer_counts_the_tokens_of_llm_calls_that_failed(tmp_path: Path) -> None:
+    """Failed structured calls were billed to the budget but left out of the answer (#7)."""
+    container = await _build_test_container(
+        tmp_path,
+        fast_responses=["not json"],
+        fast_model_name="deepseek/deepseek-v3.2",
+        gen_model_name="deepseek/deepseek-v3.2",
+    )
+    assert container.workflow is not None
+    tracker = CostTracker(max_cost_usd=1.0)
+
+    try:
+        answer = await container.workflow.arun(
+            "How does Qdrant hybrid search combine dense and BM25?", cost_tracker=tracker
+        )
+        # The router's two unparseable replies led to the factual fallback.
+        assert answer.query_type == QueryType.FACTUAL
+        spent = tracker.usage
+        assert answer.usage.total_tokens == spent.total_tokens
+        assert answer.usage.estimated_cost_usd == pytest.approx(spent.estimated_cost_usd)
     finally:
         await container.aclose()
 

@@ -102,6 +102,14 @@ def _resolve_workflow_or_503(
     return workflow
 
 
+def _run_cost_cap(payload: QueryRequest, container: AppContainer) -> float:
+    """A run's spend cap: a request can lower the server's MAX_RUN_COST_USD, never raise it."""
+    server_cap = container.settings.max_run_cost_usd
+    if payload.max_cost_usd is None:
+        return server_cap
+    return min(payload.max_cost_usd, server_cap)
+
+
 async def _refuse_if_embedding_models_changed(container: AppContainer) -> None:
     """Refuse a request before it spends anything if the collection was indexed with other models.
 
@@ -388,12 +396,7 @@ async def run_query(
     workflow = _resolve_workflow_or_503(container, models_override=models_override)
     await _refuse_if_embedding_models_changed(container)
     ablation = payload.resolve_ablation()
-    effective_max_cost = (
-        payload.max_cost_usd
-        if payload.max_cost_usd is not None
-        else container.settings.max_run_cost_usd
-    )
-    request_tracker = CostTracker(max_cost_usd=effective_max_cost)
+    request_tracker = CostTracker(max_cost_usd=_run_cost_cap(payload, container))
 
     try:
         answer: FinalAnswer = await workflow.arun(
@@ -438,12 +441,7 @@ async def stream_query(
     workflow = _resolve_workflow_or_503(container, models_override=models_override)
     await _refuse_if_embedding_models_changed(container)
     ablation = payload.resolve_ablation()
-    effective_max_cost = (
-        payload.max_cost_usd
-        if payload.max_cost_usd is not None
-        else container.settings.max_run_cost_usd
-    )
-    request_tracker = CostTracker(max_cost_usd=effective_max_cost)
+    request_tracker = CostTracker(max_cost_usd=_run_cost_cap(payload, container))
 
     async def event_generator() -> AsyncIterator[ServerSentEvent]:
         try:

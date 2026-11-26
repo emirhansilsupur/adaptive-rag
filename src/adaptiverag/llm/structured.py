@@ -38,6 +38,23 @@ class LLMStructuredResult[T: BaseModel]:
     from_cache: bool = False
 
 
+class StructuredOutputError(ValueError):
+    """No reply parsed into the schema. ``usage`` is what the attempts still cost."""
+
+    def __init__(self, message: str, *, usage: TokenUsage) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+def failed_call_usage(exc: BaseException) -> TokenUsage:
+    """Tokens a failed LLM call used anyway; the budget tracker has already counted them.
+
+    Callers that fall back after a failure add this to their own usage, so an answer's
+    usage matches what the run spent.
+    """
+    return exc.usage if isinstance(exc, StructuredOutputError) else TokenUsage()
+
+
 def _serialize_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for msg in messages:
@@ -60,7 +77,9 @@ def _extract_text(message: BaseMessage) -> str:
     return str(content)
 
 
-def _extract_token_usage(message: BaseMessage, model_name: str) -> TokenUsage:
+def _extract_token_usage(
+    message: BaseMessage, model_name: str, provider: str | None = None
+) -> TokenUsage:
     prompt_tokens = 0
     completion_tokens = 0
 
@@ -80,7 +99,7 @@ def _extract_token_usage(message: BaseMessage, model_name: str) -> TokenUsage:
             )
 
     total_tokens = prompt_tokens + completion_tokens
-    cost = estimate_cost_usd(model_name, prompt_tokens, completion_tokens)
+    cost = estimate_cost_usd(model_name, prompt_tokens, completion_tokens, provider=provider)
     return TokenUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -175,6 +194,7 @@ async def invoke_text(
     messages: list[BaseMessage],
     *,
     model_name: str,
+    provider: str | None = None,
     temperature: float = 0.0,
     cache: SQLiteLLMCache | None = None,
     cost_tracker: CostTracker | None = None,
@@ -182,7 +202,10 @@ async def invoke_text(
     langfuse_prompt: Any | None = None,
     prompt_metadata: dict[str, Any] | None = None,
 ) -> LLMTextResult:
-    """Invoke a chat model for plain text with optional SQLite caching and budget tracking."""
+    """Invoke a chat model for plain text with optional SQLite caching and budget tracking.
+
+    ``provider`` prices the tokens: a local provider's are free whatever the model is called.
+    """
     cache_key: str | None = None
     if cache is not None:
         cache_key = SQLiteLLMCache.build_key(
@@ -209,7 +232,7 @@ async def invoke_text(
         prompt_metadata=prompt_metadata,
     )
     text = _extract_text(response)
-    usage = _extract_token_usage(response, model_name)
+    usage = _extract_token_usage(response, model_name, provider)
 
     if cost_tracker is not None:
         cost_tracker.record(usage)
@@ -233,6 +256,7 @@ async def invoke_structured[T: BaseModel](
     messages: list[BaseMessage],
     *,
     model_name: str,
+    provider: str | None = None,
     temperature: float = 0.0,
     max_repair_attempts: int = 1,
     cache: SQLiteLLMCache | None = None,
@@ -245,6 +269,8 @@ async def invoke_structured[T: BaseModel](
 
     Designed for high reliability across OpenRouter (Qwen/DeepSeek), OpenAI, Gemini,
     Anthropic, and Ollama without depending on vendor-specific strict json_schema quirks.
+    ``provider`` prices the tokens as in ``invoke_text``. If no attempt parses, raises
+    StructuredOutputError carrying the usage of every attempt.
     """
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
     format_instruction = SystemMessage(
@@ -296,7 +322,7 @@ async def invoke_structured[T: BaseModel](
         raw_text = _extract_text(response)
         last_raw = raw_text
 
-        call_usage = _extract_token_usage(response, model_name)
+        call_usage = _extract_token_usage(response, model_name, provider)
         cumulative_usage = cumulative_usage.add(call_usage)
         if cost_tracker is not None:
             cost_tracker.record(call_usage)
@@ -333,7 +359,8 @@ async def invoke_structured[T: BaseModel](
                 )
             )
 
-    raise ValueError(
+    raise StructuredOutputError(
         f"Failed to parse structured output into {schema.__name__} after "
-        f"{max_repair_attempts + 1} attempts. Last error: {last_error}. Raw: {last_raw[:250]!r}"
+        f"{max_repair_attempts + 1} attempts. Last error: {last_error}. Raw: {last_raw[:250]!r}",
+        usage=cumulative_usage,
     ) from last_error

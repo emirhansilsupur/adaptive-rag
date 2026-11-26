@@ -77,7 +77,10 @@ class QueryRequest(BaseModel):
         default=None,
         gt=0.0,
         le=50.0,
-        description="Optional per-request hard USD cost cap (FinOps guardrail).",
+        description=(
+            "Optional per-request hard USD cost cap (FinOps guardrail). It can only lower the "
+            "server's MAX_RUN_COST_USD; a higher value is capped at it."
+        ),
     )
     custom_instructions: str | None = Field(
         default=None,

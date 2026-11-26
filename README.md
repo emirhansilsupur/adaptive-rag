@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-232%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-239%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `232` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `239` `$0` CI tests</sub> |
 
 ---
 
@@ -69,7 +69,7 @@ Static, single-path RAG pipelines fail in production along three predictable axe
 | **5. Multi-Signal CRAG Gate** | Deterministic composite score auto-passes `HIGH (≥ 0.72)` and auto-routes `LOW (< 0.38)` at `$0`; calls CRAG LLM grader *only* inside `[0.38, 0.72)`. | Eliminates redundant grader calls on clear hits and obvious misses. |
 | **6. Web Fallback & Abstention** | `FallbackRetriever` (**Tavily** primary → **DuckDuckGo** zero-key backup) yielding `[W1]..[Wn]` chunks, or language-matched abstention. | Prevents fabrication on fresh or out-of-domain queries (`100%` OOC caught). |
 | **7. Two-Tier Citation Audit** | **Tier-1 (`0 ms`, `$0`):** Regex check for phantom IDs & uncited claims. **Tier-2:** Claim entailment (`SUPPORTED` / `CONTRADICTED`) + max `1` `regenerate_strict` pass. Fails closed: if the judge errors, the answer is reported `Unverified`, never `Passed`. | Enforces verifiable `[Cn]` / `[Wn]` grounding (`100%` citation precision). |
-| **8. FinOps & Langfuse v5 OTEL** | Tiered routing (`qwen3-30b-a3b` + `deepseek-v3.2`), WAL `SQLiteLLMCache`, isolated per-request `CostTracker` (`HTTP 402`), and versioned Prompt Management. | Predictable sub-millicent query cost with full trace-to-prompt lineage. |
+| **8. FinOps & Langfuse v5 OTEL** | Tiered routing (`qwen3-30b-a3b` + `deepseek-v3.2`), WAL `SQLiteLLMCache`, isolated per-request `CostTracker` (`HTTP 402`) that a request can tighten but never loosen, `$0` pricing for local models, and versioned Prompt Management. | Predictable sub-millicent query cost with full trace-to-prompt lineage. |
 | **9. Adaptive 2-Tier PDF & OCR** | `LiteParse` Rust/PDFium layout Markdown (`~3 ms/page`, `$0`) → Tier-1 process-isolated `OCRia-nano-1` ONNX + `TableNet` (`$0`) → Tier-2 multimodal `Vision-LLM` fallback. | Preserves `#` headings, `\|...\|` tables, and `EN`/`TR` diacritics across digital & scanned PDFs without PyTorch bloat. |
 | **10. Multi-Layer Guardrails** | Local-only mode until `API_AUTH_KEY` is set, constant-time key check, per-IP rate limiter, `$0` EN/TR injection & PII screening, `<evidence>` isolation, and fail-closed async SSRF/path sandboxing. | Hardened single-container deployment serving FastAPI + React SPA on port `8000`. |
 
@@ -330,7 +330,7 @@ make eval-langfuse  # Publish golden_set.jsonl + 4-way offline IR ablation to Ex
 | `/v1/documents/{doc_id}` | `DELETE` | Remove all Qdrant points for `doc_id` and return updated collection count |
 | `/v1/ingest` | `POST` | Zero-gap idempotent indexing of sandboxed `corpus_dir`, inline `documents`, `urls`, or `crawl_url` (`parent_child` & `ocr_mode` optional). `recreate_collection` builds a new collection behind a Qdrant alias and switches to it only once indexing succeeds, so a failure leaves the current one untouched |
 | `/v1/ingest/upload` | `POST` | Multipart `.md` / `.txt` / `.pdf` upload with Adaptive 2-Tier OCR (`ocr_mode`), off-thread chunking, and crash-safe Qdrant upsert (same safe `recreate_collection` swap) |
-| `/v1/query` | `POST` | Synchronous `FinalAnswer` JSON with isolated `max_cost_usd` cap, `trace_id`, and ablation overrides |
+| `/v1/query` | `POST` | Synchronous `FinalAnswer` JSON with isolated `max_cost_usd` cap (can only lower `MAX_RUN_COST_USD`), `trace_id`, and ablation overrides |
 | `/v1/query/stream` | `POST` | SSE stream (`event: node_update` per LangGraph step → `event: final_answer`) |
 | `/v1/feedback` | `POST` | Correlate human reviewer score (`0.0–1.0` + comment) to `trace_id` |
 
@@ -386,7 +386,7 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `232` automated tests (`207` backend pytest + `25` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `239` automated tests (`213` backend pytest + `26` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
