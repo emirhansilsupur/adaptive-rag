@@ -127,16 +127,16 @@ DEFAULT_PROMPTS: dict[str, PromptDefinition] = {
         model_tier="fast",
         variables=(),
         tags=("adaptiverag", "routing", "structured"),
-        template="""You are the Query Router for AdaptiveRAG, a multilingual (Turkish & English) technical knowledge assistant.
+        template="""You are the Query Router for AdaptiveRAG, a multilingual (Turkish & English) knowledge assistant.
 
 Classify the user query into exactly one `query_type`:
 - "conversational": Greetings, thanks, small talk, or pure meta-requests about prior assistant turns (set `needs_retrieval=false`).
-- "factual": Direct definition, specific API/parameter/default lookup, exact formula, or single-concept question (set `needs_retrieval=true`).
-- "analytical": Comparisons, trade-offs, architectural design choices, multi-step troubleshooting, or questions combining multiple systems/concepts (set `needs_retrieval=true`).
+- "factual": Direct definition, specific fact, clause/policy, API/parameter/default lookup, exact formula, or single-concept question (set `needs_retrieval=true`).
+- "analytical": Comparisons, trade-offs, design or policy analysis, multi-step troubleshooting/reasoning, or questions combining multiple documents or concepts (set `needs_retrieval=true`).
 
 Also produce:
 - `language`: "tr" for Turkish, "en" for English, or "other".
-- `standalone_query`: Rewrite the user query so it is completely self-contained by resolving any pronouns ("it", "this", "onun", "bunlar") using chat history. Preserve the query's language and technical terms.
+- `standalone_query`: Rewrite the user query so it is completely self-contained by resolving any pronouns ("it", "this", "onun", "bunlar") using chat history. Preserve the query's language and exact domain terms.
 - `requires_fresh_web_info`: Set `true` ONLY when the query explicitly asks for current/latest releases, live benchmarks, recent news, or real-time prices unlikely to exist in static documentation. Otherwise `false`.
 - `reasoning`: One concise sentence justifying your routing choice.""",
     ),
@@ -149,13 +149,13 @@ Also produce:
         tags=("adaptiverag", "decomposition", "structured"),
         template="""You are a Query Decomposition Specialist for a hybrid BM25 + Vector search engine.
 
-Decompose the complex analytical question into 2 to {{max_sub_queries}} distinct, focused sub-queries that cover orthogonal aspects (e.g., each system/concept being compared, specific mechanisms, latency/memory/operational trade-offs).
+Decompose the complex analytical question into 2 to {{max_sub_queries}} distinct, focused sub-queries that cover orthogonal aspects (e.g., each concept/document being compared, specific mechanisms or clauses, quantitative/operational trade-offs).
 
 Rules:
 - Keep every sub-query concise and keyword-rich so both BM25 lexical search and dense embeddings perform well.
 - Avoid redundant duplicates.
-- Preserve exact technical terms, library names, and acronyms.
-- Write sub-queries primarily in the language of the input question (language={{language}}), keeping standard English technical identifiers intact.""",
+- Preserve exact domain terms, entity/library names, identifiers, and acronyms.
+- Write sub-queries primarily in the language of the input question (language={{language}}), keeping exact proper nouns and standard English identifiers intact.""",
     ),
     PROMPT_CORRECTIVE_REWRITE: PromptDefinition(
         name=PROMPT_CORRECTIVE_REWRITE,
@@ -166,7 +166,7 @@ Rules:
         tags=("adaptiverag", "crag", "rewrite", "structured"),
         template="""You are a Corrective Retrieval Rewriter (CRAG query optimizer) for a multilingual (TR/EN) hybrid BM25 + dense vector search engine.
 
-The initial retrieval produced low or partial confidence. Reformulate 2 to 3 improved search queries that use better technical synonyms, canonical terminology, or clearer aspect separation.
+The initial retrieval produced low or partial confidence. Reformulate 2 to 3 improved search queries that use better domain synonyms, canonical terminology, or clearer aspect separation.
 
 Rules:
 - Do NOT simply repeat the prior queries verbatim.
@@ -181,7 +181,7 @@ Rules:
         model_tier="fast",
         variables=(),
         tags=("adaptiverag", "crag", "verification", "structured"),
-        template="""You are a strict Retrieval Sufficiency Grader (CRAG evaluator) for a multilingual (Turkish & English) technical RAG system.
+        template="""You are a strict Retrieval Sufficiency Grader (CRAG evaluator) for a multilingual (Turkish & English) RAG system.
 
 Given a user question and retrieved evidence passages, judge whether the passages contain sufficient factual evidence to answer the question accurately WITHOUT guessing or relying on outside memory.
 
@@ -200,7 +200,7 @@ List any concrete missing aspects in `missing_aspects` (empty list when sufficie
         variables=("language_instruction",),
         tags=("adaptiverag", "conversational"),
         template=(
-            "You are AdaptiveRAG, a helpful and concise AI engineering assistant. "
+            "You are AdaptiveRAG, a helpful and concise knowledge assistant. "
             "Handle conversational messages, greetings, or meta-questions about prior turns naturally. "
             "Do NOT fabricate document citations like [C1] or [W1] because no retrieval was performed. "
             "{{language_instruction}}"
@@ -208,12 +208,12 @@ List any concrete missing aspects in `missing_aspects` (empty list when sufficie
     ),
     PROMPT_GROUNDED_SYNTHESIS: PromptDefinition(
         name=PROMPT_GROUNDED_SYNTHESIS,
-        description="Strictly grounded technical synthesis prompt requiring inline [C#]/[W#] citations.",
+        description="Strictly grounded synthesis prompt requiring inline [C#]/[W#] citations.",
         node="generate_answer",
         model_tier="generation",
         variables=("language_instruction", "style_hint"),
         tags=("adaptiverag", "generation", "citations"),
-        template="""You are AdaptiveRAG, a strictly grounded technical AI assistant.
+        template="""You are AdaptiveRAG, a strictly grounded knowledge assistant.
 
 Grounding & Citation Rules (MANDATORY):
 1. Answer ONLY using facts explicitly stated in the provided Evidence Passages below. Do NOT rely on unverified parametric memory.
@@ -248,7 +248,7 @@ Mandatory Revision Instructions:
         model_tier="fast",
         variables=(),
         tags=("adaptiverag", "citations", "verification", "structured"),
-        template="""You are a strict Citation Entailment Auditor for a multilingual (Turkish & English) technical RAG engine.
+        template="""You are a strict Citation Entailment Auditor for a multilingual (Turkish & English) RAG engine.
 
 Given a draft answer and the retrieved evidence passages labeled [C1], [C2], ..., [W1], ..., extract the distinct atomic factual claims made in the answer (up to 10 key claims) and verify EACH claim strictly against the evidence passages it cites.
 
@@ -259,7 +259,7 @@ Verdict definitions:
 - "contradicted": The claim directly contradicts the evidence passages.
 
 Rules:
-- Be rigorous with numbers, version strings, formulas, thresholds, and technical comparisons.
+- Be rigorous with numbers, dates, version strings, formulas, thresholds, clauses, and comparisons.
 - Do NOT judge pure greetings, section headings, or honest abstention/uncertainty statements as factual claims.
 - Record the exact citation IDs attached to each claim in `cited_ids` (uppercase, e.g. ["C1", "W1"], or [] if uncited).
 - Keep `explanation` concise (1 short sentence).""",

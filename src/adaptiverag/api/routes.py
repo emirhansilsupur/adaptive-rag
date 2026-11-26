@@ -84,7 +84,12 @@ def _screen_query_or_400(payload: QueryRequest, container: AppContainer) -> Guar
         block_prompt_injection=settings.guardrails_block_prompt_injection,
         pii_mode=settings.guardrails_pii_mode,
     )
-    decision = screen_query_input(payload.query, payload.chat_history, config=cfg)
+    decision = screen_query_input(
+        payload.query,
+        payload.chat_history,
+        custom_instructions=payload.custom_instructions,
+        config=cfg,
+    )
     if not decision.allowed:
         logger.warning(
             "input_guardrail_blocked",
@@ -217,6 +222,7 @@ async def run_query(
             guardrail.sanitized_query,
             chat_history=guardrail.sanitized_history,
             ablation=ablation,
+            custom_instructions=guardrail.sanitized_custom_instructions,
             cost_tracker=request_tracker,
             session_id=payload.session_id,
             user_id=payload.user_id,
@@ -258,6 +264,7 @@ async def stream_query(
                 guardrail.sanitized_query,
                 chat_history=guardrail.sanitized_history,
                 ablation=ablation,
+                custom_instructions=guardrail.sanitized_custom_instructions,
                 cost_tracker=request_tracker,
                 session_id=payload.session_id,
                 user_id=payload.user_id,

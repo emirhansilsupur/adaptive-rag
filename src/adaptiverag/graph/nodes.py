@@ -333,6 +333,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         started = time.perf_counter()
         plan = state["query_plan"]
         chat_history = state.get("chat_history") or []
+        custom_instructions = state.get("custom_instructions")
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
         messages, resolved_prompt = await _resolve_node_prompt(
@@ -341,6 +342,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             query=state["query"],
             language=plan.language,
             chat_history=chat_history,
+            custom_instructions=custom_instructions,
         )
         res = await invoke_text(
             runtime.models.fast_model,
@@ -361,6 +363,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             metadata={
                 "model": runtime.models.fast_model_name,
                 "from_cache": res.from_cache,
+                "custom_instructions_active": bool(
+                    custom_instructions and custom_instructions.strip()
+                ),
                 "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
@@ -450,18 +455,20 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             language=ablation.language_filter,
         )
 
+        scope_suffix = f" [scoped to {len(ablation.doc_ids)} doc(s)]" if ablation.doc_ids else ""
         event = NodeTraceEvent(
             node="hybrid_retrieve",
             latency_ms=_elapsed_ms(started),
             summary=(
                 f"Retrieved {len(chunks)} candidates via {ablation.retrieval_mode.value} "
-                f"across {len(queries)} query(s)"
+                f"across {len(queries)} query(s){scope_suffix}"
             ),
             metadata={
                 "mode": ablation.retrieval_mode.value,
                 "queries": list(queries),
                 "candidate_count": len(chunks),
                 "rewrite_attempt": state.get("rewrite_attempts", 0),
+                "doc_ids": list(ablation.doc_ids) if ablation.doc_ids else None,
             },
         )
         return {
@@ -793,6 +800,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         plan = state["query_plan"]
         chunks = state.get("selected_chunks") or []
         chat_history = state.get("chat_history") or []
+        custom_instructions = state.get("custom_instructions")
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
         messages, resolved_prompt = await _resolve_node_prompt(
@@ -804,6 +812,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             chunks=chunks,
             chat_history=chat_history,
             query_type=plan.query_type,
+            custom_instructions=custom_instructions,
         )
         res = await invoke_text(
             runtime.models.generation_model,
@@ -828,6 +837,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "model": runtime.models.generation_model_name,
                 "evidence_count": len(chunks),
                 "from_cache": res.from_cache,
+                "custom_instructions_active": bool(
+                    custom_instructions and custom_instructions.strip()
+                ),
                 "prompt": resolved_prompt.telemetry_metadata(),
             },
         )
@@ -909,6 +921,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         chunks = state.get("selected_chunks") or []
         previous_draft = state.get("draft_answer", "")
         report = state.get("citation_report") or CitationReport(passed=False)
+        custom_instructions = state.get("custom_instructions")
         attempt = state.get("regeneration_attempts", 0) + 1
         cost_tracker, callbacks = _resolve_controls(runtime, config)
 
@@ -921,6 +934,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             chunks=chunks,
             previous_draft=previous_draft,
             report=report,
+            custom_instructions=custom_instructions,
         )
         res = await invoke_text(
             runtime.models.generation_model,
@@ -945,6 +959,9 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 "attempt": attempt,
                 "model": runtime.models.generation_model_name,
                 "from_cache": res.from_cache,
+                "custom_instructions_active": bool(
+                    custom_instructions and custom_instructions.strip()
+                ),
                 "prompt": resolved_prompt.telemetry_metadata(),
             },
         )

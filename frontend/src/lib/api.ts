@@ -71,6 +71,8 @@ export function buildQueryPayload(params: {
   customAblation: AblationConfig;
   maxCostUsd: number | null;
   sessionId?: string;
+  customInstructions?: string | null;
+  docIds?: string[] | null;
 }): QueryRequest {
   const payload: QueryRequest = {
     query: params.query.trim(),
@@ -83,6 +85,17 @@ export function buildQueryPayload(params: {
   }
   if (params.maxCostUsd !== null && Number.isFinite(params.maxCostUsd)) {
     payload.max_cost_usd = params.maxCostUsd;
+  }
+  if (params.customInstructions && params.customInstructions.trim()) {
+    payload.custom_instructions = params.customInstructions.trim();
+  }
+  if (params.docIds && params.docIds.length > 0) {
+    const uniqueDocIds = Array.from(
+      new Set(params.docIds.map((d) => d.trim()).filter(Boolean))
+    );
+    if (uniqueDocIds.length > 0) {
+      payload.doc_ids = uniqueDocIds;
+    }
   }
   if (params.sessionId && params.sessionId.trim()) {
     payload.session_id = params.sessionId.trim();

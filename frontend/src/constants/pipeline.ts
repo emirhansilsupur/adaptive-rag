@@ -1,4 +1,10 @@
-import type { AblationConfig, AblationPreset, PresetSelection } from "../types/api";
+import type {
+  AblationConfig,
+  AblationPreset,
+  InstructionPresetId,
+  PresetSelection,
+  ThreadContextConfig,
+} from "../types/api";
 
 export interface NodeVisualMeta {
   label: string;
@@ -312,6 +318,96 @@ export const COMPARE_DEMO_QUERIES: CompareDemoItem[] = [
       "What are the exact RAM and HNSW defaults of the fictional QuantumVectorX-9000 engine released in 2029?",
   },
 ];
+
+export interface InstructionPresetOption {
+  id: InstructionPresetId;
+  label: string;
+  shortLabel: string;
+  description: string;
+  instructions: string;
+}
+
+export const MAX_CUSTOM_INSTRUCTIONS_CHARS = 1500;
+
+export const INSTRUCTION_PRESETS: InstructionPresetOption[] = [
+  {
+    id: "default",
+    label: "Default",
+    shortLabel: "default",
+    description: "AdaptiveRAG's standard balanced, grounded response style.",
+    instructions: "",
+  },
+  {
+    id: "executive",
+    label: "Executive Brief",
+    shortLabel: "executive",
+    description: "Concise 2-3 bullet summary upfront with key numbers, decisions, and risks.",
+    instructions:
+      "Lead with a concise 2-3 bullet executive summary, highlight key decisions, numbers, and risks clearly, and keep prose crisp.",
+  },
+  {
+    id: "technical",
+    label: "Deep Technical",
+    shortLabel: "technical",
+    description: "Preserve exact formulas, parameters, and deep architectural trade-offs.",
+    instructions:
+      "Use precise engineering terminology, preserve exact formulas, parameters, and code details, and explain underlying architectural trade-offs.",
+  },
+  {
+    id: "analyst",
+    label: "Policy / Legal",
+    shortLabel: "policy",
+    description: "Break down clauses, obligations, thresholds, and exceptions clearly.",
+    instructions:
+      "Break down clauses, obligations, thresholds, exceptions, and potential risks in a structured table or bullet list using plain, unambiguous language.",
+  },
+  {
+    id: "tutor",
+    label: "Study Tutor",
+    shortLabel: "tutor",
+    description: "Step-by-step accessible explanations with clear takeaways and examples.",
+    instructions:
+      "Explain concepts step-by-step in clear, accessible language with structured takeaways and concrete examples grounded in the sources.",
+  },
+  {
+    id: "custom",
+    label: "Custom",
+    shortLabel: "custom",
+    description: "Write your own Layer-2 tone, format, or audience instructions for this thread.",
+    instructions: "",
+  },
+];
+
+export const DEFAULT_THREAD_CONTEXT: ThreadContextConfig = {
+  instructionPreset: "default",
+  customInstructions: "",
+  scopedDocIds: [],
+};
+
+export function resolveEffectiveInstructions(
+  ctx?: ThreadContextConfig | null
+): string | undefined {
+  if (!ctx || ctx.instructionPreset === "default") {
+    return undefined;
+  }
+  const direct = ctx.customInstructions.trim();
+  if (direct) {
+    return direct.slice(0, MAX_CUSTOM_INSTRUCTIONS_CHARS);
+  }
+  const preset = INSTRUCTION_PRESETS.find((p) => p.id === ctx.instructionPreset);
+  const fallback = preset?.instructions.trim() ?? "";
+  return fallback || undefined;
+}
+
+export function getInstructionPresetLabel(ctx?: ThreadContextConfig | null): string {
+  if (!ctx || ctx.instructionPreset === "default") {
+    return "default";
+  }
+  if (ctx.instructionPreset === "custom") {
+    return ctx.customInstructions.trim() ? "custom" : "default";
+  }
+  return INSTRUCTION_PRESETS.find((p) => p.id === ctx.instructionPreset)?.shortLabel ?? "custom";
+}
 
 const rawViteApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 

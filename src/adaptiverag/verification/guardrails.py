@@ -174,11 +174,12 @@ class PiiFinding(BaseModel):
 
 
 class GuardrailDecision(BaseModel):
-    """Structured outcome from screening a user query (and optional chat history)."""
+    """Structured outcome from screening a user query, chat history, and thread instructions."""
 
     allowed: bool = True
     sanitized_query: str
     sanitized_history: list[ChatMessage] = Field(default_factory=list)
+    sanitized_custom_instructions: str | None = None
     blocked_reason: str | None = None
     triggered_rules: list[str] = Field(default_factory=list)
     pii_findings: list[PiiFinding] = Field(default_factory=list)
@@ -305,32 +306,41 @@ def screen_query_input(
     query: str,
     chat_history: list[ChatMessage] | None = None,
     *,
+    custom_instructions: str | None = None,
     config: InputGuardrailConfig | None = None,
 ) -> GuardrailDecision:
-    """Screen a user query and optional chat history for prompt injection and PII.
+    """Screen a user query, optional chat history, and optional thread instructions.
 
     - Runs purely in-process at $0 API cost and sub-millisecond latency.
     - When ``config.enabled`` is False, returns the input untouched.
     - When ``config.block_prompt_injection`` is True, rejects explicit injection attempts
-      in either the active query or prior user messages.
+      in the active query, prior user messages, or thread custom instructions.
     - When ``config.pii_mode == "redact"``, replaces detected secrets/PII with safe
       placeholders before the payload reaches external LLM providers.
     - When ``config.pii_mode == "block"``, rejects requests containing secrets/PII.
     """
     cfg = config or InputGuardrailConfig()
     history = list(chat_history or [])
+    cleaned_instructions = (
+        custom_instructions.strip() if custom_instructions and custom_instructions.strip() else None
+    )
 
     if not cfg.enabled:
         return GuardrailDecision(
             allowed=True,
             sanitized_query=query,
             sanitized_history=history,
+            sanitized_custom_instructions=cleaned_instructions,
         )
 
     # 1. Prompt-injection / system-prompt exfiltration scan
     triggered_rules: list[str] = []
     if cfg.block_prompt_injection:
         triggered_rules.extend(detect_prompt_injection(query))
+        if cleaned_instructions:
+            for rule_id in detect_prompt_injection(cleaned_instructions):
+                if rule_id not in triggered_rules:
+                    triggered_rules.append(rule_id)
         for msg in history:
             if msg.role == "user":
                 for rule_id in detect_prompt_injection(msg.content):
@@ -342,6 +352,7 @@ def screen_query_input(
                 allowed=False,
                 sanitized_query=query,
                 sanitized_history=history,
+                sanitized_custom_instructions=cleaned_instructions,
                 blocked_reason=(
                     "Request blocked by input safety guardrails: potential prompt injection "
                     f"detected ({', '.join(triggered_rules)})."
@@ -355,6 +366,7 @@ def screen_query_input(
             allowed=True,
             sanitized_query=query,
             sanitized_history=history,
+            sanitized_custom_instructions=cleaned_instructions,
         )
 
     merged_counts: dict[PiiEntityType, tuple[str, int]] = {}
@@ -366,6 +378,11 @@ def screen_query_input(
 
     sanitized_query, q_counts = _redact_pii_in_text(query)
     _merge(q_counts)
+
+    sanitized_instructions: str | None = cleaned_instructions
+    if cleaned_instructions is not None:
+        sanitized_instructions, instr_counts = _redact_pii_in_text(cleaned_instructions)
+        _merge(instr_counts)
 
     sanitized_history: list[ChatMessage] = []
     for msg in history:
@@ -384,6 +401,7 @@ def screen_query_input(
             allowed=False,
             sanitized_query=query,
             sanitized_history=history,
+            sanitized_custom_instructions=cleaned_instructions,
             blocked_reason=(
                 "Request blocked by input PII guardrail: remove sensitive data "
                 f"before querying ({entity_list})."
@@ -397,6 +415,7 @@ def screen_query_input(
         allowed=True,
         sanitized_query=sanitized_query,
         sanitized_history=sanitized_history,
+        sanitized_custom_instructions=sanitized_instructions,
         pii_findings=findings,
         redacted=bool(findings),
     )

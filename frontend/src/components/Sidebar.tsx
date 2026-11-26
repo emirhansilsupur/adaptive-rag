@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import { PRESET_OPTIONS } from "../constants/pipeline";
+import { PRESET_OPTIONS, resolveEffectiveInstructions } from "../constants/pipeline";
 import type {
   AblationConfig,
   AppView,
@@ -278,9 +278,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {sessions.map((sess) => {
               const isActive =
                 sess.id === activeSessionId && activeView === "workbench";
+              const hasCustomStyle = Boolean(resolveEffectiveInstructions(sess.context));
+              const scopedCount = sess.context?.scopedDocIds?.length ?? 0;
+              const hasCustomContext = hasCustomStyle || scopedCount > 0;
               return (
                 <div
                   key={sess.id}
+                  title={
+                    hasCustomContext
+                      ? `${sess.title} (${[
+                          hasCustomStyle ? "custom style" : null,
+                          scopedCount > 0 ? `${scopedCount} scoped doc(s)` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")})`
+                      : sess.title
+                  }
                   className={`group flex h-7.5 items-center justify-between gap-1 rounded-md px-2 text-xs transition ${
                     isActive
                       ? "bg-[var(--bg-elevated)] font-medium text-[var(--text-primary)]"
@@ -297,7 +310,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <span
                       className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                        isActive ? "bg-[var(--text-primary)]" : "bg-[var(--border-strong)]"
+                        hasCustomContext
+                          ? "bg-emerald-500"
+                          : isActive
+                            ? "bg-[var(--text-primary)]"
+                            : "bg-[var(--border-strong)]"
                       }`}
                     />
                     <span className="truncate">{sess.title}</span>

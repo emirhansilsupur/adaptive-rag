@@ -7,16 +7,30 @@ import {
   ExternalLink,
   FileText,
   Globe,
+  Lock,
   PanelRightOpen,
+  RotateCcw,
+  SlidersHorizontal,
   Square,
   ThumbsDown,
   ThumbsUp,
+  X,
 } from "lucide-react";
-import { DEMO_QUERIES } from "../constants/pipeline";
+import {
+  DEFAULT_THREAD_CONTEXT,
+  DEMO_QUERIES,
+  getInstructionPresetLabel,
+  INSTRUCTION_PRESETS,
+  MAX_CUSTOM_INSTRUCTIONS_CHARS,
+  resolveEffectiveInstructions,
+} from "../constants/pipeline";
 import type {
   ChatTurn,
+  IndexedDocumentInfo,
   InspectorTab,
+  InstructionPresetId,
   LiveStreamStep,
+  ThreadContextConfig,
   TokenUsage,
 } from "../types/api";
 import { AnswerTelemetryBar } from "./AnswerTelemetryBar";
@@ -34,6 +48,9 @@ interface ChatWorkspaceProps {
   presetShortLabel: string;
   useStreaming: boolean;
   budgetCapLabel: string | null;
+  threadContext?: ThreadContextConfig;
+  availableDocuments?: IndexedDocumentInfo[];
+  onThreadContextChange?: (next: ThreadContextConfig) => void;
   onSubmitQuery: (query: string) => void;
   onStopStream: () => void;
   onInspectTurn: (turnIndex: number, tab?: InspectorTab) => void;
@@ -56,6 +73,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   presetShortLabel,
   useStreaming,
   budgetCapLabel,
+  threadContext,
+  availableDocuments = [],
+  onThreadContextChange,
   onSubmitQuery,
   onStopStream,
   onInspectTurn,
@@ -63,6 +83,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onSubmitFeedback,
 }) => {
   const [input, setInput] = useState("");
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const [commentingTurnId, setCommentingTurnId] = useState<string | null>(null);
   const [pendingScore, setPendingScore] = useState<0 | 1>(0);
   const [commentDraft, setCommentDraft] = useState("");
@@ -123,6 +144,68 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const activeContext = threadContext ?? DEFAULT_THREAD_CONTEXT;
+  const effectiveInstructions = resolveEffectiveInstructions(activeContext);
+  const styleLabel = getInstructionPresetLabel(activeContext);
+  const scopedDocIds = activeContext.scopedDocIds;
+  const hasActiveThreadContext =
+    Boolean(effectiveInstructions) || scopedDocIds.length > 0;
+
+  const handleSelectInstructionPreset = (presetId: InstructionPresetId) => {
+    if (!onThreadContextChange) return;
+    const matched = INSTRUCTION_PRESETS.find((p) => p.id === presetId);
+    if (presetId === "default") {
+      onThreadContextChange({
+        ...activeContext,
+        instructionPreset: "default",
+        customInstructions: "",
+      });
+      return;
+    }
+    if (presetId === "custom") {
+      onThreadContextChange({
+        ...activeContext,
+        instructionPreset: "custom",
+      });
+      return;
+    }
+    onThreadContextChange({
+      ...activeContext,
+      instructionPreset: presetId,
+      customInstructions: matched?.instructions ?? "",
+    });
+  };
+
+  const handleCustomInstructionsInput = (value: string) => {
+    if (!onThreadContextChange) return;
+    const clipped = value.slice(0, MAX_CUSTOM_INSTRUCTIONS_CHARS);
+    const matchingPreset = INSTRUCTION_PRESETS.find(
+      (p) => p.id !== "default" && p.id !== "custom" && p.instructions === clipped.trim()
+    );
+    onThreadContextChange({
+      ...activeContext,
+      instructionPreset: matchingPreset ? matchingPreset.id : "custom",
+      customInstructions: clipped,
+    });
+  };
+
+  const handleToggleScopedDoc = (docId: string) => {
+    if (!onThreadContextChange) return;
+    const exists = scopedDocIds.includes(docId);
+    const nextScoped = exists
+      ? scopedDocIds.filter((id) => id !== docId)
+      : [...scopedDocIds, docId];
+    onThreadContextChange({
+      ...activeContext,
+      scopedDocIds: nextScoped,
+    });
+  };
+
+  const handleResetThreadContext = () => {
+    if (!onThreadContextChange) return;
+    onThreadContextChange({ ...DEFAULT_THREAD_CONTEXT });
   };
 
   const hasContent = turns.length > 0 || isRunning;
@@ -483,6 +566,155 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       {/* Bottom Sticky Composer */}
       <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-4 py-3 backdrop-blur sm:px-8">
         <div className="mx-auto max-w-3xl">
+          {/* Optional Collapsible Thread Context Drawer (Layer-2 Style + Document Scope) */}
+          {onThreadContextChange && contextPanelOpen && (
+            <div
+              data-testid="thread-context-panel"
+              className="mb-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-3 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2">
+                <div className="flex items-center gap-1.5">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                  <span className="font-medium text-[var(--text-primary)]">
+                    Thread Context
+                  </span>
+                  <span className="font-mono text-[10px] text-[var(--text-muted)]">
+                    optional · per-thread
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {hasActiveThreadContext && (
+                    <button
+                      type="button"
+                      onClick={handleResetThreadContext}
+                      className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
+                    >
+                      <RotateCcw className="h-2.5 w-2.5" />
+                      <span>Reset</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Close thread context panel"
+                    onClick={() => setContextPanelOpen(false)}
+                    className="rounded p-0.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Layer-2 Response Style Presets & Custom Instructions */}
+              <div className="mt-2.5">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                    Response Style
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)]">
+                    <Lock className="h-2.5 w-2.5 shrink-0" />
+                    <span>Grounding &amp; [C#] citations stay locked</span>
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {INSTRUCTION_PRESETS.map((opt) => {
+                    const selected = activeContext.instructionPreset === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        title={opt.description}
+                        onClick={() => handleSelectInstructionPreset(opt.id)}
+                        className={`rounded-md border px-2 py-1 text-[11px] font-medium transition cursor-pointer ${
+                          selected
+                            ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
+                            : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {activeContext.instructionPreset !== "default" && (
+                  <div className="mt-2">
+                    <textarea
+                      aria-label="Thread custom instructions"
+                      rows={2}
+                      maxLength={MAX_CUSTOM_INSTRUCTIONS_CHARS}
+                      value={activeContext.customInstructions}
+                      onChange={(e) => handleCustomInstructionsInput(e.target.value)}
+                      placeholder="e.g. Summarize obligations and risks in a concise table using plain language..."
+                      className="w-full resize-none rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/65 px-2.5 py-1.5 text-xs leading-relaxed text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                    />
+                    <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-[var(--text-muted)]">
+                      <span>Layer-2 synthesis preference (screened by guardrails)</span>
+                      <span className="tabular-nums">
+                        {activeContext.customInstructions.length}/{MAX_CUSTOM_INSTRUCTIONS_CHARS}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Per-Thread Document Scope (doc_ids) */}
+              <div className="mt-3 border-t border-[var(--border-subtle)] pt-2.5">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                    Document Scope{" "}
+                    {scopedDocIds.length > 0 ? `(${scopedDocIds.length} selected)` : "(All indexed docs)"}
+                  </span>
+                  {scopedDocIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onThreadContextChange({ ...activeContext, scopedDocIds: [] })
+                      }
+                      className="font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                    >
+                      Use all docs
+                    </button>
+                  )}
+                </div>
+
+                {availableDocuments.length === 0 ? (
+                  <p className="text-[11px] text-[var(--text-muted)]">
+                    No indexed documents loaded yet. All collection documents will be searched.
+                  </p>
+                ) : (
+                  <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                    {availableDocuments.map((doc) => {
+                      const isScoped = scopedDocIds.includes(doc.doc_id);
+                      return (
+                        <button
+                          key={doc.doc_id}
+                          type="button"
+                          onClick={() => handleToggleScopedDoc(doc.doc_id)}
+                          title={`${doc.title} (${doc.doc_id}) · ${doc.chunk_count} chunks`}
+                          className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition cursor-pointer ${
+                            isScoped
+                              ? "border-sky-500/45 bg-sky-500/12 text-sky-700 dark:text-sky-300"
+                              : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/55 text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                          }`}
+                        >
+                          {isScoped ? (
+                            <Check className="h-3 w-3 shrink-0" />
+                          ) : doc.source_origin === "web" ? (
+                            <Globe className="h-3 w-3 shrink-0 opacity-65" />
+                          ) : (
+                            <FileText className="h-3 w-3 shrink-0 opacity-65" />
+                          )}
+                          <span className="truncate">{doc.title || doc.doc_id}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="relative flex items-end gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 transition focus-within:border-[var(--text-muted)]">
             <textarea
               ref={textareaRef}
@@ -491,7 +723,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isRunning}
-              placeholder="Ask a technical question in English or Turkish..."
+              placeholder="Ask a question about your documents in English or Turkish..."
               className={`max-h-40 flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60 ${
                 input.includes("\n") || input.length > 90
                   ? "overflow-y-auto"
@@ -520,8 +752,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             )}
           </div>
 
-          <div className="mt-1.5 flex items-center justify-between px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
-            <div className="flex items-center gap-2">
+          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
+            <div className="flex flex-wrap items-center gap-1.5">
               <span>preset:{presetShortLabel.toLowerCase().replace(/\s+/g, "-")}</span>
               <span>·</span>
               <span>{useStreaming ? "sse" : "batch"}</span>
@@ -529,6 +761,44 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 <>
                   <span>·</span>
                   <span>cap:{budgetCapLabel}</span>
+                </>
+              )}
+              {onThreadContextChange && (
+                <>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => setContextPanelOpen((prev) => !prev)}
+                    aria-expanded={contextPanelOpen}
+                    title="Configure optional thread response style and document scope"
+                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 transition cursor-pointer ${
+                      effectiveInstructions
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <SlidersHorizontal className="h-2.5 w-2.5" />
+                    <span>style:{styleLabel}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setContextPanelOpen((prev) => !prev)}
+                    aria-expanded={contextPanelOpen}
+                    title="Scope retrieval to specific indexed documents for this thread"
+                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 transition cursor-pointer ${
+                      scopedDocIds.length > 0
+                        ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                        : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <FileText className="h-2.5 w-2.5" />
+                    <span>
+                      sources:
+                      {scopedDocIds.length > 0
+                        ? `${scopedDocIds.length} doc${scopedDocIds.length > 1 ? "s" : ""}`
+                        : "all"}
+                    </span>
+                  </button>
                 </>
               )}
             </div>

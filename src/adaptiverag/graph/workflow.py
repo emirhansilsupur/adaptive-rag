@@ -223,11 +223,18 @@ class AdaptiveRAGWorkflow:
         *,
         chat_history: Sequence[ChatMessage] | None = None,
         ablation: AblationConfig | None = None,
+        custom_instructions: str | None = None,
     ) -> AgentState:
+        cleaned_instructions = (
+            custom_instructions.strip()
+            if custom_instructions and custom_instructions.strip()
+            else None
+        )
         return AgentState(
             query=query.strip(),
             chat_history=list(chat_history) if chat_history else [],
             ablation=ablation or AblationConfig(),
+            custom_instructions=cleaned_instructions,
             usage=TokenUsage(),
             trace=[],
         )
@@ -252,21 +259,36 @@ class AdaptiveRAGWorkflow:
         query: str,
         chat_history: Sequence[ChatMessage] | None,
         *,
+        custom_instructions: str | None = None,
         pre_screened: bool,
-    ) -> tuple[str, list[ChatMessage]]:
+    ) -> tuple[str, list[ChatMessage], str | None]:
         history_list = list(chat_history) if chat_history else []
+        cleaned_instructions = (
+            custom_instructions.strip()
+            if custom_instructions and custom_instructions.strip()
+            else None
+        )
         if pre_screened or not self._runtime.settings.guardrails_enabled:
-            return query, history_list
+            return query, history_list, cleaned_instructions
         settings = self._runtime.settings
         cfg = InputGuardrailConfig(
             enabled=settings.guardrails_enabled,
             block_prompt_injection=settings.guardrails_block_prompt_injection,
             pii_mode=settings.guardrails_pii_mode,
         )
-        decision = screen_query_input(query, history_list, config=cfg)
+        decision = screen_query_input(
+            query,
+            history_list,
+            custom_instructions=cleaned_instructions,
+            config=cfg,
+        )
         if not decision.allowed:
             raise GuardrailBlockedError(decision)
-        return decision.sanitized_query, decision.sanitized_history
+        return (
+            decision.sanitized_query,
+            decision.sanitized_history,
+            decision.sanitized_custom_instructions,
+        )
 
     def _build_run_config(
         self,
@@ -302,6 +324,7 @@ class AdaptiveRAGWorkflow:
         *,
         chat_history: Sequence[ChatMessage] | None = None,
         ablation: AblationConfig | None = None,
+        custom_instructions: str | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
         session_id: str | None = None,
@@ -312,14 +335,18 @@ class AdaptiveRAGWorkflow:
     ) -> FinalAnswer:
         """Execute the full AdaptiveRAG graph and return a Glass-Box FinalAnswer."""
         started = time.perf_counter()
-        safe_query, safe_history = self._screen_inputs_if_needed(
-            query, chat_history, pre_screened=pre_screened
+        safe_query, safe_history, safe_instructions = self._screen_inputs_if_needed(
+            query,
+            chat_history,
+            custom_instructions=custom_instructions,
+            pre_screened=pre_screened,
         )
         resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
             safe_query,
             chat_history=safe_history,
             ablation=resolved_ablation,
+            custom_instructions=safe_instructions,
         )
         observability = self._get_observability()
         trace_handle = observability.start_trace(
@@ -357,6 +384,7 @@ class AdaptiveRAGWorkflow:
         *,
         chat_history: Sequence[ChatMessage] | None = None,
         ablation: AblationConfig | None = None,
+        custom_instructions: str | None = None,
         cost_tracker: CostTracker | None = None,
         callbacks: Sequence[Any] | None = None,
         session_id: str | None = None,
@@ -367,14 +395,18 @@ class AdaptiveRAGWorkflow:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream structured node_update events followed by a final_answer payload (SSE-ready)."""
         started = time.perf_counter()
-        safe_query, safe_history = self._screen_inputs_if_needed(
-            query, chat_history, pre_screened=pre_screened
+        safe_query, safe_history, safe_instructions = self._screen_inputs_if_needed(
+            query,
+            chat_history,
+            custom_instructions=custom_instructions,
+            pre_screened=pre_screened,
         )
         resolved_ablation = ablation or AblationConfig()
         initial_state = self._build_initial_state(
             safe_query,
             chat_history=safe_history,
             ablation=resolved_ablation,
+            custom_instructions=safe_instructions,
         )
         observability = self._get_observability()
         trace_handle = observability.start_trace(

@@ -14,8 +14,12 @@ import {
 } from "../lib/api";
 import { splitTextWithCitations } from "../lib/citations";
 import { SseStreamParser } from "../lib/sse";
-import { DEFAULT_CUSTOM_ABLATION } from "../constants/pipeline";
-import type { ChatTurn, EvidenceChunk } from "../types/api";
+import {
+  DEFAULT_CUSTOM_ABLATION,
+  DEFAULT_THREAD_CONTEXT,
+  resolveEffectiveInstructions,
+} from "../constants/pipeline";
+import type { ChatTurn, EvidenceChunk, ThreadContextConfig } from "../types/api";
 
 describe("SseStreamParser", () => {
   it("parses chunked node_update and final_answer events across split frames", () => {
@@ -116,9 +120,25 @@ describe("API payload helpers", () => {
       preset: "custom",
       customAblation: { ...DEFAULT_CUSTOM_ABLATION, retrieval_mode: "dense_only" },
       maxCostUsd: null,
+      customInstructions: "  Summarize in 3 bullets.  ",
+      docIds: [" doc_a ", "doc_a", "doc_b"],
     });
     expect(customReq.preset).toBeUndefined();
     expect(customReq.ablation?.retrieval_mode).toBe("dense_only");
+    expect(customReq.custom_instructions).toBe("Summarize in 3 bullets.");
+    expect(customReq.doc_ids).toEqual(["doc_a", "doc_b"]);
+
+    const emptyCtxReq = buildQueryPayload({
+      query: "What is RRF?",
+      chatHistory: [],
+      preset: "full",
+      customAblation: DEFAULT_CUSTOM_ABLATION,
+      maxCostUsd: null,
+      customInstructions: "   ",
+      docIds: [],
+    });
+    expect(emptyCtxReq.custom_instructions).toBeUndefined();
+    expect(emptyCtxReq.doc_ids).toBeUndefined();
   });
 });
 
@@ -522,5 +542,112 @@ describe("Langfuse Trace Link & Human-in-the-Loop Feedback UI", () => {
     await waitFor(() => {
       expect(onSubmitFeedback).toHaveBeenCalledWith("turn_lf_1", 0, "Missing Turkish summary");
     });
+  });
+
+  it("configures optional Layer-2 style presets and document scope in ChatWorkspace", () => {
+    const onThreadContextChange = vi.fn();
+    let currentCtx: ThreadContextConfig = { ...DEFAULT_THREAD_CONTEXT };
+
+    const { rerender } = render(
+      <ChatWorkspace
+        turns={[]}
+        selectedTurnIndex={0}
+        isRunning={false}
+        pendingQuery={null}
+        liveSteps={[]}
+        liveUsage={null}
+        streamError={null}
+        presetShortLabel="Full Agentic"
+        useStreaming={true}
+        budgetCapLabel={null}
+        threadContext={currentCtx}
+        availableDocuments={[
+          {
+            doc_id: "msa_contract",
+            title: "Vendor MSA Contract",
+            source_origin: "local",
+            doc_type: "pdf",
+            language: "en",
+            chunk_count: 12,
+            total_tokens: 2400,
+            source_url: null,
+            source_path: "msa_contract.pdf",
+            file_name: "msa_contract.pdf",
+          },
+        ]}
+        onThreadContextChange={(next) => {
+          currentCtx = next;
+          onThreadContextChange(next);
+        }}
+        onSubmitQuery={vi.fn()}
+        onStopStream={vi.fn()}
+        onInspectTurn={vi.fn()}
+        onCitationClick={vi.fn()}
+      />
+    );
+
+    // Drawer is collapsed by default
+    expect(screen.queryByTestId("thread-context-panel")).not.toBeInTheDocument();
+
+    // Open drawer via style pill
+    fireEvent.click(screen.getByRole("button", { name: /style:default/i }));
+    expect(screen.getByTestId("thread-context-panel")).toBeInTheDocument();
+    expect(screen.getByText(/Grounding & \[C#\] citations stay locked/i)).toBeInTheDocument();
+
+    // Select Executive Brief preset
+    fireEvent.click(screen.getByRole("button", { name: "Executive Brief" }));
+    expect(onThreadContextChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        instructionPreset: "executive",
+      })
+    );
+    expect(resolveEffectiveInstructions(currentCtx)).toContain("executive summary");
+
+    // Re-render with updated state and verify textarea + doc scope toggle
+    rerender(
+      <ChatWorkspace
+        turns={[]}
+        selectedTurnIndex={0}
+        isRunning={false}
+        pendingQuery={null}
+        liveSteps={[]}
+        liveUsage={null}
+        streamError={null}
+        presetShortLabel="Full Agentic"
+        useStreaming={true}
+        budgetCapLabel={null}
+        threadContext={currentCtx}
+        availableDocuments={[
+          {
+            doc_id: "msa_contract",
+            title: "Vendor MSA Contract",
+            source_origin: "local",
+            doc_type: "pdf",
+            language: "en",
+            chunk_count: 12,
+            total_tokens: 2400,
+            source_url: null,
+            source_path: "msa_contract.pdf",
+            file_name: "msa_contract.pdf",
+          },
+        ]}
+        onThreadContextChange={(next) => {
+          currentCtx = next;
+          onThreadContextChange(next);
+        }}
+        onSubmitQuery={vi.fn()}
+        onStopStream={vi.fn()}
+        onInspectTurn={vi.fn()}
+        onCitationClick={vi.fn()}
+      />
+    );
+
+    const textarea = screen.getByLabelText("Thread custom instructions");
+    fireEvent.change(textarea, { target: { value: "Focus on termination risks." } });
+    expect(currentCtx.instructionPreset).toBe("custom");
+    expect(currentCtx.customInstructions).toBe("Focus on termination risks.");
+
+    fireEvent.click(screen.getByRole("button", { name: /Vendor MSA Contract/i }));
+    expect(currentCtx.scopedDocIds).toEqual(["msa_contract"]);
   });
 });

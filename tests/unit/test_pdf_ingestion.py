@@ -469,6 +469,7 @@ async def test_api_pdf_upload_ocr_and_budget_enforcement(tmp_path: Path) -> None
         qdrant_collection="test_pdf_ocr_api",
         allowed_corpus_root=tmp_path,
         max_run_cost_usd=0.05,
+        pdf_ocr_mode="auto",
     )
     strategies = load_strategies(Path("configs/strategies.yaml"))
     store = QdrantHybridStore(

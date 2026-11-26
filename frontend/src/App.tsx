@@ -17,7 +17,10 @@ import { Sidebar } from "./components/Sidebar";
 import {
   DEFAULT_API_URL,
   DEFAULT_CUSTOM_ABLATION,
+  DEFAULT_THREAD_CONTEXT,
+  getInstructionPresetLabel,
   PRESET_OPTIONS,
+  resolveEffectiveInstructions,
 } from "./constants/pipeline";
 import {
   buildQueryPayload,
@@ -47,6 +50,7 @@ import type {
   InspectorTab,
   LiveStreamStep,
   PresetSelection,
+  ThreadContextConfig,
   TokenUsage,
 } from "./types/api";
 
@@ -361,6 +365,21 @@ export default function App() {
     setStreamError(null);
   };
 
+  const handleUpdateActiveThreadContext = (nextContext: ThreadContextConfig) => {
+    const targetId = activeSession.id;
+    setSessions((prev) =>
+      prev.map((sess) =>
+        sess.id === targetId
+          ? {
+              ...sess,
+              context: nextContext,
+              updatedAt: Date.now(),
+            }
+          : sess
+      )
+    );
+  };
+
   const handleInspectTurn = (turnIdx: number, tab?: InspectorTab) => {
     setSelectedTurnIndex(turnIdx);
     if (tab) {
@@ -656,6 +675,9 @@ export default function App() {
       { role: "assistant", content: t.result.answer },
     ]);
 
+    const effectiveInstructions = resolveEffectiveInstructions(activeSession.context);
+    const scopedDocIds = activeSession.context?.scopedDocIds ?? [];
+
     const payload = buildQueryPayload({
       query,
       chatHistory,
@@ -663,6 +685,8 @@ export default function App() {
       customAblation,
       maxCostUsd: enableBudgetCap ? maxCostUsd : null,
       sessionId: targetSessionId,
+      customInstructions: effectiveInstructions,
+      docIds: scopedDocIds,
     });
 
     const controller = new AbortController();
@@ -835,9 +859,21 @@ export default function App() {
             </nav>
 
             {activeView === "workbench" && (
-              <span className="hidden shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-secondary)] sm:inline">
-                {presetMeta.shortLabel}
-              </span>
+              <>
+                <span className="hidden shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-secondary)] sm:inline">
+                  {presetMeta.shortLabel}
+                </span>
+                {resolveEffectiveInstructions(activeSession.context) && (
+                  <span className="hidden shrink-0 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:text-emerald-300 md:inline">
+                    style:{getInstructionPresetLabel(activeSession.context)}
+                  </span>
+                )}
+                {(activeSession.context?.scopedDocIds?.length ?? 0) > 0 && (
+                  <span className="hidden shrink-0 rounded border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-sky-700 dark:text-sky-300 md:inline">
+                    {activeSession.context?.scopedDocIds?.length} doc(s)
+                  </span>
+                )}
+              </>
             )}
           </div>
 
@@ -959,6 +995,9 @@ export default function App() {
                   presetShortLabel={presetMeta.shortLabel}
                   useStreaming={useStreaming}
                   budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
+                  threadContext={activeSession.context ?? DEFAULT_THREAD_CONTEXT}
+                  availableDocuments={documentsData?.documents ?? []}
+                  onThreadContextChange={handleUpdateActiveThreadContext}
                   onSubmitQuery={(q) => void handleSubmitQuery(q)}
                   onStopStream={handleStopStream}
                   onInspectTurn={handleInspectTurn}

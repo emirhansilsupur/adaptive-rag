@@ -36,6 +36,22 @@ class QueryRequest(BaseModel):
         le=50.0,
         description="Optional per-request hard USD cost cap (FinOps guardrail).",
     )
+    custom_instructions: str | None = Field(
+        default=None,
+        max_length=1500,
+        description=(
+            "Optional Layer-2 thread style/format instructions applied only to synthesis "
+            "and conversational turns (subordinate to locked grounding & citation rules)."
+        ),
+    )
+    doc_ids: list[str] | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Optional list of indexed doc_ids scoping retrieval for this request/thread "
+            "(works with both named presets and custom ablation)."
+        ),
+    )
     session_id: str | None = Field(
         default=None,
         max_length=128,
@@ -55,12 +71,20 @@ class QueryRequest(BaseModel):
             raise ValueError("query must not be empty or whitespace-only.")
         return cleaned
 
-    @field_validator("session_id", "user_id")
+    @field_validator("session_id", "user_id", "custom_instructions")
     @classmethod
     def _strip_optional_id(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("doc_ids")
+    @classmethod
+    def _normalize_doc_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = list(dict.fromkeys(item.strip() for item in value if item and item.strip()))
         return cleaned or None
 
     def resolve_preset_label(self) -> str:
@@ -72,14 +96,19 @@ class QueryRequest(BaseModel):
     def resolve_ablation(self) -> AblationConfig:
         """Resolve the effective AblationConfig from explicit overrides or preset name."""
         if self.ablation is not None:
-            return self.ablation
-        if self.preset == "naive_dense":
-            return AblationConfig.naive_dense()
-        if self.preset == "hybrid_rerank":
-            return AblationConfig.hybrid_rerank()
-        if self.preset == "adaptive_routing":
-            return AblationConfig.adaptive_routing()
-        return AblationConfig.full()
+            base = self.ablation
+        elif self.preset == "naive_dense":
+            base = AblationConfig.naive_dense()
+        elif self.preset == "hybrid_rerank":
+            base = AblationConfig.hybrid_rerank()
+        elif self.preset == "adaptive_routing":
+            base = AblationConfig.adaptive_routing()
+        else:
+            base = AblationConfig.full()
+
+        if self.doc_ids:
+            return base.model_copy(update={"doc_ids": list(self.doc_ids)})
+        return base
 
 
 class InlineDocument(BaseModel):

@@ -106,6 +106,7 @@ class AgentState(TypedDict, total=False):
     query: str
     chat_history: list[ChatMessage]
     ablation: AblationConfig
+    custom_instructions: str | None
 
     # Planning & Query Transformation
     query_plan: QueryPlan

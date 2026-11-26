@@ -17,6 +17,19 @@ export type AblationPreset =
 
 export type PresetSelection = AblationPreset | "custom";
 export type PdfOcrMode = "auto" | "ocria_nano" | "vision_llm" | "off";
+export type InstructionPresetId =
+  | "default"
+  | "executive"
+  | "technical"
+  | "analyst"
+  | "tutor"
+  | "custom";
+
+export interface ThreadContextConfig {
+  instructionPreset: InstructionPresetId;
+  customInstructions: string;
+  scopedDocIds: string[];
+}
 
 export interface AblationConfig {
   retrieval_mode: "hybrid" | "dense_only" | "sparse_only";
@@ -29,6 +42,7 @@ export interface AblationConfig {
   enable_web_fallback: boolean;
   enable_citation_validation: boolean;
   enable_parent_child?: boolean | null;
+  doc_ids?: string[] | null;
   language_filter: "en" | "tr" | null;
 }
 
@@ -43,6 +57,8 @@ export interface QueryRequest {
   preset?: AblationPreset;
   ablation?: AblationConfig;
   max_cost_usd?: number;
+  custom_instructions?: string;
+  doc_ids?: string[];
   session_id?: string;
   user_id?: string;
 }
@@ -384,6 +400,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   turns: ChatTurn[];
+  context?: ThreadContextConfig;
 }
 
 export type InspectorTab = "trace" | "dynamic_k" | "confidence" | "evidence" | "citations";
