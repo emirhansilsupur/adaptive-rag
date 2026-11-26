@@ -22,10 +22,13 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 <br />
 
 <p align="center">
-  <img src="docs/assets/studio-glass-box.png" alt="AdaptiveRAG React 19 Glass-Box Studio showing a 7-step LangGraph execution trace, proportional latency strip, inline citations, Langfuse trace link, and Dynamic Top-K cross-encoder cutoff chart" width="100%" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/studio-glass-box-dark.png" />
+    <img src="docs/assets/studio-glass-box.png" alt="AdaptiveRAG Studio workbench answering 'Compare Qdrant Filterable HNSW and PostgreSQL pgvector for hybrid RAG' with a run receipt, proportional latency strip, highlighted citation marks, and the Retrieval inspector showing cross-encoder scores against the relevance floor" width="100%" />
+  </picture>
 </p>
 <p align="center">
-  <sub><strong>React 19 Glass-Box Studio:</strong> 7-step LangGraph SSE trace with proportional node latency strip, clickable <code>[C1]</code>–<code>[C6]</code> citations, <code>CRAG 0.92 (HIGH)</code>, <code>Audit 100%</code>, <code>Langfuse ↗</code> trace deep link, and calibrated Cross-Encoder Dynamic Top-K cutoff (<code>6 / 34</code> chunks via <code>relative_drop</code>).</sub>
+  <sub><strong>React 19 Glass-Box Studio:</strong> a 7-step analytical run with its receipt (<code>CRAG 0.92 High</code>, <code>Audit 100% Passed</code>, <code>1 min 7 s</code>, <code>$0.0015</code>), proportional node latency strip, serif answer with highlighter <code>[C1]</code>–<code>[C5]</code> citation marks, and the Retrieval inspector showing the calibrated Cross-Encoder Dynamic Top-K cutoff (<code>5 of 31</code> passages via <code>relative_drop</code>, top score <code>0.986</code>, <code>τ = 0.30</code> floor).</sub>
 </p>
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
@@ -92,24 +95,28 @@ $$C_{\text{det}} = 0.50\,S_{\text{top1}} + 0.30\,S_{\text{mean}} + 0.20\,S_{\tex
 
 ## Glass-Box Studio & Ablation Arena
 
-The React 19 + TypeScript + Tailwind CSS v4 workbench (`make ui` on `:5173`, or served directly by FastAPI in production) exposes every retrieval, routing, and verification signal in real time using a neutral `Geist` / `Geist Mono` design system (Obsidian `#09090b` & Paper `#fafafa` themes):
+The React 19 + TypeScript + Tailwind CSS v4 workbench (`make ui` on `:5173`, or served directly by FastAPI in production) exposes every retrieval, routing, and verification signal in real time. Its design system treats every answer as a document with receipts: `IBM Plex Sans` for the instrument, `IBM Plex Serif` for answers and source passages, `IBM Plex Mono` only for identifiers, ink-on-paper light and night-ink dark themes (following the OS preference), and a highlighter yellow reserved for citations and evidence.
 
-- **Left Rail (Navigation & Pipeline Config):** Instant view switcher (**`Workbench`**, **`Ablation Arena`**, **`Knowledge Base`**), `localStorage` research threads, preset selector (`Full`, `Adaptive Routing`, `Hybrid + Rerank`, `Naive Dense`, or granular `Custom` toggles including **`Parent-Child (Small→Big)`**), per-request USD cap, session `X-API-Key` auth, and live Qdrant/Firecrawl/Langfuse/Guardrails telemetry.
-- **Editorial Research Log & Proportional Latency Strip:** Numbered `#01` turns, cancelable SSE progress bar that collapses into a 1-line trace summary underscored by a **2px proportional node latency strip**, monospace telemetry bar (`CRAG`, `Audit`, `ms · tok · $cost`, `Langfuse ↗`), monochrome inline `<code>` cleanly separated from sky-blue `[C1]` and amber `[W1]` citation pills, and **👍 / 👎 reviewer feedback** (`POST /v1/feedback`).
-- **Resizable 5-Tab DevTools Inspector (`⌘I`):**
-  - **`Trace`:** 4-cell Query Plan ledger, decomposed sub-queries, strategy JSON, and LangGraph Latency Waterfall.
-  - **`Top-K`:** KPI ledger (`Selected / Pool`, `Top Score`, `Cutoff Score`, `Context Budget`), `Small→Big` expansion stats, and interactive Cross-Encoder bar chart (`τ` floor + click-to-inspect).
-  - **`CRAG`:** Linear confidence calibration meter with `0.38` / `0.72` gate markers and 5-signal breakdown.
-  - **`Evidence`:** Local/Web filter, `Parent Section` lineage badges, clickable Firecrawl/Web URLs, and citation-click pulse highlight.
-  - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 semantic claim entailment cards.
-- **Knowledge Base & Ingestion Studio:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto 2-Tier`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` sync, live **Firecrawl Local** URL scraping & recursive docs crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and searchable document inventory (`Flat` vs `Small→Big` badges) with 2-step deletion.
-- **Side-by-Side Ablation Arena:** Executes any two presets concurrently over SSE (`Promise.allSettled`), computing a live **5-cell `A → B Ablation Delta` ledger** across context tokens, selected `k`, CRAG confidence, Citation Audit (`Fail → Pass`), and latency/cost.
+- **Sidebar (Navigation, Threads & Connection):** View switcher (**`Workbench`**, **`Arena`**, **`Knowledge base`**), `localStorage` research threads with two-step deletion, and a connection panel for the API endpoint, session `X-API-Key`, and live Qdrant/Firecrawl/Langfuse/Guardrails status.
+- **Composer controls:** Pipeline preset picker next to the question box (`Full`, `Adaptive Routing`, `Hybrid + Rerank`, `Naive Dense`, or granular `Custom` switches including **`Parent-Child (Small→Big)`**), plus per-thread response style and document scope. The header **Runtime** popover holds provider/model/temperature, session BYOK keys, live step streaming, and the per-question spend cap.
+- **Answers with receipts:** Each turn shows a run receipt (route, passages, CRAG confidence, citation audit, time, tokens and cost, `Langfuse ↗`) above a **proportional node latency strip**, a serif answer with highlighter `[C1]` / `[W1]` citation marks that preview the cited passage on hover, a sources row, copy, and **👍 / 👎 reviewer feedback** (`POST /v1/feedback`).
+- **Resizable 5-Tab Inspector (`⌘I`):** Docked from `1280px`, a slide-over sheet on smaller screens.
+  - **`Trace`:** Query plan ledger, decomposed sub-queries, labelled strategy parameters, and a true start-offset timeline of LangGraph nodes.
+  - **`Retrieval`:** Dynamic top-k ledger (`Kept`, `Top score`, `Cutoff score`, `Context`), `Small→Big` expansion stats, and click-to-inspect cross-encoder score bars against the `τ` floor.
+  - **`Confidence`:** Calibrated score on a gate scale with the `0.38` / `0.72` zones, grader verdict, and weighted signal breakdown.
+  - **`Evidence`:** Documents/Web filter, parent-section lineage, source URLs, and a highlighter sweep on the passage a citation points to.
+  - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 claim entailment verdicts.
+- **Knowledge base & ingestion:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` re-index, **Firecrawl Local** page import and whole-site crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and a searchable document inventory (`Small→Big` badges) with 2-step deletion.
+- **Side-by-Side Ablation Arena:** Executes any two presets concurrently over SSE (`Promise.allSettled`), computing a live **`A → B` "What changed" scorecard** across context tokens, passages kept, CRAG confidence, citation audit (`Fail → Pass`), time, and cost.
 
 <p align="center">
-  <img src="docs/assets/studio-compare-arena.png" alt="AdaptiveRAG Side-by-Side Ablation Arena comparing Naive Dense Baseline against Full AdaptiveRAG in parallel over live SSE" width="100%" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/studio-compare-arena-dark.png" />
+    <img src="docs/assets/studio-compare-arena.png" alt="AdaptiveRAG Side-by-Side Ablation Arena comparing Naive Dense Baseline against Full AdaptiveRAG on the same question, with an A to B scorecard and both answers side by side" width="100%" />
+  </picture>
 </p>
 <p align="center">
-  <sub><strong>Side-by-Side Ablation Arena:</strong> Parallel SSE run comparing <code>Naive Dense</code> (<code>k=5 · 809 tok</code>, <code>CRAG 0.66 (MEDIUM)</code>, <code>Audit 57%</code>, relevant passage buried at <code>[C4]</code>) against <code>Full Agentic</code> (<code>k=4 · 898 tok</code>, <code>CRAG 0.90 (HIGH)</code>, <code>Audit 100%</code>, reranked to <code>[C1]</code>).</sub>
+  <sub><strong>Side-by-Side Ablation Arena:</strong> Parallel SSE run on the same question. <code>Naive Dense</code> (<code>k=5 · 809 tok</code>, <code>CRAG 0.66 Medium</code>) finds the <code>ef_construct</code> default only at <code>[C4]</code>; <code>Full Agentic</code> (<code>k=4 · 898 tok</code>, <code>CRAG 0.90 High</code>) reranks that passage to <code>[C1]</code> (relevance <code>0.99</code>). After one strict regeneration its Tier-2 audit still flags the single claim the corpus doesn't back (build-time impact), so both sides show <code>Flagged</code>.</sub>
 </p>
 
 ---

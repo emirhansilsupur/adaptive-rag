@@ -1,26 +1,32 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
-  ChevronDown,
-  ChevronRight,
   Columns2,
   Database,
-  KeyRound,
   MessageSquare,
   PanelLeftClose,
+  PenLine,
   Plus,
   RefreshCw,
-  Server,
-  SlidersHorizontal,
+  Settings2,
   Trash2,
+  X,
+  type LucideIcon,
 } from "lucide-react";
-import { PRESET_OPTIONS, resolveEffectiveInstructions } from "../constants/pipeline";
-import type {
-  AblationConfig,
-  AppView,
-  ChatSession,
-  HealthResponse,
-  PresetSelection,
-} from "../types/api";
+import { resolveEffectiveInstructions } from "../constants/pipeline";
+import { formatInt, formatRelativeTime } from "../lib/format";
+import type { AppView, ChatSession, HealthResponse } from "../types/api";
+import { LogoMark } from "./ui/Logo";
+import { Popover } from "./ui/Popover";
+import {
+  Button,
+  Callout,
+  cn,
+  Field,
+  IconButton,
+  INPUT_CLASS,
+  StatusDot,
+  type Tone,
+} from "./ui/primitives";
 
 interface SidebarProps {
   activeView: AppView;
@@ -38,46 +44,250 @@ interface SidebarProps {
   healthError: string | null;
   healthLoading: boolean;
   onRefreshHealth: () => void;
-  preset: PresetSelection;
-  onPresetChange: (preset: PresetSelection) => void;
-  customAblation: AblationConfig;
-  onCustomAblationChange: (cfg: AblationConfig) => void;
-  useStreaming: boolean;
-  onUseStreamingChange: (val: boolean) => void;
-  enableBudgetCap: boolean;
-  onEnableBudgetCapChange: (val: boolean) => void;
-  maxCostUsd: number;
-  onMaxCostUsdChange: (val: number) => void;
+  documentCount?: number;
   onCollapse: () => void;
+  /** "drawer" renders a close button instead of the collapse control. */
+  variant?: "docked" | "drawer";
 }
 
-function CompactSwitch({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-}) {
+const NAV_ITEMS: { id: AppView; label: string; icon: LucideIcon; hint: string }[] = [
+  { id: "workbench", label: "Workbench", icon: MessageSquare, hint: "Ask questions and inspect answers" },
+  { id: "compare", label: "Arena", icon: Columns2, hint: "Run two presets side by side" },
+  { id: "knowledge", label: "Knowledge base", icon: Database, hint: "Add and manage documents" },
+];
+
+function hostLabel(apiUrl: string): string {
+  if (!apiUrl) return "Same origin";
+  try {
+    return new URL(apiUrl).host;
+  } catch {
+    return apiUrl;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Connection panel                                                           */
+/* -------------------------------------------------------------------------- */
+
+function ServiceRow({ label, tone, value }: { label: string; tone: Tone; value: string }) {
   return (
-    <label className="group flex items-center justify-between gap-2 py-0.5 cursor-pointer select-none">
-      <span className="text-[11.5px] text-[var(--text-secondary)] transition group-hover:text-[var(--text-primary)]">
-        {label}
+    <div className="flex items-center justify-between gap-3 py-1">
+      <span className="flex min-w-0 items-center gap-2 text-ui text-ink">
+        <StatusDot tone={tone} />
+        <span className="truncate">{label}</span>
       </span>
-      <span className="relative inline-flex h-4 w-7 shrink-0 items-center">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => onChange(e.target.checked)}
-          className="peer sr-only"
-        />
-        <span className="h-4 w-7 rounded-full border border-[var(--border-strong)] bg-[var(--bg-elevated)] transition-colors peer-checked:border-transparent peer-checked:bg-[var(--cta-bg)] peer-focus-visible:ring-2 peer-focus-visible:ring-zinc-400/50" />
-        <span className="pointer-events-none absolute left-0.5 h-3 w-3 rounded-full bg-[var(--text-muted)] transition-transform peer-checked:translate-x-3 peer-checked:bg-[var(--cta-fg)]" />
-      </span>
-    </label>
+      <span className="shrink-0 text-small text-ink-3">{value}</span>
+    </div>
   );
 }
+
+function ConnectionPanel({
+  apiUrl,
+  onApiUrlChange,
+  apiKey,
+  onApiKeyChange,
+  health,
+  healthError,
+  healthLoading,
+  onRefreshHealth,
+}: Pick<
+  SidebarProps,
+  | "apiUrl"
+  | "onApiUrlChange"
+  | "apiKey"
+  | "onApiKeyChange"
+  | "health"
+  | "healthError"
+  | "healthLoading"
+  | "onRefreshHealth"
+>) {
+  const [apiInput, setApiInput] = useState(apiUrl);
+  const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? "");
+  const authRequired = Boolean(health?.security?.api_key_auth_enabled);
+  const keySet = Boolean(apiKey?.trim());
+
+  const lfMode = health?.langfuse?.mode ?? (health?.langfuse_enabled ? "cloud" : "disabled");
+  const fcStatus = health?.firecrawl?.status;
+  const parentChild = health?.parent_child_retrieval;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
+        <span className="text-ui font-semibold text-ink">Connection</span>
+        <Button
+          variant="ghost"
+          size="xs"
+          icon={RefreshCw}
+          loading={healthLoading}
+          onClick={onRefreshHealth}
+        >
+          Check again
+        </Button>
+      </div>
+
+      <div className="space-y-4 px-4 py-4">
+        <Field
+          label="API endpoint"
+          htmlFor="studio-endpoint"
+          hint="Leave empty when the Studio is served by the API itself."
+        >
+          <form
+            className="flex gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              onApiUrlChange(apiInput.trim().replace(/\/+$/, ""));
+            }}
+          >
+            <input
+              id="studio-endpoint"
+              type="text"
+              value={apiInput}
+              spellCheck={false}
+              placeholder="http://localhost:8000"
+              onChange={(e) => setApiInput(e.target.value)}
+              className={cn(INPUT_CLASS, "h-8 min-w-0 flex-1 px-2.5 font-mono text-small")}
+            />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
+        </Field>
+
+        {onApiKeyChange && (
+          <Field
+            label="API key"
+            htmlFor="studio-api-key"
+            aside={
+              keySet ? (
+                <span className="text-small text-ok">Saved for this tab</span>
+              ) : authRequired ? (
+                <span className="text-small text-warn">Required by the server</span>
+              ) : (
+                <span className="text-small text-ink-3">Optional</span>
+              )
+            }
+            hint="Sent as X-API-Key. Kept in sessionStorage, so it's cleared when the tab closes."
+          >
+            <form
+              className="flex gap-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                onApiKeyChange(apiKeyInput);
+              }}
+            >
+              <input
+                id="studio-api-key"
+                type="password"
+                value={apiKeyInput}
+                autoComplete="off"
+                placeholder={authRequired ? "Paste the server's API_AUTH_KEY" : "Not needed for this server"}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                className={cn(INPUT_CLASS, "h-8 min-w-0 flex-1 px-2.5 font-mono text-small")}
+              />
+              <Button type="submit" size="sm">
+                Save
+              </Button>
+            </form>
+          </Field>
+        )}
+
+        {health ? (
+          <>
+            <div>
+              <div className="mb-1 text-small font-medium text-ink">Services</div>
+              <ServiceRow
+                label="Vector store"
+                tone={health.qdrant?.status === "ok" ? "ok" : "bad"}
+                value={
+                  health.qdrant?.status === "ok"
+                    ? `${formatInt(health.qdrant?.points_count ?? 0)} passages`
+                    : "Unavailable"
+                }
+              />
+              <ServiceRow
+                label="Web crawler"
+                tone={fcStatus === "ok" ? "ok" : fcStatus === "unreachable" ? "warn" : "neutral"}
+                value={fcStatus === "ok" ? "Ready" : fcStatus === "unreachable" ? "Unreachable" : "Off"}
+              />
+              <ServiceRow
+                label="Tracing (Langfuse)"
+                tone={lfMode === "cloud" || lfMode === "self_hosted" ? "ok" : lfMode === "misconfigured" ? "warn" : "neutral"}
+                value={
+                  lfMode === "cloud"
+                    ? "Cloud"
+                    : lfMode === "self_hosted"
+                      ? "Self-hosted"
+                      : lfMode === "misconfigured"
+                        ? "Missing keys"
+                        : "Off"
+                }
+              />
+              <ServiceRow
+                label="Guardrails"
+                tone={health.security?.guardrails_enabled ? "ok" : "neutral"}
+                value={
+                  health.security?.guardrails_enabled
+                    ? `On, PII ${health.security.pii_mode === "block" ? "blocked" : health.security.pii_mode === "off" ? "allowed" : "redacted"}`
+                    : "Off"
+                }
+              />
+              <ServiceRow
+                label="Access"
+                tone={authRequired && !keySet ? "warn" : "neutral"}
+                value={[
+                  authRequired ? "API key" : "Open",
+                  health.security?.rate_limit_enabled
+                    ? `${health.security.rate_limit_requests_per_minute ?? 60}/min`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+              />
+            </div>
+
+            <div>
+              <div className="mb-1.5 text-small font-medium text-ink">Models</div>
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-small">
+                <dt className="text-ink-3">Fast</dt>
+                <dd className="truncate text-right font-mono text-[11.5px] text-ink" title={health.fast_model}>
+                  {health.fast_model}
+                </dd>
+                <dt className="text-ink-3">Generation</dt>
+                <dd className="truncate text-right font-mono text-[11.5px] text-ink" title={health.generation_model}>
+                  {health.generation_model}
+                </dd>
+                <dt className="text-ink-3">Reranker</dt>
+                <dd className="truncate text-right font-mono text-[11.5px] text-ink" title={health.reranker_model}>
+                  {health.reranker_model.split("/").pop()}
+                </dd>
+                <dt className="text-ink-3">Web search</dt>
+                <dd className="truncate text-right text-ink">
+                  {health.web_fallback_providers.join(", ") || "None"}
+                </dd>
+                <dt className="text-ink-3">Chunking</dt>
+                <dd className="truncate text-right text-ink">
+                  {parentChild?.enabled
+                    ? `${parentChild.child_max_tokens} → ${formatInt(parentChild.parent_max_tokens ?? 1000)} tokens`
+                    : "Flat passages"}
+                </dd>
+              </dl>
+            </div>
+          </>
+        ) : (
+          <Callout tone="bad" title="Can't reach the API">
+            {healthError || "No response."} Start it with{" "}
+            <code className="font-mono text-[11.5px] text-ink">make api</code> and check the endpoint
+            above.
+          </Callout>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sidebar                                                                    */
+/* -------------------------------------------------------------------------- */
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeView,
@@ -95,615 +305,219 @@ export const Sidebar: React.FC<SidebarProps> = ({
   healthError,
   healthLoading,
   onRefreshHealth,
-  preset,
-  onPresetChange,
-  customAblation,
-  onCustomAblationChange,
-  useStreaming,
-  onUseStreamingChange,
-  enableBudgetCap,
-  onEnableBudgetCapChange,
-  maxCostUsd,
-  onMaxCostUsdChange,
+  documentCount,
   onCollapse,
+  variant = "docked",
 }) => {
-  const [controlsOpen, setControlsOpen] = useState(true);
-  const [healthExpanded, setHealthExpanded] = useState(false);
-  const [apiInput, setApiInput] = useState(apiUrl);
-  const [apiKeyInput, setApiKeyInput] = useState(apiKey);
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const footerRef = useRef<HTMLButtonElement>(null);
 
-  const authRequiredMissingKey =
-    Boolean(health?.security?.api_key_auth_enabled) && !apiKey.trim();
-
-  const qdrantPoints = health?.qdrant?.points_count ?? 0;
-  const fcStatus = health?.firecrawl?.status;
-  const lfMode =
-    health?.langfuse?.mode ?? (health?.langfuse_enabled ? "cloud" : "disabled");
-  const lfShort =
-    lfMode === "cloud"
-      ? "cloud"
-      : lfMode === "self_hosted"
-        ? "local"
-        : lfMode === "misconfigured"
-          ? "no-key"
-          : "off";
-  const fcShort =
-    fcStatus === "ok" ? "ready" : fcStatus === "unreachable" ? "down" : "off";
-
-  const statusTone = !health
-    ? "bg-rose-500"
+  const authRequiredMissingKey = Boolean(health?.security?.api_key_auth_enabled) && !apiKey.trim();
+  const statusTone: Tone = !health
+    ? "bad"
+    : authRequiredMissingKey || health.status !== "ok"
+      ? "warn"
+      : "ok";
+  const statusLabel = !health
+    ? healthLoading
+      ? "Connecting…"
+      : "Offline"
     : authRequiredMissingKey
-      ? "bg-amber-500"
+      ? "API key required"
       : health.status === "ok"
-        ? "bg-emerald-500"
-        : "bg-amber-500";
-
-  const updateCustom = <K extends keyof AblationConfig>(
-    key: K,
-    val: AblationConfig[K]
-  ) => {
-    onCustomAblationChange({ ...customAblation, [key]: val });
-  };
-
-  const navItems: {
-    id: AppView;
-    label: string;
-    icon: React.FC<{ className?: string }>;
-    badge?: string;
-  }[] = [
-    { id: "workbench", label: "Workbench", icon: MessageSquare },
-    { id: "compare", label: "Ablation Arena", icon: Columns2 },
-    {
-      id: "knowledge",
-      label: "Knowledge Base",
-      icon: Database,
-      badge: String(qdrantPoints),
-    },
-  ];
+        ? "Connected"
+        : "Degraded";
 
   return (
-    <aside className="flex h-full w-[264px] shrink-0 flex-col border-r border-[var(--border-subtle)] bg-[var(--bg-panel)]">
-      {/* Brand Bar */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-3">
-        <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 items-center justify-center rounded-[5px] bg-[var(--cta-bg)] text-[var(--cta-fg)]">
-            <svg
-              viewBox="0 0 24 24"
-              className="h-3.5 w-3.5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2.25}
-            >
-              <path d="M12 3L4 7.5v9L12 21l8-4.5v-9L12 3z" strokeLinejoin="round" />
-              <path
-                d="M12 12l8-4.5M12 12v9M12 12L4 7.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </div>
-          <span className="text-[13px] font-semibold tracking-tight text-[var(--text-primary)]">
-            AdaptiveRAG
-          </span>
-          <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-            Studio
+    <aside
+      aria-label="Studio navigation"
+      className="flex h-full w-[272px] shrink-0 flex-col border-r border-line bg-desk"
+    >
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 pr-2 pl-3.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <LogoMark />
+          <span className="truncate text-ui font-semibold text-ink">
+            AdaptiveRAG <span className="font-normal text-ink-3">Studio</span>
           </span>
         </div>
-
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              onNewSession();
-              onChangeView("workbench");
-            }}
-            title="New research thread"
-            className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onCollapse}
-            title="Collapse sidebar"
-            className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-          >
-            <PanelLeftClose className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <IconButton
+          icon={variant === "drawer" ? X : PanelLeftClose}
+          label={variant === "drawer" ? "Close menu" : "Collapse sidebar"}
+          onClick={onCollapse}
+        />
       </div>
 
-      {/* Primary Workspace Switcher */}
-      <div className="space-y-1 border-b border-[var(--border-subtle)] p-2.5">
-        <button
-          type="button"
+      <div className="px-3 pt-1.5 pb-3">
+        <Button
+          icon={Plus}
+          className="w-full justify-start"
           onClick={() => {
             onNewSession();
             onChangeView("workbench");
           }}
-          className="mb-1.5 flex h-8 w-full items-center justify-between rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] shadow-2xs transition hover:bg-[var(--bg-hover)] cursor-pointer"
         >
-          <span className="inline-flex items-center gap-1.5">
-            <Plus className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-            <span>New Thread</span>
-          </span>
-          <span className="font-mono text-[10px] text-[var(--text-muted)]">EN/TR</span>
-        </button>
+          New thread
+        </Button>
+      </div>
 
-        {navItems.map(({ id, label, icon: Icon, badge }) => {
+      <nav aria-label="Workspace" className="space-y-px px-2">
+        {NAV_ITEMS.map(({ id, label, icon: Icon, hint }) => {
           const active = activeView === id;
           return (
             <button
               key={id}
               type="button"
-              onClick={() => onChangeView(id)}
               data-nav={id}
-              className={`flex h-7.5 w-full items-center justify-between rounded-md px-2 text-xs transition cursor-pointer ${
+              title={hint}
+              aria-current={active ? "page" : undefined}
+              onClick={() => onChangeView(id)}
+              className={cn(
+                "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-ui transition-colors",
                 active
-                  ? "bg-[var(--bg-elevated)] font-medium text-[var(--text-primary)]"
-                  : "text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]/60 hover:text-[var(--text-primary)]"
-              }`}
+                  ? "bg-paper font-medium text-ink shadow-[0_0_0_1px_var(--line)]"
+                  : "text-ink-2 hover:bg-hover hover:text-ink"
+              )}
             >
-              <span className="inline-flex items-center gap-2">
-                <Icon
-                  className={`h-3.5 w-3.5 shrink-0 ${
-                    active ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
-                  }`}
-                />
-                <span>{label}</span>
-              </span>
-              {badge !== undefined && (
-                <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.2 font-mono text-[10px] text-[var(--text-muted)] tabular-nums">
-                  {badge}
-                </span>
+              <Icon className={cn("h-4 w-4 shrink-0", active ? "text-ink" : "text-ink-3")} aria-hidden />
+              <span className="flex-1 text-left">{label}</span>
+              {id === "knowledge" && documentCount !== undefined && (
+                <span className="text-small tabular-nums text-ink-3">{formatInt(documentCount)}</span>
               )}
             </button>
           );
         })}
-      </div>
+      </nav>
 
-      {/* Scrollable Middle: Threads + Pipeline Configuration */}
-      <div className="flex-1 space-y-4 overflow-y-auto px-2.5 py-3">
-        {/* Threads */}
-        <div>
-          <div className="mb-1 flex items-center justify-between px-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Threads
-            </span>
-            <span className="font-mono text-[10px] text-[var(--text-muted)] tabular-nums">
-              {sessions.length}
-            </span>
-          </div>
-          <div className="space-y-0.5">
-            {sessions.map((sess) => {
-              const isActive =
-                sess.id === activeSessionId && activeView === "workbench";
-              const hasCustomStyle = Boolean(resolveEffectiveInstructions(sess.context));
-              const scopedCount = sess.context?.scopedDocIds?.length ?? 0;
-              const hasCustomContext = hasCustomStyle || scopedCount > 0;
+      <div className="mt-6 flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center justify-between px-4 pb-1.5">
+          <h2 className="text-small font-medium text-ink-3">Threads</h2>
+          <span className="text-small tabular-nums text-ink-3">{sessions.length}</span>
+        </div>
+        <ul className="flex-1 space-y-px overflow-y-auto px-2 pb-3">
+          {sessions.map((sess) => {
+            const isActive = sess.id === activeSessionId && activeView === "workbench";
+            const hasCustomStyle = Boolean(resolveEffectiveInstructions(sess.context));
+            const scopedCount = sess.context?.scopedDocIds?.length ?? 0;
+            const hasCustomContext = hasCustomStyle || scopedCount > 0;
+            const isConfirming = pendingDeleteId === sess.id;
+
+            if (isConfirming) {
               return (
-                <div
+                <li
                   key={sess.id}
+                  className="flex h-8 items-center justify-between gap-1.5 rounded-md bg-bad-soft pr-1 pl-2.5"
+                >
+                  <span className="truncate text-small text-ink">Delete this thread?</span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="danger"
+                      size="xs"
+                      onClick={() => {
+                        onDeleteSession(sess.id);
+                        setPendingDeleteId(null);
+                      }}
+                    >
+                      Delete
+                    </Button>
+                    <IconButton icon={X} size="sm" label="Keep thread" onClick={() => setPendingDeleteId(null)} />
+                  </span>
+                </li>
+              );
+            }
+
+            return (
+              <li key={sess.id} className="group relative">
+                <button
+                  type="button"
+                  aria-current={isActive ? "true" : undefined}
                   title={
                     hasCustomContext
                       ? `${sess.title} (${[
                           hasCustomStyle ? "custom style" : null,
-                          scopedCount > 0 ? `${scopedCount} scoped doc(s)` : null,
+                          scopedCount > 0 ? `${scopedCount} scoped documents` : null,
                         ]
                           .filter(Boolean)
-                          .join(" · ")})`
+                          .join(", ")})`
                       : sess.title
                   }
-                  className={`group flex h-7.5 items-center justify-between gap-1 rounded-md px-2 text-xs transition ${
+                  onClick={() => {
+                    onSelectSession(sess.id);
+                    onChangeView("workbench");
+                  }}
+                  className={cn(
+                    "flex h-8 w-full cursor-pointer items-center gap-2 rounded-md pr-2 pl-2.5 text-left text-ui transition-colors",
                     isActive
-                      ? "bg-[var(--bg-elevated)] font-medium text-[var(--text-primary)]"
-                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)]/55 hover:text-[var(--text-primary)]"
-                  }`}
+                      ? "bg-paper text-ink shadow-[0_0_0_1px_var(--line)]"
+                      : "text-ink-2 hover:bg-hover hover:text-ink"
+                  )}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onSelectSession(sess.id);
-                      onChangeView("workbench");
-                    }}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
-                  >
-                    <span
-                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                        hasCustomContext
-                          ? "bg-emerald-500"
-                          : isActive
-                            ? "bg-[var(--text-primary)]"
-                            : "bg-[var(--border-strong)]"
-                      }`}
-                    />
-                    <span className="truncate">{sess.title}</span>
-                  </button>
-                  <span className="shrink-0 font-mono text-[10px] text-[var(--text-muted)] tabular-nums group-hover:hidden">
-                    {sess.turns.length}
+                  <span className="min-w-0 flex-1 truncate">{sess.title}</span>
+                  {hasCustomContext && (
+                    <PenLine className="h-3 w-3 shrink-0 text-ink-3" aria-label="Has thread settings" />
+                  )}
+                  <span className="shrink-0 text-caption tabular-nums text-ink-3 group-focus-within:opacity-0 group-hover:opacity-0">
+                    {sess.turns.length === 0 ? "Empty" : formatRelativeTime(sess.updatedAt)}
                   </span>
-                  {sessions.length > 1 ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteSession(sess.id);
-                      }}
-                      title="Delete thread"
-                      className="hidden shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:text-rose-500 group-hover:inline-flex cursor-pointer"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  ) : (
-                    <span className="hidden shrink-0 font-mono text-[10px] text-[var(--text-muted)] tabular-nums group-hover:inline">
-                      {sess.turns.length}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Pipeline Configuration */}
-        <div className="border-t border-[var(--border-subtle)] pt-3">
-          <button
-            type="button"
-            onClick={() => setControlsOpen((p) => !p)}
-            className="flex w-full items-center justify-between px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] transition hover:text-[var(--text-primary)] cursor-pointer"
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <SlidersHorizontal className="h-3 w-3" />
-              <span>Pipeline Config</span>
-            </span>
-            {controlsOpen ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
-          </button>
-
-          {controlsOpen && (
-            <div className="mt-2 space-y-3 px-1.5 text-xs">
-              {activeView === "compare" && (
-                <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-2 text-[11px] leading-snug text-[var(--text-secondary)]">
-                  A/B presets are configured in the Arena toolbar. Streaming and
-                  cost cap below apply to both sides.
-                </div>
-              )}
-
-              <div>
-                <label className="block text-[10.5px] font-medium text-[var(--text-muted)]">
-                  Execution Preset
-                </label>
-                <select
-                  value={preset}
-                  onChange={(e) => onPresetChange(e.target.value as PresetSelection)}
-                  className="ar-select mt-1 h-8 w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none"
-                >
-                  {PRESET_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1.5 text-[10.5px] leading-relaxed text-[var(--text-muted)]">
-                  {PRESET_OPTIONS.find((o) => o.value === preset)?.description}
-                </p>
-              </div>
-
-              {preset === "custom" && (
-                <div className="space-y-2.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[11px]">
-                  <div>
-                    <label className="text-[10px] font-medium text-[var(--text-muted)]">
-                      Retrieval Mode
-                    </label>
-                    <select
-                      value={customAblation.retrieval_mode}
-                      onChange={(e) =>
-                        updateCustom(
-                          "retrieval_mode",
-                          e.target.value as AblationConfig["retrieval_mode"]
-                        )
-                      }
-                      className="ar-select mt-1 h-7.5 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-[11px] text-[var(--text-primary)] focus:outline-none"
-                    >
-                      <option value="hybrid">Hybrid (Dense + BM25 RRF)</option>
-                      <option value="dense_only">Dense Only</option>
-                      <option value="sparse_only">BM25 Sparse Only</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5 border-t border-[var(--border-subtle)] pt-2">
-                    {(
-                      [
-                        ["enable_query_routing", "Query Routing"],
-                        ["enable_multi_query", "Multi-Query Decomp."],
-                        ["enable_rerank", "Cross-Encoder Rerank"],
-                        ["enable_dynamic_k", "3-Stage Dynamic Top-K"],
-                        ["enable_confidence_gating", "Confidence + CRAG"],
-                        ["enable_web_fallback", "Web Search Fallback"],
-                        ["enable_citation_validation", "Two-Tier Cite Audit"],
-                      ] as const
-                    ).map(([key, lbl]) => (
-                      <CompactSwitch
-                        key={key}
-                        label={lbl}
-                        checked={customAblation[key]}
-                        onChange={(val) => updateCustom(key, val)}
-                      />
-                    ))}
-                  </div>
-
-                  {!customAblation.enable_dynamic_k && (
-                    <div className="border-t border-[var(--border-subtle)] pt-2">
-                      <div className="mb-1 flex justify-between text-[10.5px]">
-                        <span className="text-[var(--text-muted)]">Static Top-K</span>
-                        <span className="font-mono font-semibold text-[var(--text-primary)]">
-                          {customAblation.fixed_top_k}
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={1}
-                        max={15}
-                        value={customAblation.fixed_top_k}
-                        onChange={(e) =>
-                          updateCustom("fixed_top_k", Number(e.target.value))
-                        }
-                        className="ar-range w-full"
-                      />
-                    </div>
-                  )}
-
-                  <div className="space-y-2 border-t border-[var(--border-subtle)] pt-2">
-                    <div>
-                      <label className="text-[10px] font-medium text-[var(--text-muted)]">
-                        Small-to-Big Parent-Child
-                      </label>
-                      <select
-                        value={
-                          customAblation.enable_parent_child === true
-                            ? "enabled"
-                            : customAblation.enable_parent_child === false
-                              ? "disabled"
-                              : "default"
-                        }
-                        onChange={(e) =>
-                          updateCustom(
-                            "enable_parent_child",
-                            e.target.value === "enabled"
-                              ? true
-                              : e.target.value === "disabled"
-                                ? false
-                                : null
-                          )
-                        }
-                        className="ar-select mt-1 h-7.5 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-[11px] text-[var(--text-primary)] focus:outline-none"
-                      >
-                        <option value="default">Server Default</option>
-                        <option value="enabled">Force Enable (Expand Parents)</option>
-                        <option value="disabled">Force Disable (Child Only)</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-medium text-[var(--text-muted)]">
-                        Corpus Language Filter
-                      </label>
-                      <select
-                        value={customAblation.language_filter ?? "all"}
-                        onChange={(e) =>
-                          updateCustom(
-                            "language_filter",
-                            e.target.value === "all"
-                              ? null
-                              : (e.target.value as "en" | "tr")
-                          )
-                        }
-                        className="ar-select mt-1 h-7.5 w-full rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-[11px] text-[var(--text-primary)] focus:outline-none"
-                      >
-                        <option value="all">All (TR + EN)</option>
-                        <option value="en">English Only</option>
-                        <option value="tr">Turkish Only</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
-                <CompactSwitch
-                  label="Live SSE Trace Stream"
-                  checked={useStreaming}
-                  onChange={onUseStreamingChange}
-                />
-                <CompactSwitch
-                  label="Per-Request Cost Cap"
-                  checked={enableBudgetCap}
-                  onChange={onEnableBudgetCapChange}
-                />
-
-                {enableBudgetCap && (
-                  <div className="pt-0.5">
-                    <div className="mb-1 flex items-center justify-between text-[10.5px]">
-                      <span className="text-[var(--text-muted)]">Max Spend</span>
-                      <span className="font-mono font-medium text-[var(--text-primary)] tabular-nums">
-                        ${maxCostUsd.toFixed(2)}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0.01}
-                      max={0.5}
-                      step={0.01}
-                      value={maxCostUsd}
-                      onChange={(e) => onMaxCostUsdChange(Number(e.target.value))}
-                      className="ar-range w-full"
-                    />
-                  </div>
+                </button>
+                {sessions.length > 1 && (
+                  <IconButton
+                    icon={Trash2}
+                    size="sm"
+                    tone="bad"
+                    label={`Delete thread "${sess.title}"`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPendingDeleteId(sess.id);
+                    }}
+                    className="absolute top-1 right-1 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+                  />
                 )}
-              </div>
-            </div>
-          )}
-        </div>
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
-      {/* Runtime Health Footer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] p-2">
-        <div className="flex items-center justify-between gap-1">
-          <button
-            type="button"
-            onClick={() => setHealthExpanded((p) => !p)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-[var(--bg-elevated)] cursor-pointer"
-          >
-            <span className={`h-2 w-2 shrink-0 rounded-full ${statusTone}`} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[11.5px] font-medium text-[var(--text-primary)]">
-                  {health
-                    ? authRequiredMissingKey
-                      ? "API Key Required"
-                      : health.status === "ok"
-                        ? "Runtime Online"
-                        : "Runtime Degraded"
-                    : "Runtime Offline"}
-                </span>
-                <span className="shrink-0 font-mono text-[10px] text-[var(--text-muted)] tabular-nums">
-                  {qdrantPoints} pts
-                </span>
-              </div>
-              <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-[var(--text-muted)]">
-                <span>fc:{fcShort}</span>
-                <span className="opacity-40">/</span>
-                <span>lf:{lfShort}</span>
-              </div>
-            </div>
-          </button>
-          <button
-            type="button"
-            onClick={onRefreshHealth}
-            disabled={healthLoading}
-            title="Refresh backend status"
-            className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${healthLoading ? "animate-spin" : ""}`} />
-          </button>
-        </div>
-
-        {(healthExpanded || authRequiredMissingKey) && (
-          <div className="mt-1.5 space-y-2.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[10.5px]">
-            <div>
-              <label className="flex items-center gap-1 font-medium text-[var(--text-muted)]">
-                <Server className="h-3 w-3" /> Endpoint URL
-              </label>
-              <div className="mt-1 flex gap-1">
-                <input
-                  type="text"
-                  value={apiInput}
-                  placeholder="Same-origin or http://localhost:8000"
-                  onChange={(e) => setApiInput(e.target.value)}
-                  className="min-w-0 flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[10.5px] text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => onApiUrlChange(apiInput.trim().replace(/\/+$/, ""))}
-                  className="rounded bg-[var(--cta-bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--cta-fg)] hover:bg-[var(--cta-hover)] cursor-pointer"
-                >
-                  Set
-                </button>
-              </div>
-            </div>
-
-            {onApiKeyChange && (
-              <div>
-                <label className="flex items-center justify-between font-medium text-[var(--text-muted)]">
-                  <span className="inline-flex items-center gap-1">
-                    <KeyRound className="h-3 w-3" /> API Key (X-API-Key)
-                  </span>
-                  {apiKey.trim() && (
-                    <span className="font-mono text-[9.5px] text-emerald-500">
-                      active
-                    </span>
-                  )}
-                </label>
-                <div className="mt-1 flex gap-1">
-                  <input
-                    type="password"
-                    value={apiKeyInput}
-                    placeholder={
-                      health?.security?.api_key_auth_enabled
-                        ? "Required by server"
-                        : "Optional API_AUTH_KEY"
-                    }
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                    className="min-w-0 flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[10.5px] text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onApiKeyChange(apiKeyInput)}
-                    className="rounded bg-[var(--cta-bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--cta-fg)] hover:bg-[var(--cta-hover)] cursor-pointer"
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {health ? (
-              <dl className="space-y-1 border-t border-[var(--border-subtle)] pt-2 font-mono text-[10px]">
-                <div className="flex justify-between gap-2">
-                  <dt className="text-[var(--text-muted)]">fast_llm</dt>
-                  <dd className="truncate text-[var(--text-primary)]">{health.fast_model}</dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt className="text-[var(--text-muted)]">gen_llm</dt>
-                  <dd className="truncate text-[var(--text-primary)]">
-                    {health.generation_model}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt className="text-[var(--text-muted)]">reranker</dt>
-                  <dd className="truncate text-[var(--text-primary)]">
-                    {health.reranker_model.split("/").pop()}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt className="text-[var(--text-muted)]">fallback</dt>
-                  <dd className="truncate text-[var(--text-primary)]">
-                    {health.web_fallback_providers.join(", ") || "none"}
-                  </dd>
-                </div>
-                {health.parent_child_retrieval && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-[var(--text-muted)]">chunking</dt>
-                    <dd className="truncate text-[var(--text-primary)]">
-                      {health.parent_child_retrieval.enabled
-                        ? `${health.parent_child_retrieval.child_max_tokens}→${health.parent_child_retrieval.parent_max_tokens}`
-                        : "flat-512"}
-                    </dd>
-                  </div>
-                )}
-                {health.security && (
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-[var(--text-muted)]">guardrails</dt>
-                    <dd className="truncate text-[var(--text-primary)]">
-                      {health.security.guardrails_enabled
-                        ? `on (${health.security.pii_mode ?? "redact"})`
-                        : "off"}
-                      {health.security.api_key_auth_enabled ? " · auth" : ""}
-                      {health.security.rate_limit_enabled ? " · rl" : ""}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            ) : (
-              <p className="text-[10.5px] text-rose-400">
-                {healthError || "Start backend with `make api`."}
-              </p>
-            )}
-          </div>
-        )}
+      <div className="shrink-0 border-t border-line p-2">
+        <button
+          ref={footerRef}
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={connectionOpen}
+          onClick={() => setConnectionOpen((prev) => !prev)}
+          className={cn(
+            "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors",
+            connectionOpen ? "bg-hover" : "hover:bg-hover"
+          )}
+        >
+          <StatusDot tone={statusTone} pulse={healthLoading} />
+          <span className="min-w-0 flex-1">
+            <span className="block text-ui font-medium text-ink">{statusLabel}</span>
+            <span className="block truncate text-caption text-ink-3">{hostLabel(apiUrl)}</span>
+          </span>
+          <Settings2 className="h-4 w-4 shrink-0 text-ink-3" aria-hidden />
+        </button>
+        <Popover
+          open={connectionOpen}
+          onClose={() => setConnectionOpen(false)}
+          anchorRef={footerRef}
+          placement="top-start"
+          width={340}
+          ariaLabel="Connection settings"
+          className="p-0"
+        >
+          <ConnectionPanel
+            apiUrl={apiUrl}
+            onApiUrlChange={onApiUrlChange}
+            apiKey={apiKey}
+            onApiKeyChange={onApiKeyChange}
+            health={health}
+            healthError={healthError}
+            healthLoading={healthLoading}
+            onRefreshHealth={onRefreshHealth}
+          />
+        </Popover>
       </div>
     </aside>
   );

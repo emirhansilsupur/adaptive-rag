@@ -1,24 +1,17 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
-  AlertCircle,
-  CheckCircle2,
   ExternalLink,
   FileText,
   FolderSync,
   Globe,
-  Loader2,
   RefreshCw,
   Search,
   Trash2,
   UploadCloud,
   X,
 } from "lucide-react";
-import {
-  buildWebIngestPayload,
-  deleteDocument,
-  ingestPayload,
-  uploadFiles,
-} from "../lib/api";
+import { buildWebIngestPayload, deleteDocument, ingestPayload, uploadFiles } from "../lib/api";
+import { formatDuration, formatInt, languageName } from "../lib/format";
 import type {
   DocumentListResponse,
   HealthResponse,
@@ -26,6 +19,20 @@ import type {
   IngestResponse,
   PdfOcrMode,
 } from "../types/api";
+import {
+  Button,
+  Callout,
+  cn,
+  EmptyState,
+  Field,
+  IconButton,
+  INPUT_CLASS,
+  Segmented,
+  Spinner,
+  StatusDot,
+  Switch,
+  Tag,
+} from "./ui/primitives";
 
 interface KnowledgeBaseViewProps {
   apiUrl: string;
@@ -38,37 +45,75 @@ interface KnowledgeBaseViewProps {
 
 const ACCEPTED_EXTS = [".md", ".markdown", ".txt", ".pdf"];
 
+const OCR_MODES: { value: PdfOcrMode; label: string; hint: string }[] = [
+  {
+    value: "auto",
+    label: "Auto",
+    hint: "Reads the text layer first, uses OCRia-nano for scanned pages and a vision model as a last resort.",
+  },
+  { value: "ocria_nano", label: "OCRia-nano", hint: "Local ONNX OCR for every scanned page. No API cost." },
+  { value: "vision_llm", label: "Vision LLM", hint: "Sends scanned pages to the configured vision model." },
+  { value: "off", label: "Off", hint: "Uses only the embedded text layer. Scanned pages come out empty." },
+];
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function InlineSwitch({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-}) {
+interface IngestFeedback {
+  kind: "success" | "error";
+  title: string;
+  lines: string[];
+  urls?: string[];
+}
+
+function describeIngest(res: IngestResponse, what: string): IngestFeedback {
+  const lines = [
+    `${formatInt(res.documents_processed)} ${what} split into ${formatInt(res.chunks_created)} passages.`,
+  ];
+  if (res.parent_child_enabled) {
+    lines.push(`${formatInt(res.unique_parents_created ?? 0)} parent sections created.`);
+  }
+  if ((res.ocr_pages_processed ?? 0) > 0) {
+    const backends =
+      res.ocr_backends_used && res.ocr_backends_used.length > 0
+        ? ` with ${res.ocr_backends_used.join(" and ")}`
+        : "";
+    lines.push(`${formatInt(res.ocr_pages_processed ?? 0)} scanned pages read${backends}.`);
+  }
+  lines.push(
+    `The collection now holds ${formatInt(res.total_collection_points)} passages. Took ${formatDuration(res.elapsed_ms)}.`
+  );
+  return { kind: "success", title: "Indexing finished", lines, urls: res.source_urls };
+}
+
+function ResultCallout({ feedback }: { feedback: IngestFeedback }) {
   return (
-    <label className="group flex items-center justify-between gap-3 py-0.5 cursor-pointer select-none">
-      <span className="text-xs text-[var(--text-secondary)] transition group-hover:text-[var(--text-primary)]">
-        {label}
-      </span>
-      <span className="relative inline-flex h-4 w-7 shrink-0 items-center">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => onChange(e.target.checked)}
-          className="peer sr-only"
-        />
-        <span className="h-4 w-7 rounded-full border border-[var(--border-strong)] bg-[var(--bg-elevated)] transition-colors peer-checked:border-transparent peer-checked:bg-[var(--cta-bg)]" />
-        <span className="pointer-events-none absolute left-0.5 h-3 w-3 rounded-full bg-[var(--text-muted)] transition-transform peer-checked:translate-x-3 peer-checked:bg-[var(--cta-fg)]" />
-      </span>
-    </label>
+    <Callout
+      live
+      tone={feedback.kind === "success" ? "ok" : "bad"}
+      title={feedback.title}
+      className="mt-4"
+    >
+      <ul className="space-y-0.5">
+        {feedback.lines.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      {feedback.urls && feedback.urls.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5 text-small">
+          {feedback.urls.slice(0, 8).map((u) => (
+            <li key={u} className="truncate">
+              <a href={u} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                {u}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Callout>
   );
 }
 
@@ -84,18 +129,15 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [recreateCollection, setRecreateCollection] = useState(false);
-  const [parentChildChunking, setParentChildChunking] = useState<boolean>(
-    () => Boolean(health?.parent_child_retrieval?.enabled)
+  const [parentChildChunking, setParentChildChunking] = useState<boolean>(() =>
+    Boolean(health?.parent_child_retrieval?.enabled)
   );
   const [pdfOcrMode, setPdfOcrMode] = useState<PdfOcrMode>(
     () => health?.pdf_ocr?.default_mode ?? "auto"
   );
   const [uploading, setUploading] = useState(false);
   const [indexingLocal, setIndexingLocal] = useState(false);
-  const [uploadFeedback, setUploadFeedback] = useState<{
-    kind: "success" | "error";
-    message: string;
-  } | null>(null);
+  const [uploadFeedback, setUploadFeedback] = useState<IngestFeedback | null>(null);
 
   const [webMode, setWebMode] = useState<"scrape" | "crawl">("scrape");
   const [urlsText, setUrlsText] = useState("");
@@ -104,11 +146,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const [crawlDepth, setCrawlDepth] = useState(2);
   const [onlyMainContent, setOnlyMainContent] = useState(true);
   const [webLoading, setWebLoading] = useState(false);
-  const [webFeedback, setWebFeedback] = useState<{
-    kind: "success" | "error";
-    message: string;
-    urls?: string[];
-  } | null>(null);
+  const [webFeedback, setWebFeedback] = useState<IngestFeedback | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [originFilter, setOriginFilter] = useState<"all" | "local" | "web">("all");
@@ -121,13 +159,16 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const webCount = docs.filter((d) => d.source_origin === "web").length;
   const fcStatus = health?.firecrawl?.status || "unknown";
   const fcBaseUrl = health?.firecrawl?.base_url || "http://localhost:3002";
+  const crawlerReady = fcStatus === "ok";
+  const passages = health?.qdrant?.points_count ?? documentsData?.total_chunks ?? 0;
+  const collection = health?.qdrant?.collection || documentsData?.collection || "adaptiverag_docs";
+  const parentSizes = health?.parent_child_retrieval;
+  const ocrHint = OCR_MODES.find((m) => m.value === pdfOcrMode)?.hint;
 
   const filteredDocs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return docs.filter((doc) => {
-      if (originFilter !== "all" && doc.source_origin !== originFilter) {
-        return false;
-      }
+      if (originFilter !== "all" && doc.source_origin !== originFilter) return false;
       if (!q) return true;
       return (
         doc.title.toLowerCase().includes(q) ||
@@ -144,20 +185,18 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     const rejected: string[] = [];
     for (const file of arr) {
       const lower = file.name.toLowerCase();
-      if (ACCEPTED_EXTS.some((ext) => lower.endsWith(ext))) {
-        valid.push(file);
-      } else {
-        rejected.push(file.name);
-      }
+      if (ACCEPTED_EXTS.some((ext) => lower.endsWith(ext))) valid.push(file);
+      else rejected.push(file.name);
     }
-    if (rejected.length > 0) {
-      setUploadFeedback({
-        kind: "error",
-        message: `Skipped unsupported file(s): ${rejected.join(", ")}. Supported: .md, .txt, .pdf`,
-      });
-    } else {
-      setUploadFeedback(null);
-    }
+    setUploadFeedback(
+      rejected.length > 0
+        ? {
+            kind: "error",
+            title: `Skipped ${rejected.length} unsupported ${rejected.length === 1 ? "file" : "files"}`,
+            lines: [`${rejected.join(", ")}. Use Markdown, plain text or PDF.`],
+          }
+        : null
+    );
     if (valid.length > 0) {
       setQueuedFiles((prev) => {
         const names = new Set(prev.map((f) => f.name));
@@ -166,38 +205,27 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
     }
   };
 
+  const errorFeedback = (err: unknown, title: string): IngestFeedback => ({
+    kind: "error",
+    title,
+    lines: [err instanceof Error ? err.message : String(err)],
+  });
+
   const handleUploadSubmit = async () => {
     if (queuedFiles.length === 0) return;
     setUploading(true);
     setUploadFeedback(null);
     try {
-      const res: IngestResponse = await uploadFiles(apiUrl, queuedFiles, {
+      const res = await uploadFiles(apiUrl, queuedFiles, {
         recreateCollection,
         parentChild: parentChildChunking,
         ocrMode: pdfOcrMode,
       });
       setQueuedFiles([]);
-      const parentSuffix = res.parent_child_enabled
-        ? ` · ${res.unique_parents_created ?? 0} parent sections`
-        : "";
-      const ocrSuffix =
-        (res.ocr_pages_processed ?? 0) > 0
-          ? ` · ${res.ocr_pages_processed} OCR page(s)${
-              res.ocr_backends_used && res.ocr_backends_used.length > 0
-                ? ` [${res.ocr_backends_used.join("+")}]`
-                : ""
-            }`
-          : "";
-      setUploadFeedback({
-        kind: "success",
-        message: `Indexed ${res.documents_processed} uploaded file(s) → ${res.chunks_created} chunks${parentSuffix}${ocrSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
-      });
+      setUploadFeedback(describeIngest(res, res.documents_processed === 1 ? "file" : "files"));
       await onRefreshAll();
     } catch (err) {
-      setUploadFeedback({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setUploadFeedback(errorFeedback(err, "Upload failed"));
     } finally {
       setUploading(false);
     }
@@ -212,27 +240,12 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         parent_child: parentChildChunking,
         ocr_mode: pdfOcrMode,
       });
-      const parentSuffix = res.parent_child_enabled
-        ? ` · ${res.unique_parents_created ?? 0} parent sections`
-        : "";
-      const ocrSuffix =
-        (res.ocr_pages_processed ?? 0) > 0
-          ? ` · ${res.ocr_pages_processed} OCR page(s)${
-              res.ocr_backends_used && res.ocr_backends_used.length > 0
-                ? ` [${res.ocr_backends_used.join("+")}]`
-                : ""
-            }`
-          : "";
-      setUploadFeedback({
-        kind: "success",
-        message: `Indexed local corpus (${res.source}): ${res.documents_processed} docs → ${res.chunks_created} chunks${parentSuffix}${ocrSuffix} (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
-      });
+      setUploadFeedback(
+        describeIngest(res, res.documents_processed === 1 ? `document from ${res.source}` : `documents from ${res.source}`)
+      );
       await onRefreshAll();
     } catch (err) {
-      setUploadFeedback({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setUploadFeedback(errorFeedback(err, "Re-indexing failed"));
     } finally {
       setIndexingLocal(false);
     }
@@ -254,27 +267,17 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
         parentChild: parentChildChunking,
       });
     } catch (err) {
-      setWebFeedback({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setWebFeedback(errorFeedback(err, "Check the address"));
       return;
     }
 
     setWebLoading(true);
     try {
       const res = await ingestPayload(apiUrl, payload);
-      setWebFeedback({
-        kind: "success",
-        message: `Indexed ${res.documents_processed} web page(s) → ${res.chunks_created} chunks (${res.total_collection_points} total points in ${Math.round(res.elapsed_ms)} ms).`,
-        urls: res.source_urls,
-      });
+      setWebFeedback(describeIngest(res, res.documents_processed === 1 ? "web page" : "web pages"));
       await onRefreshAll();
     } catch (err) {
-      setWebFeedback({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setWebFeedback(errorFeedback(err, webMode === "crawl" ? "Crawl failed" : "Import failed"));
     } finally {
       setWebLoading(false);
     }
@@ -295,117 +298,90 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[var(--bg-canvas)]">
-      <div className="mx-auto max-w-6xl space-y-6 px-5 py-6 sm:px-8">
+    <div className="flex-1 overflow-y-auto bg-paper">
+      <div className="mx-auto max-w-6xl px-4 pt-8 pb-14 sm:px-8">
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold tracking-tight text-[var(--text-primary)]">
-              Corpus &amp; Ingestion
-            </h2>
-            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
-              Inspect Qdrant hybrid vectors, index Markdown/PDF/Text files, or crawl
-              documentation via Firecrawl Local.
+            <h1 className="text-heading font-semibold tracking-[-0.01em] text-ink">Knowledge base</h1>
+            <p className="mt-1 max-w-[40rem] text-ui text-ink-2">
+              The documents and web pages the pipeline can retrieve from. Everything here is split into
+              passages and indexed for hybrid search.
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            icon={RefreshCw}
+            size="sm"
+            loading={documentsLoading}
             onClick={() => void onRefreshAll()}
-            disabled={documentsLoading}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 text-xs font-medium text-[var(--text-primary)] transition hover:bg-[var(--bg-elevated)] cursor-pointer disabled:opacity-50"
           >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${documentsLoading ? "animate-spin" : ""}`}
-            />
-            <span>Refresh</span>
-          </button>
+            Refresh
+          </Button>
         </div>
 
-        {/* 4-Column Hairline KPI Ledger */}
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--border-subtle)] lg:grid-cols-4">
-          <div className="bg-[var(--bg-surface)] p-4">
-            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Documents
-            </div>
-            <div className="mt-1.5 font-mono text-xl font-semibold text-[var(--text-primary)] tabular-nums">
-              {documentsData?.total_documents ?? 0}
-            </div>
-            <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-              {localCount} local · {webCount} web
-            </div>
+        {/* Collection summary */}
+        <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line lg:grid-cols-4">
+          <div className="bg-paper px-4 py-3.5">
+            <dt className="text-caption text-ink-3">Documents</dt>
+            <dd className="mt-1 text-heading font-semibold tabular-nums text-ink">
+              {formatInt(documentsData?.total_documents ?? 0)}
+            </dd>
+            <dd className="mt-0.5 text-small text-ink-3">
+              {localCount} from files, {webCount} from the web
+            </dd>
           </div>
-
-          <div className="bg-[var(--bg-surface)] p-4">
-            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Qdrant Points
-            </div>
-            <div className="mt-1.5 font-mono text-xl font-semibold text-[var(--text-primary)] tabular-nums">
-              {(
-                health?.qdrant?.points_count ??
-                documentsData?.total_chunks ??
-                0
-              ).toLocaleString("en-US")}
-            </div>
-            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-              {health?.qdrant?.collection ||
-                documentsData?.collection ||
-                "adaptiverag_docs"}
-            </div>
+          <div className="bg-paper px-4 py-3.5">
+            <dt className="text-caption text-ink-3">Passages</dt>
+            <dd className="mt-1 text-heading font-semibold tabular-nums text-ink">
+              {formatInt(passages)}
+            </dd>
+            <dd className="mt-0.5 truncate text-small text-ink-3">
+              in <span className="font-mono text-[11.5px]">{collection}</span>
+            </dd>
           </div>
-
-          <div className="bg-[var(--bg-surface)] p-4">
-            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Vector Index
-            </div>
-            <div className="mt-1.5 font-mono text-sm font-semibold text-[var(--text-primary)]">
-              Dense + BM25 RRF
-            </div>
-            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-              {health?.dense_embedding_model ||
-                "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"}
-            </div>
+          <div className="bg-paper px-4 py-3.5">
+            <dt className="text-caption text-ink-3">Search index</dt>
+            <dd className="mt-1 text-body font-medium text-ink">Dense + BM25, fused with RRF</dd>
+            <dd
+              className="mt-0.5 truncate font-mono text-[11.5px] text-ink-3"
+              title={health?.dense_embedding_model}
+            >
+              {health?.dense_embedding_model?.split("/").pop() ||
+                "paraphrase-multilingual-mpnet-base-v2"}
+            </dd>
           </div>
-
-          <div className="bg-[var(--bg-surface)] p-4">
-            <div className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-              Firecrawl Local
-            </div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  fcStatus === "ok"
-                    ? "bg-emerald-500"
-                    : fcStatus === "unreachable"
-                      ? "bg-amber-500"
-                      : "bg-zinc-500"
-                }`}
-              />
-              <span className="font-mono text-sm font-semibold uppercase text-[var(--text-primary)]">
-                {fcStatus}
-              </span>
-            </div>
-            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-              {fcBaseUrl}
-            </div>
+          <div className="bg-paper px-4 py-3.5">
+            <dt className="text-caption text-ink-3">Web crawler</dt>
+            <dd className="mt-1 flex items-center gap-2 text-body font-medium text-ink">
+              <StatusDot tone={crawlerReady ? "ok" : fcStatus === "unreachable" ? "warn" : "neutral"} />
+              {crawlerReady ? "Ready" : fcStatus === "unreachable" ? "Unreachable" : "Not configured"}
+            </dd>
+            <dd className="mt-0.5 truncate font-mono text-[11.5px] text-ink-3">{fcBaseUrl}</dd>
           </div>
-        </div>
+        </dl>
 
-        {/* Two-Column Ingestion Panels */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Panel 1: File Upload & Local Corpus */}
-          <div className="flex flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5">
-            <div>
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                Local Files &amp; Corpus Directory
-              </h3>
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                Structure-aware chunking with idempotent Qdrant point IDs (.md, .txt,
-                .pdf)
-              </p>
-            </div>
+        {/* Add documents */}
+        <h2 className="mt-10 text-body font-semibold text-ink">Add documents</h2>
+        <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Files */}
+          <section className="flex flex-col rounded-xl border border-line bg-paper p-5" aria-labelledby="kb-files">
+            <h3 id="kb-files" className="text-ui font-semibold text-ink">
+              Upload files
+            </h3>
+            <p className="mt-0.5 text-small text-ink-3">
+              Markdown, plain text and PDF. Headings and tables are kept when splitting.
+            </p>
 
-            {/* Minimal Dropzone */}
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="Choose files to upload"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragActive(true);
@@ -414,16 +390,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
               onDrop={(e) => {
                 e.preventDefault();
                 setDragActive(false);
-                if (e.dataTransfer.files.length > 0) {
-                  addFiles(e.dataTransfer.files);
-                }
+                if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
               }}
               onClick={() => fileInputRef.current?.click()}
-              className={`mt-4 flex flex-col items-center justify-center rounded-lg border border-dashed px-4 py-6 text-center transition cursor-pointer ${
-                dragActive
-                  ? "border-[var(--text-primary)] bg-[var(--bg-elevated)]"
-                  : "border-[var(--border-strong)] bg-[var(--bg-canvas)]/50 hover:bg-[var(--bg-elevated)]/50"
-              }`}
+              className={cn(
+                "mt-4 flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 py-7 text-center transition-colors",
+                dragActive ? "border-accent bg-accent-soft" : "border-line-strong bg-sunken hover:tint"
+              )}
             >
               <input
                 ref={fileInputRef}
@@ -438,238 +411,168 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                   }
                 }}
               />
-              <UploadCloud className="h-5 w-5 text-[var(--text-muted)]" />
-              <p className="mt-2 text-xs font-medium text-[var(--text-primary)]">
-                Drop Markdown, Text, or PDF files, or click to select
-              </p>
-              <p className="mt-0.5 font-mono text-[10.5px] text-[var(--text-muted)]">
-                max 20 files · 15 MB/file
-              </p>
+              <UploadCloud className="h-5 w-5 text-ink-3" aria-hidden />
+              <p className="mt-2 text-ui font-medium text-ink">Drop files here or click to choose</p>
+              <p className="mt-0.5 text-small text-ink-3">Up to 20 files, 15 MB each</p>
             </div>
 
             {queuedFiles.length > 0 && (
-              <div className="mt-3 space-y-1">
+              <ul className="mt-3 divide-y divide-line rounded-lg border border-line">
                 {queuedFiles.map((file) => (
-                  <div
-                    key={file.name}
-                    className="flex items-center justify-between gap-2 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-2.5 py-1.5 text-xs"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
-                      <span className="truncate font-medium text-[var(--text-primary)]">
-                        {file.name}
-                      </span>
-                      <span className="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">
+                  <li key={file.name} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <FileText className="h-4 w-4 shrink-0 text-ink-3" aria-hidden />
+                      <span className="truncate text-ui text-ink">{file.name}</span>
+                      <span className="shrink-0 text-small tabular-nums text-ink-3">
                         {formatBytes(file.size)}
                       </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setQueuedFiles((prev) =>
-                          prev.filter((f) => f.name !== file.name)
-                        )
-                      }
-                      className="rounded p-0.5 text-[var(--text-muted)] hover:text-rose-500 cursor-pointer"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                    </span>
+                    <IconButton
+                      icon={X}
+                      size="sm"
+                      tone="bad"
+                      label={`Remove ${file.name}`}
+                      onClick={() => setQueuedFiles((prev) => prev.filter((f) => f.name !== file.name))}
+                    />
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
 
-            <div className="mt-4 space-y-2.5 border-t border-[var(--border-subtle)] pt-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-[var(--text-secondary)]">PDF OCR</span>
-                  {health?.pdf_ocr?.ocria_nano_installed && (
-                    <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-muted)]">
-                      OCRia-nano ready
-                    </span>
-                  )}
+            <div className="mt-5 space-y-4 border-t border-line pt-4">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="flex items-center gap-2 text-ui text-ink">
+                    PDF text recognition
+                    {health?.pdf_ocr?.ocria_nano_installed && <Tag tone="ok">OCRia-nano ready</Tag>}
+                  </span>
+                  <Segmented
+                    ariaLabel="PDF OCR mode"
+                    value={pdfOcrMode}
+                    onChange={setPdfOcrMode}
+                    options={OCR_MODES.map((m) => ({ value: m.value, label: m.label }))}
+                  />
                 </div>
-                <div
-                  role="group"
-                  aria-label="PDF OCR mode"
-                  className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]"
-                >
-                  {(
-                    [
-                      ["auto", "Auto 2-Tier"],
-                      ["ocria_nano", "OCRia-nano"],
-                      ["vision_llm", "Vision LLM"],
-                      ["off", "Off"],
-                    ] as const
-                  ).map(([modeVal, modeLabel]) => (
-                    <button
-                      key={modeVal}
-                      type="button"
-                      onClick={() => setPdfOcrMode(modeVal)}
-                      className={`rounded px-2 py-0.5 font-medium transition cursor-pointer ${
-                        pdfOcrMode === modeVal
-                          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                          : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {modeLabel}
-                    </button>
-                  ))}
-                </div>
+                {ocrHint && <p className="mt-1.5 text-small text-ink-3">{ocrHint}</p>}
               </div>
-              <InlineSwitch
-                label="Hierarchical Parent-Child chunking (256 → 1000 tok)"
+              <Switch
+                label="Hierarchical parent-child chunking"
+                description={`Index small ${parentSizes?.child_max_tokens ?? 256}-token passages and answer from their ${formatInt(parentSizes?.parent_max_tokens ?? 1000)}-token parent sections.`}
                 checked={parentChildChunking}
                 onChange={setParentChildChunking}
               />
-              <InlineSwitch
-                label="Recreate Qdrant collection before indexing"
+              <Switch
+                label="Clear the collection first"
+                description="Deletes every indexed passage before indexing. This can't be undone."
                 checked={recreateCollection}
                 onChange={setRecreateCollection}
               />
             </div>
 
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={queuedFiles.length === 0 || uploading}
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button
+                variant="primary"
+                icon={UploadCloud}
+                loading={uploading}
+                disabled={queuedFiles.length === 0}
                 onClick={() => void handleUploadSubmit()}
-                className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md bg-[var(--cta-bg)] px-3 text-xs font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-35 cursor-pointer"
+                className="min-w-[10rem] flex-1"
               >
-                {uploading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <UploadCloud className="h-3.5 w-3.5" />
-                )}
-                <span>
-                  {uploading
-                    ? "Indexing..."
-                    : `Upload & Index${queuedFiles.length > 0 ? ` (${queuedFiles.length})` : ""}`}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                disabled={indexingLocal}
+                {uploading
+                  ? "Indexing…"
+                  : queuedFiles.length > 0
+                    ? `Upload and index ${queuedFiles.length} ${queuedFiles.length === 1 ? "file" : "files"}`
+                    : "Upload and index"}
+              </Button>
+              <Button
+                icon={FolderSync}
+                loading={indexingLocal}
                 onClick={() => void handleReindexLocalCorpus()}
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[var(--border-strong)] bg-[var(--bg-elevated)] px-3 text-xs font-medium text-[var(--text-primary)] transition hover:bg-[var(--bg-hover)] disabled:opacity-45 cursor-pointer"
+                title="Index every supported file in the server's data/raw folder"
               >
-                {indexingLocal ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <FolderSync className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                )}
-                <span>Index data/raw</span>
-              </button>
+                Re-index data/raw
+              </Button>
             </div>
 
-            {uploadFeedback && (
-              <div
-                className={`mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
-                  uploadFeedback.kind === "success"
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
-                }`}
-              >
-                {uploadFeedback.kind === "success" ? (
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                ) : (
-                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                )}
-                <span>{uploadFeedback.message}</span>
-              </div>
-            )}
-          </div>
+            {uploadFeedback && <ResultCallout feedback={uploadFeedback} />}
+          </section>
 
-          {/* Panel 2: Firecrawl Local Web Ingestion */}
+          {/* Web */}
           <form
             onSubmit={(e) => void handleWebIngest(e)}
-            className="flex flex-col rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5"
+            className="flex flex-col rounded-xl border border-line bg-paper p-5"
+            aria-labelledby="kb-web"
           >
-            <div className="flex items-start justify-between gap-2">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                  Web URL &amp; Docs Crawl
+                <h3 id="kb-web" className="text-ui font-semibold text-ink">
+                  Import from the web
                 </h3>
-                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                  Powered by <code className="font-mono">firecrawl-local</code> · SSRF
-                  validated
+                <p className="mt-0.5 text-small text-ink-3">
+                  Fetched with Firecrawl Local. Private and internal addresses are blocked.
                 </p>
               </div>
-
-              <div className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => setWebMode("scrape")}
-                  className={`rounded px-2.5 py-1 font-medium transition cursor-pointer ${
-                    webMode === "scrape"
-                      ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  }`}
-                >
-                  Scrape URL(s)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWebMode("crawl")}
-                  className={`rounded px-2.5 py-1 font-medium transition cursor-pointer ${
-                    webMode === "crawl"
-                      ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  }`}
-                >
-                  Crawl Docs
-                </button>
-              </div>
+              <Segmented
+                ariaLabel="Web import mode"
+                value={webMode}
+                onChange={setWebMode}
+                options={[
+                  { value: "scrape", label: "Pages" },
+                  { value: "crawl", label: "Whole site" },
+                ]}
+              />
             </div>
 
-            {fcStatus !== "ok" && (
-              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] text-amber-700 dark:text-amber-300">
-                Firecrawl Local is <strong>{fcStatus}</strong> at{" "}
-                <code className="font-mono">{fcBaseUrl}</code>. Start with{" "}
-                <code className="font-mono">FIRECRAWL_CLOUD=off firecrawl-local serve</code>.
-              </div>
+            {!crawlerReady && (
+              <Callout tone="warn" className="mt-4" title="The web crawler isn't reachable">
+                Start it with{" "}
+                <code className="rounded-[4px] bg-paper px-1 font-mono text-[11.5px] text-ink">
+                  FIRECRAWL_CLOUD=off firecrawl-local serve
+                </code>{" "}
+                and expect it at <span className="font-mono text-[11.5px]">{fcBaseUrl}</span>.
+              </Callout>
             )}
 
-            <div className="mt-4 flex-1 space-y-3">
+            <div className="mt-4 flex-1 space-y-4">
               {webMode === "scrape" ? (
-                <div>
-                  <label className="block text-[11px] font-medium text-[var(--text-secondary)]">
-                    Public HTTP/HTTPS URLs (one per line, max 25)
-                  </label>
+                <Field
+                  label="Page addresses"
+                  htmlFor="kb-urls"
+                  hint="One URL per line, up to 25. Each page becomes one document."
+                >
                   <textarea
-                    rows={4}
+                    id="kb-urls"
+                    rows={5}
                     value={urlsText}
                     onChange={(e) => setUrlsText(e.target.value)}
-                    placeholder={
-                      "https://docs.qdrant.tech/concepts/hybrid-queries/\nhttps://docs.firecrawl.dev/quickstarts/firecrawl-local"
-                    }
-                    className="mt-1.5 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                    placeholder={"https://docs.qdrant.tech/concepts/hybrid-queries/\nhttps://docs.firecrawl.dev/quickstarts/firecrawl-local"}
+                    className={cn(INPUT_CLASS, "resize-y px-3 py-2 font-mono text-small leading-relaxed")}
                   />
-                </div>
+                </Field>
               ) : (
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-[var(--text-secondary)]">
-                      Root Documentation URL
-                    </label>
+                <>
+                  <Field
+                    label="Start page"
+                    htmlFor="kb-crawl-url"
+                    hint="Links are followed only within this site."
+                  >
                     <input
+                      id="kb-crawl-url"
                       type="url"
                       value={crawlUrl}
                       onChange={(e) => setCrawlUrl(e.target.value)}
                       placeholder="https://docs.qdrant.tech/concepts/"
-                      className="mt-1.5 h-8 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 px-3 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                      className={cn(INPUT_CLASS, "h-8 px-3 font-mono text-small")}
                     />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <div className="mb-1 flex items-center justify-between text-[11px]">
-                        <span className="text-[var(--text-secondary)]">Max Pages</span>
-                        <span className="font-mono font-medium text-[var(--text-primary)]">
-                          {crawlLimit}
-                        </span>
-                      </div>
+                  </Field>
+                  <div className="grid grid-cols-2 gap-4">
+                    <Field
+                      label="Pages"
+                      htmlFor="kb-crawl-limit"
+                      aside={<span className="text-small font-medium tabular-nums text-ink">{crawlLimit}</span>}
+                    >
                       <input
+                        id="kb-crawl-limit"
                         type="range"
                         min={1}
                         max={25}
@@ -677,15 +580,14 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         onChange={(e) => setCrawlLimit(Number(e.target.value))}
                         className="ar-range w-full"
                       />
-                    </div>
-                    <div>
-                      <div className="mb-1 flex items-center justify-between text-[11px]">
-                        <span className="text-[var(--text-secondary)]">Link Depth</span>
-                        <span className="font-mono font-medium text-[var(--text-primary)]">
-                          {crawlDepth}
-                        </span>
-                      </div>
+                    </Field>
+                    <Field
+                      label="Link depth"
+                      htmlFor="kb-crawl-depth"
+                      aside={<span className="text-small font-medium tabular-nums text-ink">{crawlDepth}</span>}
+                    >
                       <input
+                        id="kb-crawl-depth"
                         type="range"
                         min={1}
                         max={4}
@@ -693,251 +595,193 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
                         onChange={(e) => setCrawlDepth(Number(e.target.value))}
                         className="ar-range w-full"
                       />
-                    </div>
+                    </Field>
                   </div>
-                </div>
+                </>
               )}
 
-              <div className="border-t border-[var(--border-subtle)] pt-2.5">
-                <InlineSwitch
-                  label="Extract main article content only (strip navbars & footers)"
+              <div className="border-t border-line pt-4">
+                <Switch
+                  label="Main content only"
+                  description="Drops navigation bars, footers and cookie banners."
                   checked={onlyMainContent}
                   onChange={setOnlyMainContent}
                 />
               </div>
             </div>
 
-            <button
+            <Button
               type="submit"
-              disabled={webLoading}
-              className="mt-4 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-[var(--cta-bg)] px-3 text-xs font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-40 cursor-pointer"
+              variant="primary"
+              icon={Globe}
+              loading={webLoading}
+              className="mt-5 w-full"
             >
-              {webLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Globe className="h-3.5 w-3.5" />
-              )}
-              <span>
-                {webLoading
-                  ? webMode === "crawl"
-                    ? `Crawling up to ${crawlLimit} pages...`
-                    : "Scraping & Indexing..."
-                  : webMode === "crawl"
-                    ? "Crawl Docs Site & Index"
-                    : "Scrape URL(s) & Index"}
-              </span>
-            </button>
+              {webLoading
+                ? webMode === "crawl"
+                  ? `Crawling up to ${crawlLimit} pages…`
+                  : "Importing…"
+                : webMode === "crawl"
+                  ? "Crawl and index the site"
+                  : "Import and index pages"}
+            </Button>
 
-            {webFeedback && (
-              <div
-                className={`mt-3 space-y-1.5 rounded-md border px-3 py-2 text-xs ${
-                  webFeedback.kind === "success"
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  {webFeedback.kind === "success" ? (
-                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  ) : (
-                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  )}
-                  <span>{webFeedback.message}</span>
-                </div>
-                {webFeedback.urls && webFeedback.urls.length > 0 && (
-                  <ul className="space-y-0.5 pl-5 font-mono text-[10.5px]">
-                    {webFeedback.urls.slice(0, 8).map((u) => (
-                      <li key={u} className="truncate">
-                        <a
-                          href={u}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline hover:opacity-80"
-                        >
-                          {u}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
+            {webFeedback && <ResultCallout feedback={webFeedback} />}
           </form>
         </div>
 
-        {/* Indexed Documents Table */}
-        <div className="overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
-            <div className="flex items-center gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
-                Indexed Sources
-              </h3>
-              <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[10.5px] text-[var(--text-muted)] tabular-nums">
-                {filteredDocs.length}
-              </span>
-            </div>
-
+        {/* Documents table */}
+        <section className="mt-10" aria-labelledby="kb-docs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 id="kb-docs" className="flex items-baseline gap-2 text-body font-semibold text-ink">
+              Indexed documents
+              <span className="text-ui font-normal tabular-nums text-ink-3">{filteredDocs.length}</span>
+            </h2>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
-                <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-ink-3"
+                  aria-hidden
+                />
                 <input
-                  type="text"
+                  type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter sources..."
-                  className="h-7.5 w-52 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)]/70 pr-3 pl-7 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                  placeholder="Filter by title, ID or URL"
+                  aria-label="Filter documents"
+                  className={cn(INPUT_CLASS, "h-8 w-60 pr-3 pl-8")}
                 />
               </div>
-
-              <div className="inline-flex shrink-0 whitespace-nowrap rounded-md border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-0.5 text-[11px]">
-                {(
-                  [
-                    ["all", "All"],
-                    ["local", "Local"],
-                    ["web", "Web"],
-                  ] as const
-                ).map(([val, lbl]) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => setOriginFilter(val)}
-                    className={`rounded px-2.5 py-0.5 font-medium transition cursor-pointer ${
-                      originFilter === val
-                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                ariaLabel="Filter by origin"
+                value={originFilter}
+                onChange={setOriginFilter}
+                options={[
+                  { value: "all", label: "All" },
+                  { value: "local", label: "Files" },
+                  { value: "web", label: "Web" },
+                ]}
+              />
             </div>
           </div>
 
           {(documentsError || deleteError) && (
-            <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-500">
+            <Callout live tone="bad" className="mt-3" title="Couldn't load or change documents">
               {deleteError || documentsError}
-            </div>
+            </Callout>
           )}
 
-          {documentsLoading && docs.length === 0 ? (
-            <div className="flex items-center justify-center gap-2 py-12 text-xs text-[var(--text-muted)]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              <span>Loading indexed documents from Qdrant...</span>
-            </div>
-          ) : filteredDocs.length === 0 ? (
-            <div className="py-12 text-center text-xs text-[var(--text-muted)]">
-              {docs.length === 0
-                ? "No documents indexed yet. Upload files, index data/raw, or scrape a URL above."
-                : "No documents match your current search filter."}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)]/45 font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                  <tr>
-                    <th className="px-4 py-2.5">Source</th>
-                    <th className="px-3 py-2.5">Type</th>
-                    <th className="px-3 py-2.5">Lang</th>
-                    <th className="px-3 py-2.5 text-right">Chunks</th>
-                    <th className="px-3 py-2.5 text-right">Tokens</th>
-                    <th className="px-4 py-2.5 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)]">
-                  {filteredDocs.map((doc) => {
-                    const isWeb = doc.source_origin === "web";
-                    const isConfirming = confirmDeleteId === doc.doc_id;
-                    const isDeleting = deletingId === doc.doc_id;
-                    return (
-                      <tr
-                        key={doc.doc_id}
-                        className="transition hover:bg-[var(--bg-elevated)]/35"
-                      >
-                        <td className="max-w-md px-4 py-2.5">
-                          <div className="truncate font-medium text-[var(--text-primary)]">
-                            {doc.title}
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] text-[var(--text-muted)]">
-                            <span className="truncate">{doc.doc_id}</span>
-                            {doc.chunk_strategy === "parent_child" && (
-                              <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1 py-0.2 text-[9.5px] font-medium text-[var(--text-secondary)]">
-                                Small→Big
-                              </span>
-                            )}
-                            {doc.source_url && (
-                              <a
-                                href={doc.source_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex shrink-0 items-center gap-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:underline"
-                              >
-                                <ExternalLink className="h-2.5 w-2.5" />
-                                <span>URL</span>
-                              </a>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <span className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
-                            {isWeb ? (
-                              <Globe className="h-2.5 w-2.5 text-amber-500" />
-                            ) : (
-                              <FileText className="h-2.5 w-2.5 text-[var(--text-muted)]" />
-                            )}
-                            {isWeb ? "WEB" : doc.doc_type.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <span className="font-mono text-[10.5px] uppercase text-[var(--text-secondary)]">
-                            {doc.language}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-mono font-medium text-[var(--text-primary)] tabular-nums">
-                          {doc.chunk_count}
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-mono text-[var(--text-secondary)] tabular-nums">
-                          {doc.total_tokens.toLocaleString("en-US")}
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          {isConfirming ? (
-                            <div className="inline-flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                disabled={isDeleting}
-                                onClick={() => void handleDeleteDoc(doc)}
-                                className="rounded bg-rose-600 px-2 py-0.5 text-[10.5px] font-medium text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
-                              >
-                                {isDeleting ? "..." : "Confirm"}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isDeleting}
-                                onClick={() => setConfirmDeleteId(null)}
-                                className="rounded border border-[var(--border-subtle)] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
-                              >
-                                Cancel
-                              </button>
+          <div className="mt-3 overflow-hidden rounded-xl border border-line">
+            {documentsLoading && docs.length === 0 ? (
+              <div className="flex items-center justify-center gap-2 py-14 text-ui text-ink-3">
+                <Spinner />
+                Loading documents…
+              </div>
+            ) : filteredDocs.length === 0 ? (
+              <EmptyState
+                className="m-4 border-0"
+                icon={FileText}
+                title={docs.length === 0 ? "Nothing indexed yet" : "No documents match this filter"}
+              >
+                {docs.length === 0
+                  ? "Upload files, re-index data/raw, or import a web page above."
+                  : "Try a different word or clear the filter."}
+              </EmptyState>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-left text-ui">
+                  <thead className="border-b border-line bg-sunken text-small text-ink-3">
+                    <tr>
+                      <th scope="col" className="px-4 py-2.5 font-medium">Document</th>
+                      <th scope="col" className="px-3 py-2.5 font-medium">Type</th>
+                      <th scope="col" className="px-3 py-2.5 font-medium">Language</th>
+                      <th scope="col" className="px-3 py-2.5 text-right font-medium">Passages</th>
+                      <th scope="col" className="px-3 py-2.5 text-right font-medium">Tokens</th>
+                      <th scope="col" className="w-px px-4 py-2.5">
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line bg-paper">
+                    {filteredDocs.map((doc) => {
+                      const isWeb = doc.source_origin === "web";
+                      const isConfirming = confirmDeleteId === doc.doc_id;
+                      const isDeleting = deletingId === doc.doc_id;
+                      return (
+                        <tr key={doc.doc_id} className="transition-colors hover:bg-hover">
+                          <td className="max-w-md px-4 py-3">
+                            <div className="truncate font-medium text-ink">{doc.title}</div>
+                            <div className="mt-0.5 flex items-center gap-2 text-small text-ink-3">
+                              <span className="truncate font-mono text-[11.5px]">{doc.doc_id}</span>
+                              {doc.chunk_strategy === "parent_child" && <Tag tone="accent">Small→Big</Tag>}
+                              {doc.source_url && (
+                                <a
+                                  href={doc.source_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex shrink-0 items-center gap-1 text-accent hover:underline"
+                                >
+                                  <ExternalLink className="h-3 w-3" aria-hidden />
+                                  Source
+                                </a>
+                              )}
                             </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(doc.doc_id)}
-                              title={`Delete ${doc.doc_id} from Qdrant`}
-                              className="inline-flex items-center rounded p-1 text-[var(--text-muted)] transition hover:bg-rose-500/10 hover:text-rose-500 cursor-pointer"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="inline-flex items-center gap-1.5 text-ink-2">
+                              {isWeb ? (
+                                <Globe className="h-3.5 w-3.5 text-ink-3" aria-hidden />
+                              ) : (
+                                <FileText className="h-3.5 w-3.5 text-ink-3" aria-hidden />
+                              )}
+                              {isWeb ? "Web page" : doc.doc_type.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 text-ink-2">{languageName(doc.language)}</td>
+                          <td className="px-3 py-3 text-right font-medium tabular-nums text-ink">
+                            {formatInt(doc.chunk_count)}
+                          </td>
+                          <td className="px-3 py-3 text-right tabular-nums text-ink-2">
+                            {formatInt(doc.total_tokens)}
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap">
+                            {isConfirming ? (
+                              <span className="inline-flex items-center gap-1.5">
+                                <Button
+                                  variant="danger"
+                                  size="xs"
+                                  loading={isDeleting}
+                                  onClick={() => void handleDeleteDoc(doc)}
+                                >
+                                  Delete
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  disabled={isDeleting}
+                                  onClick={() => setConfirmDeleteId(null)}
+                                >
+                                  Cancel
+                                </Button>
+                              </span>
+                            ) : (
+                              <IconButton
+                                icon={Trash2}
+                                tone="bad"
+                                label={`Delete ${doc.title}`}
+                                onClick={() => setConfirmDeleteId(doc.doc_id)}
+                              />
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

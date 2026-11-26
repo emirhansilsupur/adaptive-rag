@@ -264,7 +264,7 @@ describe("CompareArena component", () => {
     fireEvent.click(screen.getByRole("button", { name: "Swap A and B presets" }));
     expect(onSwapPresets).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText("Factual Dynamic Top-K Savings"));
+    fireEvent.click(screen.getByText("Factual dynamic top-k savings"));
     expect(onSubmitCompare).toHaveBeenCalledWith(
       expect.stringContaining("ef_construct")
     );
@@ -421,7 +421,7 @@ describe("CompareArena component", () => {
       />
     );
 
-    expect(screen.getByText("Naive Dense Failed")).toBeInTheDocument();
+    expect(screen.getByText("Naive Dense failed")).toBeInTheDocument();
     expect(screen.getByText(/HTTP 402: Budget cap exceeded/)).toBeInTheDocument();
     expect(
       screen.getByText(/AdaptiveRAG succeeded cleanly/i)

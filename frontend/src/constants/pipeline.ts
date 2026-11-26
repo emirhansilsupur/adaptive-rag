@@ -6,133 +6,62 @@ import type {
   ThreadContextConfig,
 } from "../types/api";
 
+export type PipelineStage = "routing" | "retrieval" | "verification" | "generation";
+
 export interface NodeVisualMeta {
   label: string;
   shortLabel: string;
-  /** Restrained 4-stage indicator dot color (routing, retrieval, verification, generation) */
+  /** CSS colour (theme-aware custom property) for the node's pipeline stage. */
   color: string;
-  bgClass: string;
-  textClass: string;
-  borderClass: string;
-  stage: "routing" | "retrieval" | "verification" | "generation";
+  stage: PipelineStage;
 }
 
-const STAGE_SURFACE = {
-  routing: {
-    color: "#a1a1aa",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-  },
-  retrieval: {
-    color: "#38bdf8",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-  },
-  verification: {
-    color: "#f59e0b",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-  },
-  generation: {
-    color: "#10b981",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-  },
-} as const;
-
-export const NODE_META: Record<string, NodeVisualMeta> = {
-  classify_and_plan: {
-    label: "Classify & Plan",
-    shortLabel: "Router",
-    ...STAGE_SURFACE.routing,
-    stage: "routing",
-  },
-  conversational_respond: {
-    label: "Conversational Respond",
-    shortLabel: "Direct Chat",
-    ...STAGE_SURFACE.generation,
-    stage: "generation",
-  },
-  decompose_queries: {
-    label: "Decompose Sub-Queries",
-    shortLabel: "Decompose",
-    ...STAGE_SURFACE.routing,
-    stage: "routing",
-  },
-  hybrid_retrieve: {
-    label: "Hybrid Retrieve (Dense + BM25)",
-    shortLabel: "Hybrid RRF",
-    ...STAGE_SURFACE.retrieval,
-    stage: "retrieval",
-  },
-  rerank_and_select_k: {
-    label: "Rerank & Dynamic Top-K",
-    shortLabel: "Rerank + K",
-    ...STAGE_SURFACE.retrieval,
-    stage: "retrieval",
-  },
-  score_confidence: {
-    label: "Confidence & CRAG Gate",
-    shortLabel: "CRAG Gate",
-    ...STAGE_SURFACE.verification,
-    stage: "verification",
-  },
-  corrective_rewrite: {
-    label: "Corrective Query Rewrite",
-    shortLabel: "Rewrite",
-    ...STAGE_SURFACE.verification,
-    stage: "verification",
-  },
-  web_fallback_search: {
-    label: "Web Fallback Search",
-    shortLabel: "Web Search",
-    ...STAGE_SURFACE.retrieval,
-    stage: "retrieval",
-  },
-  generate_answer: {
-    label: "Grounded Generation",
-    shortLabel: "Generate",
-    ...STAGE_SURFACE.generation,
-    stage: "generation",
-  },
-  validate_citations: {
-    label: "Two-Tier Citation Audit",
-    shortLabel: "Cite Audit",
-    ...STAGE_SURFACE.verification,
-    stage: "verification",
-  },
-  regenerate_strict: {
-    label: "Strict Grounded Regeneration",
-    shortLabel: "Strict Regen",
-    color: "#f43f5e",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-    stage: "generation",
-  },
-  abstain_response: {
-    label: "Honest Abstention",
-    shortLabel: "Abstain",
-    color: "#71717a",
-    bgClass: "bg-[var(--bg-surface)]",
-    textClass: "text-[var(--text-secondary)]",
-    borderClass: "border-[var(--border-subtle)]",
-    stage: "generation",
-  },
+export const STAGE_COLORS: Record<PipelineStage, string> = {
+  routing: "var(--stage-route)",
+  retrieval: "var(--stage-retrieve)",
+  verification: "var(--stage-verify)",
+  generation: "var(--stage-generate)",
 };
 
-export function getNodeMeta(node: string): NodeVisualMeta {
+export const STAGE_LABELS: Record<PipelineStage, string> = {
+  routing: "Route",
+  retrieval: "Retrieve",
+  verification: "Verify",
+  generation: "Write",
+};
+
+function node(
+  label: string,
+  shortLabel: string,
+  stage: PipelineStage,
+  color: string = STAGE_COLORS[stage]
+): NodeVisualMeta {
+  return { label, shortLabel, stage, color };
+}
+
+export const NODE_META: Record<string, NodeVisualMeta> = {
+  classify_and_plan: node("Classify and plan", "Router", "routing"),
+  conversational_respond: node("Conversational reply", "Direct reply", "generation"),
+  decompose_queries: node("Decompose into sub-queries", "Decompose", "routing"),
+  hybrid_retrieve: node("Hybrid retrieval (dense + BM25)", "Hybrid search", "retrieval"),
+  rerank_and_select_k: node("Rerank and dynamic top-k", "Rerank + k", "retrieval"),
+  score_confidence: node("Confidence and CRAG gate", "CRAG gate", "verification"),
+  corrective_rewrite: node("Corrective query rewrite", "Rewrite", "verification"),
+  web_fallback_search: node("Web fallback search", "Web search", "retrieval"),
+  generate_answer: node("Grounded generation", "Generate", "generation"),
+  validate_citations: node("Two-tier citation audit", "Citation audit", "verification"),
+  regenerate_strict: node(
+    "Strict grounded regeneration",
+    "Strict regen",
+    "generation",
+    "var(--stage-repair)"
+  ),
+  abstain_response: node("Honest abstention", "Abstain", "generation", "var(--stage-route)"),
+};
+
+export function getNodeMeta(nodeName: string): NodeVisualMeta {
   return (
-    NODE_META[node] ?? {
-      label: node.replace(/_/g, " "),
-      shortLabel: node,
-      ...STAGE_SURFACE.routing,
-      stage: "retrieval",
-    }
+    NODE_META[nodeName] ?? node(nodeName.replace(/_/g, " "), nodeName, "retrieval")
   );
 }
 
@@ -148,31 +77,31 @@ export const PRESET_OPTIONS: PresetOption[] = [
     value: "full",
     label: "Full AdaptiveRAG",
     shortLabel: "Full Agentic",
-    description: "Query routing, hybrid RRF, rerank, dynamic K, CRAG, web fallback, and citation audit.",
+    description: "Routing, hybrid search, reranking, dynamic top-k, CRAG gate, web fallback and citation audit.",
   },
   {
     value: "adaptive_routing",
-    label: "Adaptive Routing + Dynamic K",
+    label: "Adaptive routing + dynamic k",
     shortLabel: "Adaptive K",
-    description: "Query-aware routing and dynamic top-k without corrective rewrite or web fallback.",
+    description: "Query-aware routing and dynamic top-k, without corrective rewrite or web fallback.",
   },
   {
     value: "hybrid_rerank",
-    label: "Hybrid BM25+Dense + Rerank",
+    label: "Hybrid BM25 + dense + rerank",
     shortLabel: "Hybrid Static",
-    description: "Native Qdrant hybrid search + cross-encoder reranking with static top-k.",
+    description: "Qdrant hybrid search with cross-encoder reranking and a fixed top-k.",
   },
   {
     value: "naive_dense",
-    label: "Naive Dense Baseline",
+    label: "Naive dense baseline",
     shortLabel: "Naive Dense",
-    description: "Dense-only cosine retrieval with static top-k for baseline comparison.",
+    description: "Dense-only cosine retrieval with a fixed top-k. Use it as the baseline.",
   },
   {
     value: "custom",
-    label: "Custom Feature Switches",
+    label: "Custom switches",
     shortLabel: "Custom",
-    description: "Granular ablation toggles for every pipeline stage.",
+    description: "Switch individual pipeline stages on or off.",
   },
 ];
 
@@ -200,7 +129,7 @@ export interface DemoQueryItem {
 export const DEMO_QUERIES: DemoQueryItem[] = [
   {
     id: "en-rrf",
-    title: "Qdrant Hybrid RRF Formula",
+    title: "Qdrant hybrid RRF formula",
     category: "Factual",
     lang: "EN",
     query:
@@ -208,7 +137,7 @@ export const DEMO_QUERIES: DemoQueryItem[] = [
   },
   {
     id: "tr-hybrid",
-    title: "Hibrit Arama & Cross-Encoder Rerank",
+    title: "Hibrit arama ve cross-encoder rerank",
     category: "Analytical",
     lang: "TR",
     query:
@@ -216,7 +145,7 @@ export const DEMO_QUERIES: DemoQueryItem[] = [
   },
   {
     id: "en-langgraph",
-    title: "Cyclic LangGraph vs Linear RAG",
+    title: "Cyclic LangGraph vs linear RAG",
     category: "Analytical",
     lang: "EN",
     query:
@@ -224,15 +153,15 @@ export const DEMO_QUERIES: DemoQueryItem[] = [
   },
   {
     id: "tr-conv",
-    title: "Doğrudan Sohbet Rotası",
+    title: "Doğrudan sohbet rotası",
     category: "Conversational",
     lang: "TR",
     query: "Merhaba! Bugün nasılsın, hangi konularda yardımcı olabilirsin?",
   },
   {
     id: "en-web",
-    title: "Live Web Fallback Trigger",
-    category: "Web Fallback",
+    title: "Live web fallback trigger",
+    category: "Web fallback",
     lang: "EN",
     query: "What is the latest stable release version of Qdrant available today?",
   },
@@ -259,13 +188,13 @@ export interface ComparePairPreset {
 export const COMPARE_PAIR_PRESETS: ComparePairPreset[] = [
   {
     id: "naive-vs-full",
-    label: "Naive Dense vs Full",
+    label: "Naive vs Full",
     left: "naive_dense",
     right: "full",
   },
   {
     id: "hybrid-vs-adaptive",
-    label: "Hybrid Static vs Adaptive K",
+    label: "Hybrid vs Adaptive K",
     left: "hybrid_rerank",
     right: "adaptive_routing",
   },
@@ -288,31 +217,31 @@ export interface CompareDemoItem {
 export const COMPARE_DEMO_QUERIES: CompareDemoItem[] = [
   {
     id: "cmp-factual-tokens",
-    title: "Factual Dynamic Top-K Savings",
-    highlight: "Context Tokens ↓",
+    title: "Factual dynamic top-k savings",
+    highlight: "Fewer context tokens",
     lang: "EN",
     query:
       "What is the default value of ef_construct in Qdrant HNSW and how does it trade off index build time versus recall?",
   },
   {
     id: "cmp-analytical-multi",
-    title: "Multi-Doc Architectural Trade-Off",
-    highlight: "Multi-Query + Audit",
+    title: "Multi-document trade-off",
+    highlight: "Multi-query and audit",
     lang: "EN",
     query:
       "Compare Qdrant Filterable HNSW and PostgreSQL pgvector for hybrid RAG.",
   },
   {
     id: "cmp-tr-conv",
-    title: "Zero-Retrieval Fast Path",
+    title: "Zero-retrieval fast path",
     highlight: "k=5 → k=0",
     lang: "TR",
     query: "Merhaba! Bana kendini kısaca tanıtabilir misin?",
   },
   {
     id: "cmp-unanswerable",
-    title: "Out-of-Corpus Hallucination Trap",
-    highlight: "Abstention Guard",
+    title: "Out-of-corpus hallucination trap",
+    highlight: "Abstention guard",
     lang: "EN",
     query:
       "What are the exact RAM and HNSW defaults of the fictional QuantumVectorX-9000 engine released in 2029?",
@@ -334,38 +263,38 @@ export const INSTRUCTION_PRESETS: InstructionPresetOption[] = [
     id: "default",
     label: "Default",
     shortLabel: "default",
-    description: "AdaptiveRAG's standard balanced, grounded response style.",
+    description: "The standard balanced, grounded response style.",
     instructions: "",
   },
   {
     id: "executive",
-    label: "Executive Brief",
+    label: "Executive brief",
     shortLabel: "executive",
-    description: "Concise 2-3 bullet summary upfront with key numbers, decisions, and risks.",
+    description: "Two or three summary bullets up front, with key numbers, decisions and risks.",
     instructions:
       "Lead with a concise 2-3 bullet executive summary, highlight key decisions, numbers, and risks clearly, and keep prose crisp.",
   },
   {
     id: "technical",
-    label: "Deep Technical",
+    label: "Deep technical",
     shortLabel: "technical",
-    description: "Preserve exact formulas, parameters, and deep architectural trade-offs.",
+    description: "Keeps exact formulas and parameters, and explains architectural trade-offs.",
     instructions:
       "Use precise engineering terminology, preserve exact formulas, parameters, and code details, and explain underlying architectural trade-offs.",
   },
   {
     id: "analyst",
-    label: "Policy / Legal",
+    label: "Policy and legal",
     shortLabel: "policy",
-    description: "Break down clauses, obligations, thresholds, and exceptions clearly.",
+    description: "Breaks down clauses, obligations, thresholds and exceptions.",
     instructions:
       "Break down clauses, obligations, thresholds, exceptions, and potential risks in a structured table or bullet list using plain, unambiguous language.",
   },
   {
     id: "tutor",
-    label: "Study Tutor",
+    label: "Study tutor",
     shortLabel: "tutor",
-    description: "Step-by-step accessible explanations with clear takeaways and examples.",
+    description: "Step-by-step explanations with clear takeaways and examples.",
     instructions:
       "Explain concepts step-by-step in clear, accessible language with structured takeaways and concrete examples grounded in the sources.",
   },
@@ -373,7 +302,7 @@ export const INSTRUCTION_PRESETS: InstructionPresetOption[] = [
     id: "custom",
     label: "Custom",
     shortLabel: "custom",
-    description: "Write your own Layer-2 tone, format, or audience instructions for this thread.",
+    description: "Write your own tone, format or audience instructions for this thread.",
     instructions: "",
   },
 ];
@@ -399,18 +328,11 @@ export function resolveEffectiveInstructions(
   return fallback || undefined;
 }
 
-export function getInstructionPresetLabel(ctx?: ThreadContextConfig | null): string {
-  if (!ctx || ctx.instructionPreset === "default") {
-    return "default";
-  }
-  if (ctx.instructionPreset === "custom") {
-    return ctx.customInstructions.trim() ? "custom" : "default";
-  }
-  return INSTRUCTION_PRESETS.find((p) => p.id === ctx.instructionPreset)?.shortLabel ?? "custom";
-}
-
 const rawViteApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 
 export const DEFAULT_API_URL = (
   rawViteApiUrl !== undefined ? rawViteApiUrl : "http://localhost:8000"
 ).replace(/\/+$/, "");
+
+/** Shown when the user stops a run; rendered as a neutral notice, not an error. */
+export const RUN_STOPPED_MESSAGE = "You stopped this run before it finished.";

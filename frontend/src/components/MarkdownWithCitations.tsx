@@ -1,12 +1,15 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import { Check, Copy, Globe } from "lucide-react";
+import { Check, Copy, FileText, Globe } from "lucide-react";
 import { splitTextWithCitations } from "../lib/citations";
+import { excerpt } from "../lib/format";
 import type { EvidenceChunk } from "../types/api";
+import { CitationMark, isWebCitation } from "./ui/CitationMark";
+import { Popover } from "./ui/Popover";
 
 /**
  * Normalize LaTeX \[...\] and \(...\) math delimiters emitted by LLMs into
@@ -28,8 +31,16 @@ interface MarkdownWithCitationsProps {
   content: string;
   evidenceChunks: EvidenceChunk[];
   onCitationClick?: (citationId: string) => void;
+  density?: "regular" | "compact";
 }
 
+function scoreLabel(chunk: EvidenceChunk): string | null {
+  if (chunk.rerank_score != null) return `Relevance ${chunk.rerank_score.toFixed(2)}`;
+  if (chunk.fusion_score != null) return `RRF ${chunk.fusion_score.toFixed(3)}`;
+  return null;
+}
+
+/** Hover or focus a mark to read the passage it points to. */
 function CitationPill({
   citationId,
   chunk,
@@ -39,35 +50,95 @@ function CitationPill({
   chunk?: EvidenceChunk;
   onClick?: (id: string) => void;
 }) {
-  const isWeb = citationId.startsWith("W") || chunk?.source_type === "web";
-  const scoreLabel =
-    chunk?.rerank_score != null
-      ? `rerank ${chunk.rerank_score.toFixed(2)}`
-      : chunk?.fusion_score != null
-        ? `fusion ${chunk.fusion_score.toFixed(3)}`
-        : null;
-  const tooltip = chunk
-    ? `[${citationId}] ${chunk.title || chunk.doc_id}${scoreLabel ? ` · ${scoreLabel}` : ""}`
-    : `Inspect citation [${citationId}]`;
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const openTimer = useRef<number | undefined>(undefined);
+  const closeTimer = useRef<number | undefined>(undefined);
+  const [open, setOpen] = useState(false);
+  const web = isWebCitation(citationId, chunk?.source_type);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(openTimer.current);
+      window.clearTimeout(closeTimer.current);
+    },
+    []
+  );
+
+  const scheduleOpen = () => {
+    if (!chunk) return;
+    window.clearTimeout(closeTimer.current);
+    openTimer.current = window.setTimeout(() => setOpen(true), 260);
+  };
+  const scheduleClose = () => {
+    window.clearTimeout(openTimer.current);
+    closeTimer.current = window.setTimeout(() => setOpen(false), 140);
+  };
+  const keepOpen = () => window.clearTimeout(closeTimer.current);
+
+  const score = chunk ? scoreLabel(chunk) : null;
 
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick?.(citationId);
-      }}
-      title={tooltip}
-      data-citation-id={citationId}
-      className={`mx-0.5 inline-flex -translate-y-[1px] items-center gap-0.5 rounded-[4px] border px-1.25 py-0.5 font-mono text-[10px] font-semibold leading-none transition-colors focus:outline-none focus:ring-1 focus:ring-sky-500/50 cursor-pointer ${
-        isWeb
-          ? "border-amber-500/35 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-300"
-          : "border-sky-500/35 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 dark:text-sky-300"
-      }`}
-    >
-      {isWeb && <Globe className="h-2.5 w-2.5 shrink-0" />}
-      <span>{citationId}</span>
-    </button>
+    <>
+      <CitationMark
+        ref={anchorRef}
+        citationId={citationId}
+        web={web}
+        data-citation-id={citationId}
+        title={chunk ? undefined : `Inspect citation ${citationId}`}
+        onMouseEnter={scheduleOpen}
+        onMouseLeave={scheduleClose}
+        onFocus={() => chunk && setOpen(true)}
+        onBlur={scheduleClose}
+        onClick={(e) => {
+          e.stopPropagation();
+          window.clearTimeout(openTimer.current);
+          setOpen(false);
+          onClick?.(citationId);
+        }}
+        className="mx-px -translate-y-px align-middle"
+      />
+      {chunk && (
+        <Popover
+          open={open}
+          onClose={() => setOpen(false)}
+          anchorRef={anchorRef}
+          placement="bottom-start"
+          width={360}
+          role="tooltip"
+          onMouseEnter={keepOpen}
+          onMouseLeave={scheduleClose}
+          className="p-3.5"
+        >
+          <div className="flex items-start gap-2.5">
+            <CitationMark citationId={citationId} web={web} static size="md" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="truncate text-ui font-medium text-ink">
+                  {chunk.title || chunk.doc_id || "Untitled source"}
+                </span>
+                {score && (
+                  <span className="shrink-0 text-caption tabular-nums text-ink-3">{score}</span>
+                )}
+              </div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-small text-ink-3">
+                {web ? (
+                  <Globe className="h-3 w-3 shrink-0" aria-hidden />
+                ) : (
+                  <FileText className="h-3 w-3 shrink-0" aria-hidden />
+                )}
+                <span className="truncate">
+                  {chunk.section_path || chunk.url || (web ? "Web result" : "Local document")}
+                </span>
+              </div>
+            </div>
+          </div>
+          <p className="prose-passage mt-2.5 border-l-2 border-mark-strong pl-3 text-[13px] leading-[1.6] whitespace-normal text-ink-2">
+            {excerpt(chunk.text, 320)}
+          </p>
+          <p className="mt-2.5 text-caption text-ink-3">Click the mark to open this passage in the inspector.</p>
+        </Popover>
+      )}
+    </>
   );
 }
 
@@ -92,11 +163,7 @@ function injectCitationsInChildren(
             }
             const nextSeg = segments[sIdx + 1];
             let gluedPunct = "";
-            if (
-              nextSeg &&
-              nextSeg.type === "text" &&
-              /^[.,;:!?)]/.test(nextSeg.value)
-            ) {
+            if (nextSeg && nextSeg.type === "text" && /^[.,;:!?)]/.test(nextSeg.value)) {
               gluedPunct = nextSeg.value[0];
               consumedLeading.add(sIdx + 1);
             }
@@ -123,19 +190,14 @@ function injectCitationsInChildren(
       if (
         child.type === "code" ||
         child.type === "pre" ||
-        (typeof child.props.className === "string" &&
-          child.props.className.includes("katex"))
+        (typeof child.props.className === "string" && child.props.className.includes("katex"))
       ) {
         return child;
       }
       if (child.props.children) {
         return React.cloneElement(child, {
           ...child.props,
-          children: injectCitationsInChildren(
-            child.props.children,
-            chunkMap,
-            onCitationClick
-          ),
+          children: injectCitationsInChildren(child.props.children, chunkMap, onCitationClick),
         });
       }
     }
@@ -143,13 +205,7 @@ function injectCitationsInChildren(
   });
 }
 
-function CodeBlock({
-  className,
-  children,
-}: {
-  className?: string;
-  children: React.ReactNode;
-}) {
+function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
   const langMatch = /language-(\w+)/.exec(className || "");
   const language = langMatch ? langMatch[1] : "";
@@ -158,32 +214,32 @@ function CodeBlock({
   const handleCopy = () => {
     void navigator.clipboard?.writeText(rawCode);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    window.setTimeout(() => setCopied(false), 1800);
   };
 
   return (
-    <div className="my-3 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[#0c0c0f] text-zinc-100">
-      <div className="flex items-center justify-between border-b border-white/[0.07] bg-white/[0.02] px-3 py-1.5 font-mono text-[10.5px] text-zinc-400">
-        <span>{language || "code"}</span>
+    <div className="my-4 overflow-hidden rounded-lg border border-line bg-sunken font-sans">
+      <div className="flex h-8 items-center justify-between border-b border-line px-3 text-small text-ink-3">
+        <span>{language || "Code"}</span>
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-zinc-400 transition hover:bg-white/[0.08] hover:text-zinc-100 cursor-pointer"
+          className="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-hover hover:text-ink"
         >
           {copied ? (
             <>
-              <Check className="h-3 w-3 text-emerald-400" />
-              <span className="text-emerald-400">Copied</span>
+              <Check className="h-3.5 w-3.5 text-ok" aria-hidden />
+              <span>Copied</span>
             </>
           ) : (
             <>
-              <Copy className="h-3 w-3" />
+              <Copy className="h-3.5 w-3.5" aria-hidden />
               <span>Copy</span>
             </>
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-[12px] leading-relaxed">
+      <pre className="overflow-x-auto p-3.5 font-mono text-[12.5px] leading-relaxed text-ink">
         <code className={className}>{rawCode}</code>
       </pre>
     </div>
@@ -194,6 +250,7 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
   content,
   evidenceChunks,
   onCitationClick,
+  density = "regular",
 }) => {
   const chunkMap = useMemo(() => {
     const map = new Map<string, EvidenceChunk>();
@@ -207,9 +264,7 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
 
   const components: Components = useMemo(
     () => ({
-      p: ({ children }) => (
-        <p>{injectCitationsInChildren(children, chunkMap, onCitationClick)}</p>
-      ),
+      p: ({ children }) => <p>{injectCitationsInChildren(children, chunkMap, onCitationClick)}</p>,
       li: ({ children }) => (
         <li>{injectCitationsInChildren(children, chunkMap, onCitationClick)}</li>
       ),
@@ -220,9 +275,7 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
         <th>{injectCitationsInChildren(children, chunkMap, onCitationClick)}</th>
       ),
       blockquote: ({ children }) => (
-        <blockquote>
-          {injectCitationsInChildren(children, chunkMap, onCitationClick)}
-        </blockquote>
+        <blockquote>{injectCitationsInChildren(children, chunkMap, onCitationClick)}</blockquote>
       ),
       a: ({ href, children }) => (
         <a href={href} target="_blank" rel="noopener noreferrer">
@@ -238,7 +291,7 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
         return (
           <code
             {...rest}
-            className="rounded-[4px] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.25 py-0.25 font-mono text-[0.84em] text-[var(--text-primary)]"
+            className="rounded-[4px] border border-line bg-sunken px-1 py-px font-mono text-[0.84em] text-ink"
           >
             {children}
           </code>
@@ -248,13 +301,10 @@ export const MarkdownWithCitations: React.FC<MarkdownWithCitationsProps> = ({
     [chunkMap, onCitationClick]
   );
 
-  const normalizedContent = useMemo(
-    () => normalizeMathDelimiters(content),
-    [content]
-  );
+  const normalizedContent = useMemo(() => normalizeMathDelimiters(content), [content]);
 
   return (
-    <div className="ar-markdown">
+    <div className="prose-answer" data-density={density}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}

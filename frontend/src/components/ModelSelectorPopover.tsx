@@ -1,15 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import {
-  ChevronDown,
-  Cpu,
-  Eye,
-  EyeOff,
-  KeyRound,
-  Lock,
-  RefreshCw,
-  RotateCcw,
-  Server,
-} from "lucide-react";
+import React, { useRef, useState } from "react";
+import { ChevronDown, Eye, EyeOff, Lock, RefreshCw, RotateCcw, Server } from "lucide-react";
 import type {
   HealthResponse,
   LLMOverride,
@@ -18,6 +8,19 @@ import type {
   ProviderApiKeys,
   ProviderCatalogItem,
 } from "../types/api";
+import { Popover } from "./ui/Popover";
+import {
+  Button,
+  Callout,
+  cn,
+  Field,
+  IconButton,
+  INPUT_CLASS,
+  StatusDot,
+  Switch,
+  Tag,
+  type Tone,
+} from "./ui/primitives";
 
 interface ModelSelectorPopoverProps {
   catalog: ModelsCatalogResponse | null;
@@ -28,6 +31,13 @@ interface ModelSelectorPopoverProps {
   onOverrideChange: (next: LLMOverride | null) => void;
   onProviderApiKeyChange?: (provider: LLMProvider, apiKey: string) => void;
   onRefreshCatalog: () => void;
+  /* Run options (optional: shown when handlers are provided) */
+  useStreaming?: boolean;
+  onUseStreamingChange?: (next: boolean) => void;
+  enableBudgetCap?: boolean;
+  onEnableBudgetCapChange?: (next: boolean) => void;
+  maxCostUsd?: number;
+  onMaxCostUsdChange?: (next: number) => void;
 }
 
 function shortModelDisplay(modelId: string): string {
@@ -52,6 +62,42 @@ function providerShortLabel(id: LLMProvider): string {
   }
 }
 
+function SuggestionChips({
+  models,
+  active,
+  onPick,
+}: {
+  models: string[];
+  active: string;
+  onPick: (modelId: string) => void;
+}) {
+  if (models.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {models.map((modelId) => {
+        const selected = modelId === active;
+        return (
+          <button
+            key={modelId}
+            type="button"
+            title={modelId}
+            aria-pressed={selected}
+            onClick={() => onPick(modelId)}
+            className={cn(
+              "h-6 cursor-pointer rounded-md border px-1.5 font-mono text-[11px] transition-colors",
+              selected
+                ? "border-accent bg-accent-soft text-ink"
+                : "border-line bg-paper text-ink-2 hover:border-line-strong hover:text-ink"
+            )}
+          >
+            {shortModelDisplay(modelId)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
   catalog,
   catalogLoading,
@@ -61,34 +107,18 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
   onOverrideChange,
   onProviderApiKeyChange,
   onRefreshCatalog,
+  useStreaming,
+  onUseStreamingChange,
+  enableBudgetCap,
+  onEnableBudgetCapChange,
+  maxCostUsd,
+  onMaxCostUsdChange,
 }) => {
   const [open, setOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const defaultProvider = (catalog?.default_provider ??
-    health?.llm_provider ??
-    "openrouter") as LLMProvider;
+  const defaultProvider = (catalog?.default_provider ?? health?.llm_provider ?? "openrouter") as LLMProvider;
   const defaultFast = catalog?.default_fast_model ?? health?.fast_model ?? "";
   const defaultGen = catalog?.default_generation_model ?? health?.generation_model ?? "";
   const defaultTemp = catalog?.default_temperature ?? 0.0;
@@ -107,16 +137,11 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
   const providerMatchesDefault = activeProvider === defaultProvider;
   const effectiveFast =
     override?.fast_model ??
-    (providerMatchesDefault
-      ? defaultFast
-      : activeProviderMeta?.default_fast_model ?? "");
+    (providerMatchesDefault ? defaultFast : (activeProviderMeta?.default_fast_model ?? ""));
   const effectiveGen =
     override?.generation_model ??
-    (providerMatchesDefault
-      ? defaultGen
-      : activeProviderMeta?.default_generation_model ?? "");
-  const effectiveTemp =
-    typeof override?.temperature === "number" ? override.temperature : defaultTemp;
+    (providerMatchesDefault ? defaultGen : (activeProviderMeta?.default_generation_model ?? ""));
+  const effectiveTemp = typeof override?.temperature === "number" ? override.temperature : defaultTemp;
 
   const isOverridden = Boolean(
     override &&
@@ -151,15 +176,20 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
     });
   };
 
+  const current = {
+    provider: activeProvider,
+    fast_model: effectiveFast,
+    generation_model: effectiveGen,
+    temperature: effectiveTemp,
+  };
+
   const handleSelectProvider = (target: ProviderCatalogItem) => {
     const canSelect = target.configured || allowClientKeys;
     if (!canSelect) return;
 
     setShowKey(false);
     const isTargetDefault = target.id === defaultProvider;
-    const nextFast = isTargetDefault
-      ? defaultFast
-      : target.detected_models[0] || target.default_fast_model;
+    const nextFast = isTargetDefault ? defaultFast : target.detected_models[0] || target.default_fast_model;
     const nextGen = isTargetDefault
       ? defaultGen
       : target.detected_models[0] || target.default_generation_model;
@@ -179,10 +209,7 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
 
   const fastSuggestions = activeProviderMeta
     ? Array.from(
-        new Set([
-          ...activeProviderMeta.detected_models,
-          ...activeProviderMeta.recommended_fast_models,
-        ])
+        new Set([...activeProviderMeta.detected_models, ...activeProviderMeta.recommended_fast_models])
       ).slice(0, 6)
     : [];
   const genSuggestions = activeProviderMeta
@@ -194,108 +221,89 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
       ).slice(0, 6)
     : [];
 
-  const localOffline =
-    activeProvider === "ollama" && activeProviderMeta?.reachable === false;
+  const localOffline = activeProvider === "ollama" && activeProviderMeta?.reachable === false;
   const needsSetup = !activeSdkInstalled || !activeHasCredentials || localOffline;
-
-  const dotClass = needsSetup
-    ? "bg-amber-500"
+  const triggerTone: Tone = needsSetup
+    ? "warn"
     : isOverridden || Boolean(activeSessionKey)
-      ? "bg-sky-500"
-      : "bg-emerald-500";
+      ? "accent"
+      : "ok";
+
+  const modeLabel = activeSessionKey ? "Session key" : isOverridden ? "Custom" : "Server default";
+  const hasRunOptions = Boolean(onUseStreamingChange || onEnableBudgetCapChange);
 
   return (
-    <div ref={containerRef} className="relative">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="Configure LLM provider and models"
-        title={`LLM Runtime: ${activeProvider} · fast=${effectiveFast || "default"} · gen=${effectiveGen || "default"} · temp=${effectiveTemp.toFixed(1)}`}
-        className={`inline-flex h-7.5 max-w-[230px] items-center gap-1.5 rounded-md border px-2 text-xs transition cursor-pointer ${
-          open || isOverridden || Boolean(activeSessionKey)
-            ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-            : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-        }`}
+        title={`${providerShortLabel(activeProvider)}: ${effectiveGen || "default"} (fast tier ${effectiveFast || "default"}, temperature ${effectiveTemp.toFixed(1)})`}
+        className={cn(
+          "inline-flex h-8 max-w-[260px] cursor-pointer items-center gap-2 rounded-md border px-2.5 text-ui transition-colors",
+          open
+            ? "border-line-strong bg-selected text-ink"
+            : "border-line bg-paper text-ink hover:border-line-strong"
+        )}
       >
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-        <Cpu className="hidden h-3 w-3 shrink-0 text-[var(--text-muted)] sm:inline" />
-        <span className="hidden shrink-0 font-mono text-[10.5px] text-[var(--text-muted)] sm:inline">
+        <StatusDot tone={triggerTone} />
+        <span className="hidden shrink-0 text-small text-ink-3 sm:inline">
           {providerShortLabel(activeProvider)}
         </span>
-        <span className="hidden text-[var(--text-muted)]/40 sm:inline">/</span>
-        <span className="truncate font-mono text-[11px] font-medium text-[var(--text-primary)]">
+        <span className="truncate font-mono text-[12px] text-ink">
           {shortModelDisplay(effectiveGen || effectiveFast)}
         </span>
         <ChevronDown
-          className={`h-3 w-3 shrink-0 text-[var(--text-muted)] transition-transform ${
-            open ? "rotate-180" : ""
-          }`}
+          className={cn("h-3.5 w-3.5 shrink-0 text-ink-3 transition-transform", open && "rotate-180")}
+          aria-hidden
         />
       </button>
 
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Model Runtime Settings"
-          data-testid="model-selector-popover"
-          className="absolute right-0 top-full z-50 mt-1.5 w-[380px] max-w-[calc(100vw-1.5rem)] rounded-lg border border-[var(--border-strong)] bg-[var(--bg-panel)] p-3.5 text-xs shadow-xl"
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
-            <div className="flex items-center gap-1.5">
-              <Cpu className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-              <span className="font-semibold text-[var(--text-primary)]">
-                Model Runtime
-              </span>
-              <span
-                className={`rounded border px-1.5 py-0.2 font-mono text-[9.5px] font-medium ${
-                  isOverridden || Boolean(activeSessionKey)
-                    ? "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-300"
-                    : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)]"
-                }`}
-              >
-                {activeSessionKey ? "byok" : isOverridden ? "override" : ".env default"}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1">
-              {isOverridden && (
-                <button
-                  type="button"
-                  onClick={() => onOverrideChange(null)}
-                  title="Reset to server .env defaults"
-                  className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
-                >
-                  <RotateCcw className="h-2.5 w-2.5" />
-                  <span>Reset</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onRefreshCatalog}
-                disabled={catalogLoading}
-                title="Refresh provider readiness & detect local models"
-                className="rounded border border-[var(--border-subtle)] p-1 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer"
-              >
-                <RefreshCw
-                  className={`h-3 w-3 ${catalogLoading ? "animate-spin" : ""}`}
-                />
-              </button>
-            </div>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={triggerRef}
+        placement="bottom-end"
+        width={392}
+        ariaLabel="Model runtime settings"
+        testId="model-selector-popover"
+        className="p-0"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-ui font-semibold text-ink">Runtime</span>
+            <Tag tone={isOverridden || activeSessionKey ? "accent" : "neutral"}>{modeLabel}</Tag>
           </div>
+          <div className="flex items-center gap-1">
+            {isOverridden && (
+              <Button variant="ghost" size="xs" icon={RotateCcw} onClick={() => onOverrideChange(null)}>
+                Reset
+              </Button>
+            )}
+            <IconButton
+              icon={RefreshCw}
+              size="sm"
+              label="Refresh providers and detect local models"
+              onClick={onRefreshCatalog}
+              disabled={catalogLoading}
+              className={catalogLoading ? "[&>svg]:animate-spin" : undefined}
+            />
+          </div>
+        </div>
 
-          {/* Provider Selector */}
-          <div className="mt-3">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                Provider
-              </span>
+        <div className="space-y-5 px-4 py-4">
+          {/* Provider */}
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-small font-medium text-ink">Provider</span>
               {activeProvider === "ollama" && catalog?.ollama_base_url && (
-                <span className="inline-flex items-center gap-1 font-mono text-[10px] text-[var(--text-muted)]">
-                  <Server className="h-2.5 w-2.5" />
-                  <span>{catalog.ollama_base_url.replace(/^https?:\/\//, "")}</span>
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-3">
+                  <Server className="h-3 w-3" aria-hidden />
+                  {catalog.ollama_base_url.replace(/^https?:\/\//, "")}
                 </span>
               )}
             </div>
@@ -308,94 +316,81 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
                   const sdkOk = prov.sdk_installed ?? true;
                   const ready = sdkOk && (prov.configured || Boolean(provSessionKey));
                   const disabled = !prov.configured && !allowClientKeys;
+                  const tone: Tone =
+                    !sdkOk || (prov.is_local && prov.reachable === false)
+                      ? "warn"
+                      : provSessionKey
+                        ? "accent"
+                        : ready
+                          ? "ok"
+                          : "neutral";
+                  const status = !sdkOk
+                    ? prov.status_detail || `Install the providers extra to use ${prov.label}`
+                    : provSessionKey
+                      ? `${prov.label}: session key active`
+                      : prov.status_detail ||
+                        (prov.is_local
+                          ? `${prov.label}: ${prov.detected_models.length} models detected`
+                          : `${prov.label}: ready via server key`);
                   return (
                     <button
                       key={prov.id}
                       type="button"
                       disabled={disabled}
+                      aria-pressed={selected}
+                      aria-label={providerShortLabel(prov.id)}
                       onClick={() => handleSelectProvider(prov)}
-                      title={
-                        !sdkOk
-                          ? prov.status_detail || `Install uv sync --extra providers for ${prov.label}`
-                          : provSessionKey
-                            ? `${prov.label} (session API key active)`
-                            : prov.status_detail ||
-                              (prov.is_local
-                                ? `${prov.label} (${prov.detected_models.length} model(s) detected)`
-                                : `${prov.label} ready via .env`)
-                      }
-                      className={`flex items-center justify-between gap-1 rounded-md border px-2 py-1.5 text-left text-[11px] font-medium transition ${
+                      title={status}
+                      className={cn(
+                        "flex h-8 items-center justify-between gap-1.5 rounded-md border px-2.5 text-left text-small font-medium transition-colors",
                         disabled
-                          ? "cursor-not-allowed border-[var(--border-subtle)] bg-[var(--bg-surface)]/40 text-[var(--text-muted)] opacity-50"
+                          ? "cursor-not-allowed border-line bg-sunken text-ink-4"
                           : selected
-                            ? "cursor-pointer border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                            : "cursor-pointer border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                      }`}
+                            ? "cursor-pointer border-ink bg-paper text-ink shadow-[0_0_0_1px_var(--ink)]"
+                            : "cursor-pointer border-line bg-paper text-ink-2 hover:border-line-strong hover:text-ink"
+                      )}
                     >
                       <span className="truncate">{providerShortLabel(prov.id)}</span>
-                      <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          !sdkOk
-                            ? "bg-amber-500"
-                            : prov.is_local && prov.reachable === false
-                              ? "bg-amber-500"
-                              : provSessionKey
-                                ? "bg-sky-500"
-                                : ready
-                                  ? "bg-emerald-500"
-                                  : "bg-zinc-500/45"
-                        }`}
-                      />
+                      <StatusDot tone={tone} />
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <p className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-2 text-[11px] text-[var(--text-muted)]">
-                Backend catalog unavailable. Start FastAPI (`make api`) and click refresh.
-              </p>
+              <Callout tone="warn">
+                Can't load the provider list. Start the API with{" "}
+                <code className="font-mono text-[11.5px]">make api</code>, then refresh.
+              </Callout>
             )}
 
-            {/* SDK missing or local unreachable banner */}
             {!activeSdkInstalled && activeProviderMeta?.status_detail && (
-              <p className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2.5 py-1.5 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+              <Callout tone="warn" className="mt-2">
                 {activeProviderMeta.status_detail}
-              </p>
+              </Callout>
             )}
             {activeSdkInstalled && localOffline && activeProviderMeta?.status_detail && (
-              <p className="mt-2 rounded border border-amber-500/35 bg-amber-500/10 px-2.5 py-1.5 text-[10.5px] leading-snug text-amber-700 dark:text-amber-300">
+              <Callout tone="warn" className="mt-2">
                 {activeProviderMeta.status_detail}
-              </p>
+              </Callout>
             )}
           </div>
 
-          {/* Session-Only Provider API Key (BYOK) for Cloud Providers */}
+          {/* Session-only provider key */}
           {activeRequiresKey && allowClientKeys && onProviderApiKeyChange && (
-            <div className="mt-3 space-y-1.5 border-t border-[var(--border-subtle)] pt-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <label
-                  htmlFor="studio-provider-api-key-input"
-                  className="inline-flex items-center gap-1 font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]"
-                >
-                  <KeyRound className="h-2.5 w-2.5" />
-                  <span>{providerShortLabel(activeProvider)} API Key</span>
-                </label>
-                {activeSessionKey ? (
-                  <span className="font-mono text-[9.5px] font-medium text-sky-600 dark:text-sky-400">
-                    session key active
-                  </span>
+            <Field
+              label={`${providerShortLabel(activeProvider)} API key`}
+              htmlFor="studio-provider-api-key-input"
+              aside={
+                activeSessionKey ? (
+                  <span className="text-small text-accent">Session key active</span>
                 ) : activeProviderMeta?.configured ? (
-                  <span className="font-mono text-[9.5px] text-emerald-600 dark:text-emerald-400">
-                    using server .env
-                  </span>
+                  <span className="text-small text-ok">Using the server key</span>
                 ) : (
-                  <span className="font-mono text-[9.5px] text-amber-600 dark:text-amber-400">
-                    key required
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1">
+                  <span className="text-small text-warn">Key required</span>
+                )
+              }
+            >
+              <div className="flex items-center gap-1.5">
                 <div className="relative flex-1">
                   <input
                     id="studio-provider-api-key-input"
@@ -403,241 +398,190 @@ export const ModelSelectorPopover: React.FC<ModelSelectorPopoverProps> = ({
                     autoComplete="off"
                     spellCheck={false}
                     value={providerApiKeys[activeProvider] ?? ""}
-                    onChange={(e) =>
-                      onProviderApiKeyChange(activeProvider, e.target.value)
-                    }
+                    onChange={(e) => onProviderApiKeyChange(activeProvider, e.target.value)}
                     placeholder={
                       activeProviderMeta?.configured
-                        ? "Optional override (uses server .env)"
-                        : `Paste ${providerShortLabel(activeProvider)} key (session-only)`
+                        ? "Optional: overrides the server key"
+                        : `Paste a ${providerShortLabel(activeProvider)} key for this tab`
                     }
-                    className="h-8 w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] pl-2.5 pr-7 font-mono text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                    className={cn(INPUT_CLASS, "h-8 pr-8 pl-2.5 font-mono text-small")}
                   />
-                  <button
-                    type="button"
-                    aria-label={showKey ? "Hide API key" : "Show API key"}
+                  <IconButton
+                    icon={showKey ? EyeOff : Eye}
+                    size="sm"
+                    label={showKey ? "Hide API key" : "Show API key"}
                     onClick={() => setShowKey((prev) => !prev)}
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                  >
-                    {showKey ? (
-                      <EyeOff className="h-3 w-3" />
-                    ) : (
-                      <Eye className="h-3 w-3" />
-                    )}
-                  </button>
+                    className="absolute top-1/2 right-1 -translate-y-1/2"
+                  />
                 </div>
                 {activeSessionKey && (
-                  <button
-                    type="button"
-                    onClick={() => onProviderApiKeyChange(activeProvider, "")}
-                    className="h-8 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 font-mono text-[10px] text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
-                  >
+                  <Button size="sm" onClick={() => onProviderApiKeyChange(activeProvider, "")}>
                     Clear
-                  </button>
+                  </Button>
                 )}
               </div>
-            </div>
+            </Field>
           )}
 
-          {/* Fast Model Tier */}
-          <div className="mt-3 space-y-1.5">
-            <label
-              htmlFor="studio-fast-model-input"
-              className="flex items-center justify-between font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]"
-            >
-              <span>Fast Tier (Router · CRAG · Audit)</span>
-              {activeProvider === "ollama" &&
-                (activeProviderMeta?.detected_models.length ?? 0) > 0 && (
-                  <span className="text-emerald-600 dark:text-emerald-400">
-                    {activeProviderMeta?.detected_models.length} live
-                  </span>
-                )}
-            </label>
+          {/* Models */}
+          <Field
+            label="Fast model"
+            htmlFor="studio-fast-model-input"
+            aside={
+              activeProvider === "ollama" && (activeProviderMeta?.detected_models.length ?? 0) > 0 ? (
+                <span className="text-small text-ok">
+                  {activeProviderMeta?.detected_models.length} running locally
+                </span>
+              ) : (
+                <span className="text-small text-ink-3">Routing, grading and audit</span>
+              )
+            }
+          >
             <input
               id="studio-fast-model-input"
               type="text"
               value={effectiveFast}
-              onChange={(e) =>
-                commitIfChanged({
-                  provider: activeProvider,
-                  fast_model: e.target.value,
-                  generation_model: effectiveGen,
-                  temperature: effectiveTemp,
-                })
-              }
+              spellCheck={false}
+              onChange={(e) => commitIfChanged({ ...current, fast_model: e.target.value })}
               placeholder="e.g. qwen/qwen3-30b-a3b-instruct-2507"
-              className="h-8 w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-2.5 font-mono text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+              className={cn(INPUT_CLASS, "h-8 px-2.5 font-mono text-small")}
             />
-            {fastSuggestions.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {fastSuggestions.map((modelId) => {
-                  const active = modelId === effectiveFast;
-                  return (
-                    <button
-                      key={modelId}
-                      type="button"
-                      onClick={() =>
-                        commitIfChanged({
-                          provider: activeProvider,
-                          fast_model: modelId,
-                          generation_model: effectiveGen,
-                          temperature: effectiveTemp,
-                        })
-                      }
-                      className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition cursor-pointer ${
-                        active
-                          ? "border-sky-500/45 bg-sky-500/12 text-sky-700 dark:text-sky-300"
-                          : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {shortModelDisplay(modelId)}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+            <SuggestionChips
+              models={fastSuggestions}
+              active={effectiveFast}
+              onPick={(modelId) => commitIfChanged({ ...current, fast_model: modelId })}
+            />
+          </Field>
 
-          {/* Generation Model Tier */}
-          <div className="mt-3 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label
-                htmlFor="studio-gen-model-input"
-                className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]"
-              >
-                Generation Tier (Synthesis)
-              </label>
-              {effectiveFast && effectiveGen !== effectiveFast && (
+          <Field
+            label="Generation model"
+            htmlFor="studio-gen-model-input"
+            aside={
+              effectiveFast && effectiveGen !== effectiveFast ? (
                 <button
                   type="button"
-                  onClick={() =>
-                    commitIfChanged({
-                      provider: activeProvider,
-                      fast_model: effectiveFast,
-                      generation_model: effectiveFast,
-                      temperature: effectiveTemp,
-                    })
-                  }
-                  className="font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                  onClick={() => commitIfChanged({ ...current, generation_model: effectiveFast })}
+                  className="cursor-pointer text-small text-accent hover:underline"
                 >
-                  Same as fast
+                  Use the fast model
                 </button>
-              )}
-            </div>
+              ) : (
+                <span className="text-small text-ink-3">Writes the answer</span>
+              )
+            }
+          >
             <input
               id="studio-gen-model-input"
               type="text"
               value={effectiveGen}
-              onChange={(e) =>
-                commitIfChanged({
-                  provider: activeProvider,
-                  fast_model: effectiveFast,
-                  generation_model: e.target.value,
-                  temperature: effectiveTemp,
-                })
-              }
+              spellCheck={false}
+              onChange={(e) => commitIfChanged({ ...current, generation_model: e.target.value })}
               placeholder="e.g. deepseek/deepseek-v3.2"
-              className="h-8 w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-2.5 font-mono text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+              className={cn(INPUT_CLASS, "h-8 px-2.5 font-mono text-small")}
             />
-            {genSuggestions.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {genSuggestions.map((modelId) => {
-                  const active = modelId === effectiveGen;
-                  return (
-                    <button
-                      key={modelId}
-                      type="button"
-                      onClick={() =>
-                        commitIfChanged({
-                          provider: activeProvider,
-                          fast_model: effectiveFast,
-                          generation_model: modelId,
-                          temperature: effectiveTemp,
-                        })
-                      }
-                      className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition cursor-pointer ${
-                        active
-                          ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
-                          : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {shortModelDisplay(modelId)}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+            <SuggestionChips
+              models={genSuggestions}
+              active={effectiveGen}
+              onPick={(modelId) => commitIfChanged({ ...current, generation_model: modelId })}
+            />
+          </Field>
 
-          {/* Temperature Control */}
-          <div className="mt-3 border-t border-[var(--border-subtle)] pt-2.5">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+          {/* Temperature */}
+          <div>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <label htmlFor="studio-temperature" className="text-small font-medium text-ink">
                 Temperature
-              </span>
+              </label>
               <div className="flex items-center gap-1">
-                {(
-                  [
-                    [0.0, "0.0"],
-                    [0.3, "0.3"],
-                    [1.0, "1.0"],
-                  ] as const
-                ).map(([val, lbl]) => (
+                {[0, 0.3, 1].map((val) => (
                   <button
-                    key={lbl}
+                    key={val}
                     type="button"
-                    onClick={() =>
-                      commitIfChanged({
-                        provider: activeProvider,
-                        fast_model: effectiveFast,
-                        generation_model: effectiveGen,
-                        temperature: val,
-                      })
-                    }
-                    className={`rounded border px-1.5 py-0.2 font-mono text-[10px] tabular-nums transition cursor-pointer ${
+                    aria-pressed={Math.abs(effectiveTemp - val) < 1e-6}
+                    onClick={() => commitIfChanged({ ...current, temperature: val })}
+                    className={cn(
+                      "h-6 cursor-pointer rounded-md px-1.5 text-small tabular-nums transition-colors",
                       Math.abs(effectiveTemp - val) < 1e-6
-                        ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                        : "border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    }`}
+                        ? "bg-selected font-medium text-ink"
+                        : "text-ink-3 hover:bg-hover hover:text-ink"
+                    )}
                   >
-                    {lbl}
+                    {val.toFixed(1)}
                   </button>
                 ))}
-                <span className="ml-1 w-8 text-right font-mono text-[11px] font-semibold text-[var(--text-primary)] tabular-nums">
+                <span className="ml-1 w-9 text-right text-small font-medium tabular-nums text-ink">
                   {effectiveTemp.toFixed(2)}
                 </span>
               </div>
             </div>
             <input
+              id="studio-temperature"
               aria-label="Sampling temperature"
               type="range"
               min={0}
               max={2}
               step={0.05}
               value={effectiveTemp}
-              onChange={(e) =>
-                commitIfChanged({
-                  provider: activeProvider,
-                  fast_model: effectiveFast,
-                  generation_model: effectiveGen,
-                  temperature: Number(e.target.value),
-                })
-              }
+              onChange={(e) => commitIfChanged({ ...current, temperature: Number(e.target.value) })}
               className="ar-range w-full"
             />
           </div>
 
-          {/* Security Footer */}
-          <div className="mt-3 flex items-center gap-1.5 border-t border-[var(--border-subtle)] pt-2 text-[10.5px] text-[var(--text-muted)]">
-            <Lock className="h-3 w-3 shrink-0" />
-            <span>
-              {allowClientKeys
-                ? "Session keys stay in sessionStorage, sent via X-Provider-API-Key header only."
-                : "Server-managed .env keys only (BYOK disabled by server policy)."}
-            </span>
-          </div>
+          {/* Run options */}
+          {hasRunOptions && (
+            <div className="space-y-3.5 border-t border-line pt-4">
+              {onUseStreamingChange && (
+                <Switch
+                  label="Stream pipeline steps"
+                  description="Show each step as it finishes instead of waiting for the full answer."
+                  checked={Boolean(useStreaming)}
+                  onChange={onUseStreamingChange}
+                />
+              )}
+              {onEnableBudgetCapChange && (
+                <div>
+                  <Switch
+                    label="Spend cap per question"
+                    description="Stops a run that would cost more than the cap."
+                    checked={Boolean(enableBudgetCap)}
+                    onChange={onEnableBudgetCapChange}
+                  />
+                  {enableBudgetCap && onMaxCostUsdChange && typeof maxCostUsd === "number" && (
+                    <div className="mt-2.5">
+                      <div className="mb-1 flex items-center justify-between text-small">
+                        <label htmlFor="studio-spend-cap" className="text-ink-2">
+                          Cap
+                        </label>
+                        <span className="font-medium tabular-nums text-ink">${maxCostUsd.toFixed(2)}</span>
+                      </div>
+                      <input
+                        id="studio-spend-cap"
+                        type="range"
+                        min={0.01}
+                        max={0.5}
+                        step={0.01}
+                        value={maxCostUsd}
+                        onChange={(e) => onMaxCostUsdChange(Number(e.target.value))}
+                        className="ar-range w-full"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      )}
-    </div>
+
+        {/* Footer */}
+        <div className="flex items-start gap-2 border-t border-line bg-sunken px-4 py-2.5 text-small text-ink-3">
+          <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            {allowClientKeys
+              ? "Session keys stay in this tab's sessionStorage and are sent via X-Provider-API-Key header only."
+              : "Server-managed keys only (BYOK disabled by server policy)."}
+          </span>
+        </div>
+      </Popover>
+    </>
   );
 };

@@ -347,7 +347,7 @@ describe("GlassBoxInspector", () => {
     );
 
     expect(screen.getByText("Qdrant Hybrid Guide")).toBeInTheDocument();
-    expect(screen.getByText(/Parent Section \(2 child\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Expanded to parent section from 2 child chunks/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /https:\/\/docs\.qdrant\.tech\/concepts\/hybrid-queries\//,
@@ -426,7 +426,7 @@ describe("KnowledgeBaseView", () => {
     expect(screen.getByText("Qdrant Hybrid Guide")).toBeInTheDocument();
     expect(screen.getByText("Small→Big")).toBeInTheDocument();
     expect(screen.getByText("OCRia-nano ready")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Auto 2-Tier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Auto" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "OCRia-nano" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Vision LLM" })).toBeInTheDocument();
     expect(
@@ -484,7 +484,7 @@ describe("KnowledgeBaseView", () => {
       expect(sentBody.ocr_mode).toBe("ocria_nano");
 
       expect(
-        await screen.findByText(/2 OCR page\(s\) \[ocria-nano\]/i)
+        await screen.findByText(/2 scanned pages read with ocria-nano/i)
       ).toBeInTheDocument();
     } finally {
       fetchSpy.mockRestore();
@@ -562,7 +562,7 @@ describe("Langfuse Trace Link & Human-in-the-Loop Feedback UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mark answer unhelpful" }));
     const noteInput = screen.getByPlaceholderText(/Optional note/i);
     fireEvent.change(noteInput, { target: { value: "Missing Turkish summary" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
     await waitFor(() => {
       expect(onSubmitFeedback).toHaveBeenCalledWith("turn_lf_1", 0, "Missing Turkish summary");
     });
@@ -613,13 +613,13 @@ describe("Langfuse Trace Link & Human-in-the-Loop Feedback UI", () => {
     // Drawer is collapsed by default
     expect(screen.queryByTestId("thread-context-panel")).not.toBeInTheDocument();
 
-    // Open drawer via style pill
-    fireEvent.click(screen.getByRole("button", { name: /style:default/i }));
+    // Open drawer via the response style chip
+    fireEvent.click(screen.getByRole("button", { name: /Response style/i }));
     expect(screen.getByTestId("thread-context-panel")).toBeInTheDocument();
-    expect(screen.getByText(/Grounding & \[C#\] citations stay locked/i)).toBeInTheDocument();
+    expect(screen.getByText(/Citations and grounding rules always apply/i)).toBeInTheDocument();
 
-    // Select Executive Brief preset
-    fireEvent.click(screen.getByRole("button", { name: "Executive Brief" }));
+    // Select the Executive brief preset
+    fireEvent.click(screen.getByRole("button", { name: "Executive brief" }));
     expect(onThreadContextChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         instructionPreset: "executive",
@@ -804,12 +804,12 @@ describe("ModelSelectorPopover", () => {
         onRefreshCatalog={vi.fn()}
       />
     );
-    expect(screen.getByText("key required")).toBeInTheDocument();
+    expect(screen.getByText("Key required")).toBeInTheDocument();
     const keyInput = screen.getByLabelText(/OpenAI API Key/i);
     fireEvent.change(keyInput, { target: { value: "sk-session-openai-123" } });
     expect(onProviderApiKeyChange).toHaveBeenLastCalledWith("openai", "sk-session-openai-123");
 
-    // Re-render with active session key -> shows BYOK badge
+    // Re-render with active session key -> shows the session key badge
     rerender(
       <ModelSelectorPopover
         catalog={sampleCatalog}
@@ -822,8 +822,8 @@ describe("ModelSelectorPopover", () => {
         onRefreshCatalog={vi.fn()}
       />
     );
-    expect(screen.getByText("byok")).toBeInTheDocument();
-    expect(screen.getByText("session key active")).toBeInTheDocument();
+    expect(screen.getByText("Session key")).toBeInTheDocument();
+    expect(screen.getByText("Session key active")).toBeInTheDocument();
 
     // Switch to Local runtime with detected inkling-2-mini model
     fireEvent.click(screen.getByRole("button", { name: "Local" }));
@@ -847,7 +847,7 @@ describe("ModelSelectorPopover", () => {
         onRefreshCatalog={vi.fn()}
       />
     );
-    expect(screen.getByText("override")).toBeInTheDocument();
+    expect(screen.getByText("Custom")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Reset/i }));
     expect(onOverrideChange).toHaveBeenLastCalledWith(null);
 

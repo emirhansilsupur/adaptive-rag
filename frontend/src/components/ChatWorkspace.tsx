@@ -1,17 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  AlertCircle,
-  ArrowRight,
-  ArrowUp,
   Check,
-  ExternalLink,
+  Copy,
   FileText,
+  Files,
   Globe,
   Lock,
   PanelRightOpen,
+  PenLine,
   RotateCcw,
-  SlidersHorizontal,
-  Square,
   ThumbsDown,
   ThumbsUp,
   X,
@@ -19,23 +16,31 @@ import {
 import {
   DEFAULT_THREAD_CONTEXT,
   DEMO_QUERIES,
-  getInstructionPresetLabel,
   INSTRUCTION_PRESETS,
   MAX_CUSTOM_INSTRUCTIONS_CHARS,
+  RUN_STOPPED_MESSAGE,
   resolveEffectiveInstructions,
 } from "../constants/pipeline";
+import { formatInt, languageName } from "../lib/format";
 import type {
+  AblationConfig,
   ChatTurn,
+  EvidenceChunk,
   IndexedDocumentInfo,
   InspectorTab,
   InstructionPresetId,
   LiveStreamStep,
+  PresetSelection,
   ThreadContextConfig,
   TokenUsage,
 } from "../types/api";
 import { AnswerTelemetryBar } from "./AnswerTelemetryBar";
+import { Composer, ComposerChip } from "./Composer";
 import { LivePipelineTracker } from "./LivePipelineTracker";
 import { MarkdownWithCitations } from "./MarkdownWithCitations";
+import { PresetPicker } from "./PresetPicker";
+import { CitationMark, isWebCitation } from "./ui/CitationMark";
+import { Button, Callout, cn, IconButton, INPUT_CLASS, SectionHeading } from "./ui/primitives";
 
 interface ChatWorkspaceProps {
   turns: ChatTurn[];
@@ -55,12 +60,76 @@ interface ChatWorkspaceProps {
   onStopStream: () => void;
   onInspectTurn: (turnIndex: number, tab?: InspectorTab) => void;
   onCitationClick: (turnIndex: number, citationId: string) => void;
-  onSubmitFeedback?: (
-    turnId: string,
-    score: 0 | 1,
-    comment?: string
-  ) => Promise<void>;
+  onSubmitFeedback?: (turnId: string, score: 0 | 1, comment?: string) => Promise<void>;
+  preset?: PresetSelection;
+  onPresetChange?: (preset: PresetSelection) => void;
+  customAblation?: AblationConfig;
+  onCustomAblationChange?: (cfg: AblationConfig) => void;
+  onOpenKnowledgeBase?: () => void;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Sources row                                                                */
+/* -------------------------------------------------------------------------- */
+
+function sourceLabel(chunk: EvidenceChunk): string {
+  const section = chunk.section_path?.split(/\s*[>›/]\s*/).filter(Boolean).pop();
+  return section || chunk.title || chunk.doc_id || "Source";
+}
+
+export function SourcesRow({
+  chunks,
+  limit,
+  onCitationClick,
+  onShowAll,
+}: {
+  chunks: EvidenceChunk[];
+  limit: number;
+  onCitationClick: (citationId: string) => void;
+  onShowAll: () => void;
+}) {
+  if (chunks.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-small text-ink-3">Sources</span>
+      {chunks.slice(0, limit).map((ch, cIdx) => {
+        const cid = ch.citation_id || `#${cIdx + 1}`;
+        const web = isWebCitation(cid, ch.source_type);
+        return (
+          <button
+            key={ch.chunk_id || cIdx}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCitationClick(cid);
+            }}
+            title={`${ch.title || ch.doc_id}${ch.section_path ? ` › ${ch.section_path}` : ""}${ch.url ? `\n${ch.url}` : ""}`}
+            className="inline-flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-md border border-line bg-paper pr-2 pl-1 text-small text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <CitationMark citationId={cid} web={web} static />
+            <span className="truncate">{sourceLabel(ch)}</span>
+          </button>
+        );
+      })}
+      {chunks.length > limit && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onShowAll();
+          }}
+          className="h-7 cursor-pointer rounded-md px-2 text-small font-medium text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+        >
+          {chunks.length - limit} more
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Workbench                                                                  */
+/* -------------------------------------------------------------------------- */
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   turns,
@@ -81,25 +150,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onInspectTurn,
   onCitationClick,
   onSubmitFeedback,
+  preset,
+  onPresetChange,
+  customAblation,
+  onCustomAblationChange,
+  onOpenKnowledgeBase,
 }) => {
   const [input, setInput] = useState("");
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const [commentingTurnId, setCommentingTurnId] = useState<string | null>(null);
-  const [pendingScore, setPendingScore] = useState<0 | 1>(0);
   const [commentDraft, setCommentDraft] = useState("");
-  const [submittingFeedbackTurnId, setSubmittingFeedbackTurnId] =
-    useState<string | null>(null);
-  const [feedbackErrorByTurn, setFeedbackErrorByTurn] = useState<
-    Record<string, string>
-  >({});
+  const [submittingFeedbackTurnId, setSubmittingFeedbackTurnId] = useState<string | null>(null);
+  const [feedbackErrorByTurn, setFeedbackErrorByTurn] = useState<Record<string, string>>({});
+  const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleFeedbackSubmit = async (
-    turnId: string,
-    score: 0 | 1,
-    comment?: string
-  ) => {
+  const handleFeedbackSubmit = async (turnId: string, score: 0 | 1, comment?: string) => {
     if (!onSubmitFeedback || submittingFeedbackTurnId) return;
     setSubmittingFeedbackTurnId(turnId);
     setFeedbackErrorByTurn((prev) => {
@@ -121,16 +187,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     }
   };
 
+  const handleCopy = (turn: ChatTurn) => {
+    void navigator.clipboard?.writeText(turn.result.answer);
+    setCopiedTurnId(turn.id);
+    window.setTimeout(() => setCopiedTurnId((curr) => (curr === turn.id ? null : curr)), 1600);
+  };
+
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [turns.length, isRunning, liveSteps.length]);
-
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [input]);
 
   const handleSend = () => {
     const cleaned = input.trim();
@@ -139,36 +204,30 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     onSubmitQuery(cleaned);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const activeContext = threadContext ?? DEFAULT_THREAD_CONTEXT;
   const effectiveInstructions = resolveEffectiveInstructions(activeContext);
-  const styleLabel = getInstructionPresetLabel(activeContext);
   const scopedDocIds = activeContext.scopedDocIds;
-  const hasActiveThreadContext =
-    Boolean(effectiveInstructions) || scopedDocIds.length > 0;
+  const hasActiveThreadContext = Boolean(effectiveInstructions) || scopedDocIds.length > 0;
+  const stylePreset = INSTRUCTION_PRESETS.find((p) => p.id === activeContext.instructionPreset);
+  const styleChipLabel = !effectiveInstructions
+    ? "Default style"
+    : activeContext.instructionPreset === "custom"
+      ? "Custom style"
+      : (stylePreset?.label ?? "Custom style");
+  const scopeChipLabel =
+    scopedDocIds.length === 0
+      ? "All documents"
+      : `${scopedDocIds.length} ${scopedDocIds.length === 1 ? "document" : "documents"}`;
 
   const handleSelectInstructionPreset = (presetId: InstructionPresetId) => {
     if (!onThreadContextChange) return;
     const matched = INSTRUCTION_PRESETS.find((p) => p.id === presetId);
     if (presetId === "default") {
-      onThreadContextChange({
-        ...activeContext,
-        instructionPreset: "default",
-        customInstructions: "",
-      });
+      onThreadContextChange({ ...activeContext, instructionPreset: "default", customInstructions: "" });
       return;
     }
     if (presetId === "custom") {
-      onThreadContextChange({
-        ...activeContext,
-        instructionPreset: "custom",
-      });
+      onThreadContextChange({ ...activeContext, instructionPreset: "custom" });
       return;
     }
     onThreadContextChange({
@@ -194,322 +253,191 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const handleToggleScopedDoc = (docId: string) => {
     if (!onThreadContextChange) return;
     const exists = scopedDocIds.includes(docId);
-    const nextScoped = exists
-      ? scopedDocIds.filter((id) => id !== docId)
-      : [...scopedDocIds, docId];
     onThreadContextChange({
       ...activeContext,
-      scopedDocIds: nextScoped,
+      scopedDocIds: exists ? scopedDocIds.filter((id) => id !== docId) : [...scopedDocIds, docId],
     });
   };
 
-  const handleResetThreadContext = () => {
-    if (!onThreadContextChange) return;
-    onThreadContextChange({ ...DEFAULT_THREAD_CONTEXT });
-  };
-
   const hasContent = turns.length > 0 || isRunning;
+  const isStopNotice = streamError === RUN_STOPPED_MESSAGE;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-[var(--bg-canvas)]">
-      {/* Scrollable Conversation Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="mx-auto max-w-3xl">
+    <div className="flex min-w-0 flex-1 flex-col bg-paper">
+      {/* Conversation */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[47rem] px-4 sm:px-8">
           {!hasContent ? (
-            /* Understated Engineering Empty State */
-            <div className="py-6 sm:py-12">
-              <div className="font-mono text-[10.5px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
-                AdaptiveRAG · Query-Aware Retrieval Engine
-              </div>
-
-              <h1 className="mt-2.5 text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
-                Traceable retrieval and citation-audited synthesis.
-              </h1>
-              <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-secondary)]">
-                Run queries in English or Turkish against Qdrant Hybrid Search (Dense +
-                BM25 RRF). Inspect node latencies, Dynamic Top-K cutoffs, CRAG confidence
-                gates, and{" "}
-                <code className="rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.2 font-mono text-[11px] font-semibold text-sky-600 dark:text-sky-300">
-                  C1
-                </code>{" "}
-                evidence entailment in the right pane.
-              </p>
-
-              {/* Hairline Ledger Demo Prompts */}
-              <div className="mt-8">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="font-mono text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                    Sample Evaluation Queries
-                  </span>
-                  <span className="font-mono text-[10.5px] text-[var(--text-muted)]">
-                    Preset: {presetShortLabel}
-                  </span>
-                </div>
-
-                <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
-                  {DEMO_QUERIES.map((demo) => (
-                    <button
-                      key={demo.id}
-                      type="button"
-                      onClick={() => onSubmitQuery(demo.query)}
-                      className="group flex w-full items-start justify-between gap-4 px-4 py-3 text-left transition hover:bg-[var(--bg-elevated)]/65 cursor-pointer"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-[var(--text-primary)]">
-                            {demo.title}
-                          </span>
-                          <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-secondary)]">
-                            {demo.category}
-                          </span>
-                          <span className="font-mono text-[9.5px] font-medium text-[var(--text-muted)]">
-                            {demo.lang}
-                          </span>
-                        </div>
-                        <p className="mt-1 line-clamp-1 text-xs text-[var(--text-secondary)]">
-                          {demo.query}
-                        </p>
-                      </div>
-                      <ArrowRight className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:translate-x-0.5 group-hover:text-[var(--text-primary)] group-hover:opacity-100" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <EmptyWorkbench
+              documents={availableDocuments}
+              presetShortLabel={presetShortLabel}
+              onSubmitQuery={onSubmitQuery}
+              onOpenKnowledgeBase={onOpenKnowledgeBase}
+            />
           ) : (
-            /* Editorial Research Log Thread */
-            <div className="space-y-8 pb-4">
+            <div className="space-y-12 pt-8 pb-10">
               {turns.map((turn, idx) => {
                 const isSelected = idx === selectedTurnIndex;
                 const chunks = turn.result.evidence_chunks || [];
+                const isCommenting = commentingTurnId === turn.id;
+                const isSaving = submittingFeedbackTurnId === turn.id;
                 return (
-                  <article key={turn.id} className="space-y-3">
-                    {/* User Query Header (no speech bubble) */}
-                    <div className="flex items-baseline gap-2.5">
-                      <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-muted)] tabular-nums">
-                        #{String(idx + 1).padStart(2, "0")}
-                      </span>
-                      <h2 className="text-[15px] font-medium leading-snug tracking-tight text-[var(--text-primary)]">
-                        {turn.query}
-                      </h2>
-                    </div>
-
-                    {/* Response Surface */}
-                    <div
-                      onClick={() => onInspectTurn(idx)}
-                      className={`rounded-lg border p-4 sm:p-5 transition-colors ${
-                        isSelected
-                          ? "border-[var(--border-strong)] bg-[var(--bg-surface)]"
-                          : "border-[var(--border-subtle)] bg-[var(--bg-surface)]/75 hover:border-[var(--border-strong)]"
-                      }`}
+                  <article
+                    key={turn.id}
+                    aria-label={`Question ${idx + 1}`}
+                    onClick={() => onInspectTurn(idx)}
+                    className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-x-2 sm:grid-cols-[2.25rem_minmax(0,1fr)] sm:gap-x-3"
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "pt-0.5 text-right text-ui tabular-nums",
+                        isSelected ? "font-semibold text-accent" : "text-ink-3"
+                      )}
                     >
-                      {/* Execution Trace + Telemetry Header */}
-                      <div className="mb-4 border-b border-[var(--border-subtle)] pb-3">
-                        <LivePipelineTracker
-                          mode="completed"
-                          steps={turn.result.trace || []}
-                          totalLatencyMs={turn.result.total_latency_ms}
-                          onOpenInspector={() => onInspectTurn(idx, "trace")}
-                        />
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <h2 className="text-title font-semibold text-balance text-ink">{turn.query}</h2>
+
+                      <div className="mt-3 rounded-lg border border-line bg-sunken px-3 py-2.5">
                         <AnswerTelemetryBar
                           result={turn.result}
                           onBadgeClick={(tab) => onInspectTurn(idx, tab)}
                         />
+                        {(turn.result.trace?.length ?? 0) > 0 && (
+                          <div className="mt-2">
+                            <LivePipelineTracker
+                              mode="completed"
+                              steps={turn.result.trace || []}
+                              totalLatencyMs={turn.result.total_latency_ms}
+                              onOpenInspector={() => onInspectTurn(idx, "trace")}
+                            />
+                          </div>
+                        )}
                       </div>
 
-                      {/* Grounded Markdown Answer */}
-                      <MarkdownWithCitations
-                        content={turn.result.answer}
-                        evidenceChunks={chunks}
-                        onCitationClick={(cid) => onCitationClick(idx, cid)}
-                      />
+                      <div className="mt-5">
+                        <MarkdownWithCitations
+                          content={turn.result.answer}
+                          evidenceChunks={chunks}
+                          onCitationClick={(cid) => onCitationClick(idx, cid)}
+                        />
+                      </div>
 
-                      {/* Sources & Actions Footer */}
-                      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {chunks.slice(0, 6).map((ch, cIdx) => {
-                            const cid = ch.citation_id || `#${cIdx + 1}`;
-                            const isWeb = ch.source_type === "web";
-                            return (
-                              <button
-                                key={ch.chunk_id || cIdx}
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onCitationClick(idx, cid);
-                                }}
-                                title={`${ch.title || ch.doc_id}${ch.url ? ` (${ch.url})` : ""}`}
-                                className="inline-flex max-w-[190px] items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-2 py-0.5 text-[11px] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
-                              >
-                                <span
-                                  className={`shrink-0 font-mono text-[10px] font-semibold ${
-                                    isWeb
-                                      ? "text-amber-600 dark:text-amber-300"
-                                      : "text-sky-600 dark:text-sky-300"
-                                  }`}
-                                >
-                                  {cid}
-                                </span>
-                                {isWeb ? (
-                                  <Globe className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
-                                ) : (
-                                  <FileText className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
-                                )}
-                                <span className="truncate">
-                                  {ch.title || ch.doc_id || "Source"}
-                                </span>
-                                {ch.url && (
-                                  <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-60" />
-                                )}
-                              </button>
-                            );
-                          })}
-                          {chunks.length > 6 && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onInspectTurn(idx, "evidence");
+                      <div className="mt-5">
+                        <SourcesRow
+                          chunks={chunks}
+                          limit={6}
+                          onCitationClick={(cid) => onCitationClick(idx, cid)}
+                          onShowAll={() => onInspectTurn(idx, "evidence")}
+                        />
+                      </div>
+
+                      <div
+                        className="mt-3 flex flex-wrap items-center gap-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {onSubmitFeedback && turn.result.trace_id && (
+                          <>
+                            <IconButton
+                              icon={ThumbsUp}
+                              label="Mark answer helpful"
+                              title="Helpful"
+                              disabled={isSaving}
+                              pressed={turn.feedback?.score === 1}
+                              onClick={() => void handleFeedbackSubmit(turn.id, 1)}
+                              className={turn.feedback?.score === 1 ? "!text-ok" : undefined}
+                            />
+                            <IconButton
+                              icon={ThumbsDown}
+                              label="Mark answer unhelpful"
+                              title="Needs work: add an optional note"
+                              disabled={isSaving}
+                              pressed={turn.feedback?.score === 0 || isCommenting}
+                              onClick={() => {
+                                setCommentingTurnId((curr) => (curr === turn.id ? null : turn.id));
+                                setCommentDraft(turn.feedback?.comment ?? "");
                               }}
-                              className="rounded px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                            >
-                              +{chunks.length - 6} more
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          {onSubmitFeedback && turn.result.trace_id && (
-                            <div
-                              className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <button
-                                type="button"
-                                aria-label="Mark answer helpful"
-                                title="Helpful (+1 score)"
-                                disabled={submittingFeedbackTurnId === turn.id}
-                                onClick={() => void handleFeedbackSubmit(turn.id, 1)}
-                                className={`inline-flex items-center justify-center rounded p-1 transition cursor-pointer disabled:opacity-50 ${
-                                  turn.feedback?.score === 1
-                                    ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
-                                }`}
-                              >
-                                <ThumbsUp className="h-3 w-3" />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label="Mark answer unhelpful"
-                                title="Needs improvement (0 score + optional note)"
-                                disabled={submittingFeedbackTurnId === turn.id}
-                                onClick={() => {
-                                  setCommentingTurnId((curr) =>
-                                    curr === turn.id ? null : turn.id
-                                  );
-                                  setPendingScore(0);
-                                  setCommentDraft(turn.feedback?.comment ?? "");
-                                }}
-                                className={`inline-flex items-center justify-center rounded p-1 transition cursor-pointer disabled:opacity-50 ${
-                                  turn.feedback?.score === 0 ||
-                                  commentingTurnId === turn.id
-                                    ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
-                                    : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
-                                }`}
-                              >
-                                <ThumbsDown className="h-3 w-3" />
-                              </button>
-                            </div>
-                          )}
-
-                          {turn.feedback && (
-                            <span
-                              className="hidden items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)] sm:inline-flex"
-                              title={
-                                turn.feedback.comment
-                                  ? `Feedback note: ${turn.feedback.comment}`
-                                  : undefined
+                              className={
+                                turn.feedback?.score === 0 || isCommenting ? "!text-bad" : undefined
                               }
-                            >
-                              <Check className="h-2.5 w-2.5 text-emerald-500" />
-                              <span>
-                                {turn.feedback.persistedToLangfuse ? "langfuse" : "saved"}
-                              </span>
-                            </span>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onInspectTurn(idx, "trace");
-                            }}
-                            className={`inline-flex shrink-0 items-center gap-1 rounded border px-2 py-0.5 font-mono text-[10.5px] font-medium transition cursor-pointer ${
-                              isSelected
-                                ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                                : "border-transparent text-[var(--text-muted)] hover:border-[var(--border-subtle)] hover:text-[var(--text-primary)]"
-                            }`}
+                            />
+                          </>
+                        )}
+                        <IconButton
+                          icon={copiedTurnId === turn.id ? Check : Copy}
+                          label={copiedTurnId === turn.id ? "Answer copied" : "Copy answer"}
+                          onClick={() => handleCopy(turn)}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={PanelRightOpen}
+                          onClick={() => onInspectTurn(idx, "trace")}
+                          className={cn(isSelected && "text-ink")}
+                        >
+                          {isSelected ? "Inspecting" : "Inspect"}
+                        </Button>
+                        {turn.feedback && (
+                          <span
+                            className="ml-1 inline-flex items-center gap-1 text-small text-ink-3"
+                            title={turn.feedback.comment ? `Note: ${turn.feedback.comment}` : undefined}
                           >
-                            <PanelRightOpen className="h-3 w-3" />
-                            <span>{isSelected ? "Inspecting" : `Inspect #${idx + 1}`}</span>
-                          </button>
-                        </div>
+                            <Check className="h-3.5 w-3.5 text-ok" aria-hidden />
+                            {turn.feedback.persistedToLangfuse
+                              ? "Feedback saved to Langfuse"
+                              : "Feedback saved"}
+                          </span>
+                        )}
                       </div>
 
-                      {commentingTurnId === turn.id && (
+                      {isCommenting && (
                         <div
                           onClick={(e) => e.stopPropagation()}
-                          className="mt-2.5 flex flex-wrap items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-2"
+                          className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sunken p-2"
                         >
                           <input
                             type="text"
                             value={commentDraft}
+                            autoFocus
                             onChange={(e) => setCommentDraft(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") {
                                 e.preventDefault();
-                                void handleFeedbackSubmit(
-                                  turn.id,
-                                  pendingScore,
-                                  commentDraft.trim() || undefined
-                                );
+                                void handleFeedbackSubmit(turn.id, 0, commentDraft.trim() || undefined);
                               }
+                              if (e.key === "Escape") setCommentingTurnId(null);
                             }}
-                            placeholder="Optional note: missing citation, stale source, wrong route..."
-                            className="min-w-[200px] flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
+                            placeholder="Optional note: missing citation, outdated source, wrong route…"
+                            className={cn(INPUT_CLASS, "h-8 min-w-[200px] flex-1 px-2.5")}
                           />
-                          <button
-                            type="button"
-                            disabled={submittingFeedbackTurnId === turn.id}
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            loading={isSaving}
                             onClick={() =>
-                              void handleFeedbackSubmit(
-                                turn.id,
-                                pendingScore,
-                                commentDraft.trim() || undefined
-                              )
+                              void handleFeedbackSubmit(turn.id, 0, commentDraft.trim() || undefined)
                             }
-                            className="rounded bg-[var(--cta-bg)] px-2.5 py-1 text-[11px] font-medium text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-50 cursor-pointer"
                           >
-                            {submittingFeedbackTurnId === turn.id
-                              ? "Saving..."
-                              : "Send Feedback"}
-                          </button>
-                          <button
-                            type="button"
+                            Send feedback
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => {
                               setCommentingTurnId(null);
                               setCommentDraft("");
                             }}
-                            className="rounded px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
                           >
                             Cancel
-                          </button>
+                          </Button>
                         </div>
                       )}
 
                       {feedbackErrorByTurn[turn.id] && (
-                        <p className="mt-2 text-[11px] text-rose-500">
-                          Feedback error: {feedbackErrorByTurn[turn.id]}
+                        <p className="mt-2 text-small text-bad">
+                          Feedback wasn't saved: {feedbackErrorByTurn[turn.id]}
                         </p>
                       )}
                     </div>
@@ -517,43 +445,41 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 );
               })}
 
-              {/* Active Streaming Turn */}
+              {/* Running question */}
               {isRunning && pendingQuery && (
-                <article className="space-y-3">
-                  <div className="flex items-baseline gap-2.5">
-                    <span className="shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-muted)] tabular-nums">
-                      #{String(turns.length + 1).padStart(2, "0")}
-                    </span>
-                    <h2 className="text-[15px] font-medium leading-snug tracking-tight text-[var(--text-primary)]">
-                      {pendingQuery}
-                    </h2>
-                  </div>
-                  <div className="rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-4 sm:p-5">
-                    <LivePipelineTracker
-                      mode="streaming"
-                      steps={liveSteps}
-                      liveUsage={liveUsage}
-                    />
-                    <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--text-muted)]">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
-                      <span>
-                        {useStreaming
-                          ? "Streaming LangGraph state events over SSE..."
-                          : "Executing AdaptiveRAG batch pipeline..."}
-                      </span>
+                <article className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-x-2 sm:grid-cols-[2.25rem_minmax(0,1fr)] sm:gap-x-3">
+                  <span aria-hidden className="pt-0.5 text-right text-ui tabular-nums text-ink-3">
+                    {turns.length + 1}
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="text-title font-semibold text-balance text-ink">{pendingQuery}</h2>
+                    <div className="mt-3">
+                      <LivePipelineTracker
+                        mode="streaming"
+                        steps={liveSteps}
+                        liveUsage={liveUsage}
+                        runningLabel={
+                          useStreaming
+                            ? `Running ${presetShortLabel}`
+                            : `Running ${presetShortLabel} (batch mode, steps arrive at the end)`
+                        }
+                      />
                     </div>
                   </div>
                 </article>
               )}
 
-              {/* Stream Error Banner */}
               {streamError && !isRunning && (
-                <div className="flex items-start gap-2.5 rounded-lg border border-rose-500/35 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-600 dark:text-rose-300">
-                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <div>
-                    <div className="font-medium">Execution Failed</div>
-                    <p className="mt-0.5 opacity-90">{streamError}</p>
-                  </div>
+                <div className="sm:pl-[3rem]">
+                  <Callout
+                    live
+                    tone={isStopNotice ? "info" : "bad"}
+                    title={isStopNotice ? "Run stopped" : "The run failed"}
+                  >
+                    {isStopNotice
+                      ? "No answer was saved. Ask again when you're ready."
+                      : streamError}
+                  </Callout>
                 </div>
               )}
 
@@ -563,254 +489,341 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         </div>
       </div>
 
-      {/* Bottom Sticky Composer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-4 py-3 backdrop-blur sm:px-8">
-        <div className="mx-auto max-w-3xl">
-          {/* Optional Collapsible Thread Context Drawer (Layer-2 Style + Document Scope) */}
+      {/* Composer */}
+      <div className="relative shrink-0 bg-paper px-4 pb-4 sm:px-8">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-b from-transparent to-paper"
+        />
+        <div className="mx-auto w-full max-w-[47rem] sm:pl-[3rem]">
           {onThreadContextChange && contextPanelOpen && (
-            <div
-              data-testid="thread-context-panel"
-              className="mb-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] p-3 text-xs"
-            >
-              <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2">
-                <div className="flex items-center gap-1.5">
-                  <SlidersHorizontal className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                  <span className="font-medium text-[var(--text-primary)]">
-                    Thread Context
-                  </span>
-                  <span className="font-mono text-[10px] text-[var(--text-muted)]">
-                    optional · per-thread
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {hasActiveThreadContext && (
-                    <button
-                      type="button"
-                      onClick={handleResetThreadContext}
-                      className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
-                    >
-                      <RotateCcw className="h-2.5 w-2.5" />
-                      <span>Reset</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    aria-label="Close thread context panel"
-                    onClick={() => setContextPanelOpen(false)}
-                    className="rounded p-0.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Layer-2 Response Style Presets & Custom Instructions */}
-              <div className="mt-2.5">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                    Response Style
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)]">
-                    <Lock className="h-2.5 w-2.5 shrink-0" />
-                    <span>Grounding &amp; [C#] citations stay locked</span>
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap gap-1.5">
-                  {INSTRUCTION_PRESETS.map((opt) => {
-                    const selected = activeContext.instructionPreset === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        title={opt.description}
-                        onClick={() => handleSelectInstructionPreset(opt.id)}
-                        className={`rounded-md border px-2 py-1 text-[11px] font-medium transition cursor-pointer ${
-                          selected
-                            ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
-                            : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {activeContext.instructionPreset !== "default" && (
-                  <div className="mt-2">
-                    <textarea
-                      aria-label="Thread custom instructions"
-                      rows={2}
-                      maxLength={MAX_CUSTOM_INSTRUCTIONS_CHARS}
-                      value={activeContext.customInstructions}
-                      onChange={(e) => handleCustomInstructionsInput(e.target.value)}
-                      placeholder="e.g. Summarize obligations and risks in a concise table using plain language..."
-                      className="w-full resize-none rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/65 px-2.5 py-1.5 text-xs leading-relaxed text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
-                    />
-                    <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-[var(--text-muted)]">
-                      <span>Layer-2 synthesis preference (screened by guardrails)</span>
-                      <span className="tabular-nums">
-                        {activeContext.customInstructions.length}/{MAX_CUSTOM_INSTRUCTIONS_CHARS}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Per-Thread Document Scope (doc_ids) */}
-              <div className="mt-3 border-t border-[var(--border-subtle)] pt-2.5">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                    Document Scope{" "}
-                    {scopedDocIds.length > 0 ? `(${scopedDocIds.length} selected)` : "(All indexed docs)"}
-                  </span>
-                  {scopedDocIds.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onThreadContextChange({ ...activeContext, scopedDocIds: [] })
-                      }
-                      className="font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                    >
-                      Use all docs
-                    </button>
-                  )}
-                </div>
-
-                {availableDocuments.length === 0 ? (
-                  <p className="text-[11px] text-[var(--text-muted)]">
-                    No indexed documents loaded yet. All collection documents will be searched.
-                  </p>
-                ) : (
-                  <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
-                    {availableDocuments.map((doc) => {
-                      const isScoped = scopedDocIds.includes(doc.doc_id);
-                      return (
-                        <button
-                          key={doc.doc_id}
-                          type="button"
-                          onClick={() => handleToggleScopedDoc(doc.doc_id)}
-                          title={`${doc.title} (${doc.doc_id}) · ${doc.chunk_count} chunks`}
-                          className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition cursor-pointer ${
-                            isScoped
-                              ? "border-sky-500/45 bg-sky-500/12 text-sky-700 dark:text-sky-300"
-                              : "border-[var(--border-subtle)] bg-[var(--bg-elevated)]/55 text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                          }`}
-                        >
-                          {isScoped ? (
-                            <Check className="h-3 w-3 shrink-0" />
-                          ) : doc.source_origin === "web" ? (
-                            <Globe className="h-3 w-3 shrink-0 opacity-65" />
-                          ) : (
-                            <FileText className="h-3 w-3 shrink-0 opacity-65" />
-                          )}
-                          <span className="truncate">{doc.title || doc.doc_id}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
+            <ThreadContextPanel
+              context={activeContext}
+              documents={availableDocuments}
+              hasActiveContext={hasActiveThreadContext}
+              onClose={() => setContextPanelOpen(false)}
+              onReset={() => onThreadContextChange({ ...DEFAULT_THREAD_CONTEXT })}
+              onSelectPreset={handleSelectInstructionPreset}
+              onInstructionsChange={handleCustomInstructionsInput}
+              onToggleDoc={handleToggleScopedDoc}
+              onUseAllDocs={() => onThreadContextChange({ ...activeContext, scopedDocIds: [] })}
+            />
           )}
 
-          <div className="relative flex items-end gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 transition focus-within:border-[var(--text-muted)]">
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isRunning}
-              placeholder="Ask a question about your documents in English or Turkish..."
-              className={`max-h-40 flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60 ${
-                input.includes("\n") || input.length > 90
-                  ? "overflow-y-auto"
-                  : "overflow-hidden"
-              }`}
-            />
-            {isRunning ? (
-              <button
-                type="button"
-                onClick={onStopStream}
-                title="Stop generation"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
-              >
-                <Square className="h-3 w-3 fill-current" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!input.trim()}
-                title="Submit query"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--cta-bg)] text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-25 cursor-pointer"
-              >
-                <ArrowUp className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-
-          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span>preset:{presetShortLabel.toLowerCase().replace(/\s+/g, "-")}</span>
-              <span>·</span>
-              <span>{useStreaming ? "sse" : "batch"}</span>
-              {budgetCapLabel && (
-                <>
-                  <span>·</span>
-                  <span>cap:{budgetCapLabel}</span>
-                </>
-              )}
-              {onThreadContextChange && (
-                <>
-                  <span>·</span>
-                  <button
-                    type="button"
-                    onClick={() => setContextPanelOpen((prev) => !prev)}
-                    aria-expanded={contextPanelOpen}
-                    title="Configure optional thread response style and document scope"
-                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 transition cursor-pointer ${
-                      effectiveInstructions
-                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                        : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <SlidersHorizontal className="h-2.5 w-2.5" />
-                    <span>style:{styleLabel}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setContextPanelOpen((prev) => !prev)}
-                    aria-expanded={contextPanelOpen}
-                    title="Scope retrieval to specific indexed documents for this thread"
-                    className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 transition cursor-pointer ${
-                      scopedDocIds.length > 0
-                        ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                        : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <FileText className="h-2.5 w-2.5" />
-                    <span>
-                      sources:
-                      {scopedDocIds.length > 0
-                        ? `${scopedDocIds.length} doc${scopedDocIds.length > 1 ? "s" : ""}`
-                        : "all"}
-                    </span>
-                  </button>
-                </>
-              )}
-            </div>
-            <div className="hidden items-center gap-1.5 sm:flex">
-              <span>Submit</span>
-              <kbd className="ar-kbd">↵</kbd>
-              <span className="ml-1">Newline</span>
-              <kbd className="ar-kbd">⇧↵</kbd>
-            </div>
-          </div>
+          <Composer
+            value={input}
+            onChange={setInput}
+            onSubmit={handleSend}
+            onStop={onStopStream}
+            isRunning={isRunning}
+            placeholder="Ask a question about your documents"
+            submitLabel="Send question"
+            stopLabel="Stop the run"
+            toolbar={
+              <>
+                {preset && onPresetChange && customAblation && onCustomAblationChange ? (
+                  <PresetPicker
+                    preset={preset}
+                    onPresetChange={onPresetChange}
+                    customAblation={customAblation}
+                    onCustomAblationChange={onCustomAblationChange}
+                    disabled={isRunning}
+                  />
+                ) : (
+                  <span className="px-2 text-small text-ink-3">{presetShortLabel}</span>
+                )}
+                {onThreadContextChange && (
+                  <>
+                    <ComposerChip
+                      icon={PenLine}
+                      active={contextPanelOpen || Boolean(effectiveInstructions)}
+                      aria-expanded={contextPanelOpen}
+                      aria-label={`Response style: ${styleChipLabel}`}
+                      onClick={() => setContextPanelOpen((prev) => !prev)}
+                    >
+                      <span className="truncate">{styleChipLabel}</span>
+                    </ComposerChip>
+                    <ComposerChip
+                      icon={Files}
+                      active={contextPanelOpen || scopedDocIds.length > 0}
+                      aria-expanded={contextPanelOpen}
+                      aria-label={`Document scope: ${scopeChipLabel}`}
+                      onClick={() => setContextPanelOpen((prev) => !prev)}
+                    >
+                      <span className="truncate">{scopeChipLabel}</span>
+                    </ComposerChip>
+                  </>
+                )}
+              </>
+            }
+            footer={
+              <>
+                {!useStreaming && <span>Batch mode: steps appear when the run ends</span>}
+                {budgetCapLabel && <span>Spend cap {budgetCapLabel} per question</span>}
+              </>
+            }
+          />
         </div>
       </div>
     </div>
   );
 };
+
+/* -------------------------------------------------------------------------- */
+/* Empty state                                                                */
+/* -------------------------------------------------------------------------- */
+
+function EmptyWorkbench({
+  documents,
+  presetShortLabel,
+  onSubmitQuery,
+  onOpenKnowledgeBase,
+}: {
+  documents: IndexedDocumentInfo[];
+  presetShortLabel: string;
+  onSubmitQuery: (query: string) => void;
+  onOpenKnowledgeBase?: () => void;
+}) {
+  const visibleDocs = documents.slice(0, 4);
+  return (
+    <div className="pt-[9vh] pb-12 sm:pl-[3rem]">
+      <h1 className="text-display font-semibold tracking-[-0.015em] text-ink">Ask your documents</h1>
+      <p className="mt-3 max-w-[34rem] text-body text-ink-2">
+        Every answer cites the passages it relies on. Hover a mark like{" "}
+        <CitationMark citationId="C1" static className="mx-0.5 align-[1px]" /> to read the
+        source, or open the inspector to see how the answer was routed, retrieved and checked.
+      </p>
+
+      <section className="mt-10" aria-labelledby="scope-heading">
+        <SectionHeading
+          aside={
+            onOpenKnowledgeBase && (
+              <Button variant="ghost" size="xs" onClick={onOpenKnowledgeBase}>
+                Manage documents
+              </Button>
+            )
+          }
+        >
+          <span id="scope-heading">
+            {documents.length === 0
+              ? "No documents indexed yet"
+              : `Searching ${documents.length} ${documents.length === 1 ? "document" : "documents"}`}
+          </span>
+        </SectionHeading>
+        {documents.length === 0 ? (
+          <p className="mt-2 text-small text-ink-3">
+            Add files or web pages in the knowledge base. Until then, questions can only be answered
+            from the web fallback, if it's enabled.
+          </p>
+        ) : (
+          <ul className="mt-2.5 divide-y divide-line rounded-lg border border-line">
+            {visibleDocs.map((doc) => (
+              <li key={doc.doc_id} className="flex items-center gap-3 px-3.5 py-2.5">
+                {doc.source_origin === "web" ? (
+                  <Globe className="h-4 w-4 shrink-0 text-ink-3" aria-hidden />
+                ) : (
+                  <FileText className="h-4 w-4 shrink-0 text-ink-3" aria-hidden />
+                )}
+                <span className="min-w-0 flex-1 truncate text-ui font-medium text-ink">
+                  {doc.title || doc.doc_id}
+                </span>
+                <span className="hidden shrink-0 gap-3 text-small text-ink-3 sm:flex">
+                  <span>{doc.source_origin === "web" ? "Web page" : doc.doc_type.toUpperCase()}</span>
+                  <span>{languageName(doc.language)}</span>
+                  <span className="tabular-nums">{formatInt(doc.chunk_count)} passages</span>
+                </span>
+              </li>
+            ))}
+            {documents.length > visibleDocs.length && (
+              <li className="px-3.5 py-2 text-small text-ink-3">
+                {documents.length - visibleDocs.length} more in the knowledge base
+              </li>
+            )}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-10" aria-labelledby="samples-heading">
+        <SectionHeading
+          aside={<span className="text-small text-ink-3">Runs with {presetShortLabel}</span>}
+        >
+          <span id="samples-heading">Sample questions</span>
+        </SectionHeading>
+        <ul className="mt-2.5 divide-y divide-line rounded-lg border border-line">
+          {DEMO_QUERIES.map((demo) => (
+            <li key={demo.id}>
+              <button
+                type="button"
+                onClick={() => onSubmitQuery(demo.query)}
+                className="grid w-full cursor-pointer grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-3 px-3.5 py-3 text-left transition-colors hover:bg-hover"
+              >
+                <span className="text-small text-ink-3">{demo.category}</span>
+                <span className="min-w-0">
+                  <span className="flex items-baseline justify-between gap-3">
+                    <span className="truncate text-ui font-medium text-ink">{demo.title}</span>
+                    <span className="shrink-0 text-caption text-ink-3">{demo.lang}</span>
+                  </span>
+                  <span className="mt-0.5 line-clamp-1 text-small text-ink-2">{demo.query}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Thread settings (response style + document scope)                          */
+/* -------------------------------------------------------------------------- */
+
+function ThreadContextPanel({
+  context,
+  documents,
+  hasActiveContext,
+  onClose,
+  onReset,
+  onSelectPreset,
+  onInstructionsChange,
+  onToggleDoc,
+  onUseAllDocs,
+}: {
+  context: ThreadContextConfig;
+  documents: IndexedDocumentInfo[];
+  hasActiveContext: boolean;
+  onClose: () => void;
+  onReset: () => void;
+  onSelectPreset: (id: InstructionPresetId) => void;
+  onInstructionsChange: (value: string) => void;
+  onToggleDoc: (docId: string) => void;
+  onUseAllDocs: () => void;
+}) {
+  const scoped = context.scopedDocIds;
+  return (
+    <div
+      data-testid="thread-context-panel"
+      className="anim-pop mb-2.5 rounded-xl border border-line-strong bg-raised p-4 shadow-[var(--shadow-float)]"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-ui font-semibold text-ink">Thread settings</div>
+          <p className="mt-0.5 text-small text-ink-3">Apply to every question in this thread.</p>
+        </div>
+        <div className="flex items-center gap-1">
+          {hasActiveContext && (
+            <Button variant="ghost" size="xs" icon={RotateCcw} onClick={onReset}>
+              Reset
+            </Button>
+          )}
+          <IconButton icon={X} size="sm" label="Close thread settings" onClick={onClose} />
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className="text-small font-medium text-ink">Response style</span>
+          <span className="inline-flex items-center gap-1 text-caption text-ink-3">
+            <Lock className="h-3 w-3" aria-hidden />
+            Citations and grounding rules always apply
+          </span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {INSTRUCTION_PRESETS.map((opt) => {
+            const selected = context.instructionPreset === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                title={opt.description}
+                aria-pressed={selected}
+                onClick={() => onSelectPreset(opt.id)}
+                className={cn(
+                  "h-7 cursor-pointer rounded-md border px-2.5 text-small font-medium transition-colors",
+                  selected
+                    ? "border-ink bg-ink text-paper"
+                    : "border-line-strong bg-paper text-ink-2 hover:text-ink hover:tint"
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        {context.instructionPreset !== "default" && (
+          <div className="mt-2.5">
+            <textarea
+              aria-label="Thread custom instructions"
+              rows={2}
+              maxLength={MAX_CUSTOM_INSTRUCTIONS_CHARS}
+              value={context.customInstructions}
+              onChange={(e) => onInstructionsChange(e.target.value)}
+              placeholder="For example: summarize obligations and risks in a short table, in plain language."
+              className={cn(INPUT_CLASS, "resize-none px-3 py-2 leading-relaxed")}
+            />
+            <div className="mt-1 flex items-center justify-between gap-2 text-caption text-ink-3">
+              <span>Guardrails screen these instructions before they reach the model.</span>
+              <span className="tabular-nums">
+                {formatInt(context.customInstructions.length)} / {formatInt(MAX_CUSTOM_INSTRUCTIONS_CHARS)}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 border-t border-line pt-3.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-small font-medium text-ink">
+            Documents{" "}
+            <span className="font-normal text-ink-3">
+              {scoped.length > 0 ? `${scoped.length} selected` : "All indexed documents"}
+            </span>
+          </span>
+          {scoped.length > 0 && (
+            <Button variant="ghost" size="xs" onClick={onUseAllDocs}>
+              Use all documents
+            </Button>
+          )}
+        </div>
+        {documents.length === 0 ? (
+          <p className="mt-2 text-small text-ink-3">
+            No indexed documents yet, so the whole collection is searched.
+          </p>
+        ) : (
+          <div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto pr-1">
+            {documents.map((doc) => {
+              const isScoped = scoped.includes(doc.doc_id);
+              return (
+                <button
+                  key={doc.doc_id}
+                  type="button"
+                  aria-pressed={isScoped}
+                  onClick={() => onToggleDoc(doc.doc_id)}
+                  title={`${doc.title} (${doc.doc_id}), ${doc.chunk_count} passages`}
+                  className={cn(
+                    "inline-flex h-7 max-w-[240px] cursor-pointer items-center gap-1.5 rounded-md border px-2 text-small transition-colors",
+                    isScoped
+                      ? "border-accent bg-accent-soft text-ink"
+                      : "border-line-strong bg-paper text-ink-2 hover:text-ink hover:tint"
+                  )}
+                >
+                  {isScoped ? (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+                  ) : doc.source_origin === "web" ? (
+                    <Globe className="h-3.5 w-3.5 shrink-0 text-ink-3" aria-hidden />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-ink-3" aria-hidden />
+                  )}
+                  <span className="truncate">{doc.title || doc.doc_id}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="sr-only" aria-live="polite">
+        {scoped.length > 0 ? `${scoped.length} documents in scope` : "All documents in scope"}
+      </div>
+    </div>
+  );
+}

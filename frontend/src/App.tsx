@@ -1,27 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Columns2,
-  Database,
-  MessageSquare,
-  Moon,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
-  Sun,
-} from "lucide-react";
+import { Menu, Moon, PanelLeftOpen, PanelRightClose, PanelRightOpen, Sun } from "lucide-react";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { CompareArena } from "./components/CompareArena";
 import { GlassBoxInspector } from "./components/GlassBoxInspector";
 import { KnowledgeBaseView } from "./components/KnowledgeBaseView";
 import { ModelSelectorPopover } from "./components/ModelSelectorPopover";
 import { Sidebar } from "./components/Sidebar";
+import { cn, IconButton, Kbd } from "./components/ui/primitives";
 import {
   DEFAULT_API_URL,
   DEFAULT_CUSTOM_ABLATION,
   DEFAULT_THREAD_CONTEXT,
-  getInstructionPresetLabel,
   PRESET_OPTIONS,
   resolveEffectiveInstructions,
+  RUN_STOPPED_MESSAGE,
 } from "./constants/pipeline";
 import {
   buildQueryPayload,
@@ -33,10 +25,7 @@ import {
   streamQuery,
   submitFeedback,
 } from "./lib/api";
-import {
-  createCompareInspectorTurns,
-  getPresetShortLabel,
-} from "./lib/compare";
+import { createCompareInspectorTurns, getPresetShortLabel } from "./lib/compare";
 import type {
   AblationConfig,
   AblationPreset,
@@ -67,6 +56,12 @@ const STORAGE_API_URL_KEY = "adaptiverag_studio_api_url_v1";
 const STORAGE_LLM_OVERRIDE_KEY = "adaptiverag_studio_llm_override_v1";
 const SESSION_API_KEY_STORAGE_KEY = "adaptiverag_studio_api_key_v1";
 const SESSION_PROVIDER_KEYS_STORAGE_KEY = "adaptiverag_studio_provider_keys_v1";
+
+/** Sidebar docks from 1024px; the inspector docks only when there's room for three columns. */
+const DESKTOP_QUERY = "(min-width: 1024px)";
+const WIDE_QUERY = "(min-width: 1280px)";
+const INSPECTOR_MIN = 360;
+const INSPECTOR_MAX = 680;
 
 function loadInitialLlmOverride(): LLMOverride | null {
   try {
@@ -114,7 +109,7 @@ function createEmptySession(): ChatSession {
   const now = Date.now();
   return {
     id: `sess_${now}_${Math.random().toString(36).slice(2, 7)}`,
-    title: "Untitled Thread",
+    title: "New thread",
     createdAt: now,
     updatedAt: now,
     turns: [],
@@ -135,25 +130,44 @@ function loadInitialSessions(): ChatSession[] {
   return [createEmptySession()];
 }
 
-export default function App() {
-  // Theme (dark-first with persistent toggle)
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_THEME_KEY);
-      if (saved === "light" || saved === "dark") return saved;
-    } catch {
-      // ignore storage errors
-    }
+function loadInitialTheme(): "dark" | "light" {
+  try {
+    const saved = localStorage.getItem(STORAGE_THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // ignore storage errors
+  }
+  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
     return "dark";
-  });
+  }
+  return "light";
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia ? window.matchMedia(query).matches : true
+  );
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+export default function App() {
+  /* ------------------------------------------------------------------------ */
+  /* Theme: saved choice, otherwise the operating system's preference          */
+  /* ------------------------------------------------------------------------ */
+  const [theme, setTheme] = useState<"dark" | "light">(loadInitialTheme);
+  const themeChosenRef = useRef(false);
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    if (!themeChosenRef.current) return;
     try {
       localStorage.setItem(STORAGE_THEME_KEY, theme);
     } catch {
@@ -161,14 +175,43 @@ export default function App() {
     }
   }, [theme]);
 
-  // Layout state
+  const toggleTheme = () => {
+    themeChosenRef.current = true;
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  };
+
+  /* ------------------------------------------------------------------------ */
+  /* Layout                                                                    */
+  /* ------------------------------------------------------------------------ */
+  const isDesktop = useMediaQuery(DESKTOP_QUERY);
+  const isWide = useMediaQuery(WIDE_QUERY);
   const [activeView, setActiveView] = useState<AppView>("workbench");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorWidth, setInspectorWidth] = useState(432);
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => typeof window === "undefined" || !window.matchMedia || window.matchMedia(DESKTOP_QUERY).matches
+  );
+  const [inspectorOpen, setInspectorOpen] = useState(
+    () => typeof window === "undefined" || !window.matchMedia || window.matchMedia(WIDE_QUERY).matches
+  );
+  const [inspectorWidth, setInspectorWidth] = useState(440);
   const resizingRef = useRef(false);
 
-  // API & Health & Knowledge Base state
+  // Crossing a breakpoint resets the panels to that layout's defaults.
+  const prevDesktopRef = useRef(isDesktop);
+  const prevWideRef = useRef(isWide);
+  useEffect(() => {
+    if (prevDesktopRef.current !== isDesktop) {
+      prevDesktopRef.current = isDesktop;
+      setSidebarOpen(isDesktop);
+    }
+    if (prevWideRef.current !== isWide) {
+      prevWideRef.current = isWide;
+      setInspectorOpen(isWide && activeView !== "knowledge");
+    }
+  }, [isDesktop, isWide, activeView]);
+
+  /* ------------------------------------------------------------------------ */
+  /* API, health, knowledge base                                               */
+  /* ------------------------------------------------------------------------ */
   const [apiUrl, setApiUrl] = useState<string>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_API_URL_KEY);
@@ -197,30 +240,32 @@ export default function App() {
   const [modelsCatalog, setModelsCatalog] = useState<ModelsCatalogResponse | null>(null);
   const [modelsCatalogLoading, setModelsCatalogLoading] = useState(false);
   const [llmOverride, setLlmOverride] = useState<LLMOverride | null>(loadInitialLlmOverride);
-  const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeys>(
-    loadInitialProviderApiKeys
-  );
+  const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeys>(loadInitialProviderApiKeys);
 
-  // Sessions & turns
+  /* ------------------------------------------------------------------------ */
+  /* Threads                                                                   */
+  /* ------------------------------------------------------------------------ */
   const [sessions, setSessions] = useState<ChatSession[]>(loadInitialSessions);
-  const [activeSessionId, setActiveSessionId] = useState<string>(
-    () => sessions[0].id
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => sessions[0].id);
+  const [selectedTurnIndex, setSelectedTurnIndex] = useState<number>(() =>
+    Math.max(0, (sessions[0]?.turns.length ?? 1) - 1)
   );
-  const [selectedTurnIndex, setSelectedTurnIndex] = useState<number>(0);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("trace");
   const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
   const [highlightToken, setHighlightToken] = useState<number>(0);
 
-  // Pipeline controls
+  /* ------------------------------------------------------------------------ */
+  /* Pipeline controls                                                         */
+  /* ------------------------------------------------------------------------ */
   const [preset, setPreset] = useState<PresetSelection>("full");
-  const [customAblation, setCustomAblation] = useState<AblationConfig>(
-    DEFAULT_CUSTOM_ABLATION
-  );
+  const [customAblation, setCustomAblation] = useState<AblationConfig>(DEFAULT_CUSTOM_ABLATION);
   const [useStreaming, setUseStreaming] = useState(true);
   const [enableBudgetCap, setEnableBudgetCap] = useState(false);
   const [maxCostUsd, setMaxCostUsd] = useState(0.05);
 
-  // Active streaming execution state
+  /* ------------------------------------------------------------------------ */
+  /* Active run                                                                */
+  /* ------------------------------------------------------------------------ */
   const [isRunning, setIsRunning] = useState(false);
   const [pendingQuery, setPendingQuery] = useState<string | null>(null);
   const [liveSteps, setLiveSteps] = useState<LiveStreamStep[]>([]);
@@ -228,7 +273,9 @@ export default function App() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Side-by-Side Ablation Arena (Compare Mode) state
+  /* ------------------------------------------------------------------------ */
+  /* Arena                                                                     */
+  /* ------------------------------------------------------------------------ */
   const [compareRuns, setCompareRuns] = useState<CompareRun[]>(loadInitialCompareRuns);
   const [activeCompareRunId, setActiveCompareRunId] = useState<string | null>(
     () => loadInitialCompareRuns()[0]?.id ?? null
@@ -236,15 +283,12 @@ export default function App() {
   const [leftPreset, setLeftPreset] = useState<AblationPreset>("naive_dense");
   const [rightPreset, setRightPreset] = useState<AblationPreset>("full");
   const [compareRunning, setCompareRunning] = useState(false);
-  const [inspectedCompareSide, setInspectedCompareSide] =
-    useState<CompareSideKey>("right");
+  const [inspectedCompareSide, setInspectedCompareSide] = useState<CompareSideKey>("right");
   const compareAbortRef = useRef<AbortController | null>(null);
 
   const activeCompareRun = useMemo(
     () =>
-      activeCompareRunId
-        ? compareRuns.find((r) => r.id === activeCompareRunId) ?? null
-        : null,
+      activeCompareRunId ? (compareRuns.find((r) => r.id === activeCompareRunId) ?? null) : null,
     [compareRuns, activeCompareRunId]
   );
 
@@ -253,7 +297,7 @@ export default function App() {
     [activeCompareRun]
   );
 
-  // Persist completed Compare Arena runs
+  // Persist completed Arena runs
   useEffect(() => {
     try {
       const serializable = compareRuns
@@ -270,13 +314,11 @@ export default function App() {
     }
   }, [compareRuns]);
 
-  // Ensure activeSessionId always resolves to an existing session
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? sessions[0],
     [sessions, activeSessionId]
   );
 
-  // Persist sessions in localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_SESSIONS_KEY, JSON.stringify(sessions.slice(0, 20)));
@@ -285,7 +327,6 @@ export default function App() {
     }
   }, [sessions]);
 
-  // Persist API URL & LLM override
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_API_URL_KEY, apiUrl);
@@ -306,30 +347,27 @@ export default function App() {
     }
   }, [llmOverride]);
 
-  const handleProviderApiKeyChange = useCallback(
-    (provider: LLMProvider, nextKey: string) => {
-      setProviderApiKeys((prev) => {
-        const next: ProviderApiKeys = { ...prev };
-        const cleaned = nextKey.trim();
-        if (cleaned) {
-          next[provider] = cleaned;
+  const handleProviderApiKeyChange = useCallback((provider: LLMProvider, nextKey: string) => {
+    setProviderApiKeys((prev) => {
+      const next: ProviderApiKeys = { ...prev };
+      const cleaned = nextKey.trim();
+      if (cleaned) {
+        next[provider] = cleaned;
+      } else {
+        delete next[provider];
+      }
+      try {
+        if (Object.keys(next).length > 0) {
+          sessionStorage.setItem(SESSION_PROVIDER_KEYS_STORAGE_KEY, JSON.stringify(next));
         } else {
-          delete next[provider];
+          sessionStorage.removeItem(SESSION_PROVIDER_KEYS_STORAGE_KEY);
         }
-        try {
-          if (Object.keys(next).length > 0) {
-            sessionStorage.setItem(SESSION_PROVIDER_KEYS_STORAGE_KEY, JSON.stringify(next));
-          } else {
-            sessionStorage.removeItem(SESSION_PROVIDER_KEYS_STORAGE_KEY);
-          }
-        } catch {
-          // ignore storage errors
-        }
-        return next;
-      });
-    },
-    []
-  );
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
 
   const activeEffectiveProvider = (llmOverride?.provider ??
     modelsCatalog?.default_provider ??
@@ -364,6 +402,7 @@ export default function App() {
     } finally {
       setHealthLoading(false);
     }
+    // apiKey is a dependency on purpose: it's sent as a header, so a new key re-probes.
   }, [apiUrl, apiKey]);
 
   const refreshDocuments = useCallback(async () => {
@@ -399,28 +438,35 @@ export default function App() {
     void refreshAll();
   }, [refreshAll]);
 
-  // Keyboard shortcut: Cmd+I / Ctrl+I toggles Inspector
+  // Keyboard: ⌘I / Ctrl+I toggles the inspector, Escape closes mobile overlays.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "i") {
         e.preventDefault();
         setInspectorOpen((prev) => !prev);
+        return;
+      }
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        if (!isDesktop) setSidebarOpen(false);
+        if (!isWide) setInspectorOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [isDesktop, isWide]);
 
-  // Drag resize for right inspector pane
+  // Drag to resize the docked inspector
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!resizingRef.current) return;
-      const nextWidth = Math.min(640, Math.max(340, window.innerWidth - e.clientX));
+      const nextWidth = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, window.innerWidth - e.clientX));
       setInspectorWidth(nextWidth);
     };
     const onMouseUp = () => {
+      if (!resizingRef.current) return;
       resizingRef.current = false;
       document.body.style.cursor = "";
+      document.body.style.userSelect = "";
     };
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
@@ -430,6 +476,10 @@ export default function App() {
     };
   }, []);
 
+  const closeSidebarOnMobile = () => {
+    if (!isDesktop) setSidebarOpen(false);
+  };
+
   const handleNewSession = () => {
     const fresh = createEmptySession();
     setSessions((prev) => [fresh, ...prev]);
@@ -437,6 +487,7 @@ export default function App() {
     setSelectedTurnIndex(0);
     setHighlightedCitationId(null);
     setStreamError(null);
+    closeSidebarOnMobile();
   };
 
   const handleDeleteSession = (id: string) => {
@@ -461,29 +512,25 @@ export default function App() {
     setSelectedTurnIndex(target ? Math.max(0, target.turns.length - 1) : 0);
     setHighlightedCitationId(null);
     setStreamError(null);
+    closeSidebarOnMobile();
   };
 
   const handleUpdateActiveThreadContext = (nextContext: ThreadContextConfig) => {
     const targetId = activeSession.id;
     setSessions((prev) =>
       prev.map((sess) =>
-        sess.id === targetId
-          ? {
-              ...sess,
-              context: nextContext,
-              updatedAt: Date.now(),
-            }
-          : sess
+        sess.id === targetId ? { ...sess, context: nextContext, updatedAt: Date.now() } : sess
       )
     );
   };
 
+  /** Selecting an answer updates the inspector; asking for a tab also opens it. */
   const handleInspectTurn = (turnIdx: number, tab?: InspectorTab) => {
     setSelectedTurnIndex(turnIdx);
     if (tab) {
       setInspectorTab(tab);
+      setInspectorOpen(true);
     }
-    setInspectorOpen(true);
   };
 
   const handleCitationClick = (turnIdx: number, citationId: string) => {
@@ -506,19 +553,24 @@ export default function App() {
 
   const handleChangeView = (nextView: AppView) => {
     setActiveView(nextView);
-    if (nextView === "compare" && typeof window !== "undefined" && window.innerWidth < 1540) {
+    if (isWide) {
+      if (nextView === "compare" && window.innerWidth < 1540) {
+        setInspectorOpen(false);
+      } else if (nextView === "workbench") {
+        setInspectorOpen(true);
+      }
+    } else {
       setInspectorOpen(false);
-    } else if (nextView === "workbench") {
-      setInspectorOpen(true);
     }
+    if (!isDesktop) setSidebarOpen(false);
   };
 
   const handleInspectCompareSide = (side: CompareSideKey, tab?: InspectorTab) => {
     setInspectedCompareSide(side);
     if (tab) {
       setInspectorTab(tab);
+      setInspectorOpen(true);
     }
-    setInspectorOpen(true);
   };
 
   const handleCompareCitationClick = (side: CompareSideKey, citationId: string) => {
@@ -629,9 +681,7 @@ export default function App() {
       side: CompareSideKey,
       updater: (prev: CompareRun["left"]) => CompareRun["left"]
     ) => {
-      setCompareRuns((prev) =>
-        prev.map((r) => (r.id === runId ? { ...r, [side]: updater(r[side]) } : r))
-      );
+      setCompareRuns((prev) => prev.map((r) => (r.id === runId ? { ...r, [side]: updater(r[side]) } : r)));
     };
 
     const executeSide = async (side: CompareSideKey, sidePreset: AblationPreset) => {
@@ -687,51 +737,30 @@ export default function App() {
             activeProviderApiKey
           );
         } else {
-          answer = await runQueryBatch(
-            apiUrl,
-            payload,
-            controller.signal,
-            activeProviderApiKey
-          );
+          answer = await runQueryBatch(apiUrl, payload, controller.signal, activeProviderApiKey);
         }
 
-        updateSide(side, (prev) => ({
-          ...prev,
-          status: "done",
-          result: answer,
-          error: null,
-        }));
+        updateSide(side, (prev) => ({ ...prev, status: "done", result: answer, error: null }));
       } catch (err) {
         const message =
           (err as Error)?.name === "AbortError"
-            ? "Comparison cancelled by user."
+            ? "You stopped this comparison before it finished."
             : err instanceof Error
               ? err.message
               : String(err);
-        updateSide(side, (prev) => ({
-          ...prev,
-          status: "error",
-          error: message,
-        }));
+        updateSide(side, (prev) => ({ ...prev, status: "error", error: message }));
       }
     };
 
     try {
-      await Promise.allSettled([
-        executeSide("left", leftPreset),
-        executeSide("right", rightPreset),
-      ]);
+      await Promise.allSettled([executeSide("left", leftPreset), executeSide("right", rightPreset)]);
     } finally {
       setCompareRunning(false);
       compareAbortRef.current = null;
     }
   };
 
-  const handleSubmitFeedback = async (
-    turnId: string,
-    score: 0 | 1,
-    comment?: string
-  ) => {
+  const handleSubmitFeedback = async (turnId: string, score: 0 | 1, comment?: string) => {
     if (!activeSession) return;
     const targetTurn = activeSession.turns.find((t) => t.id === turnId);
     const traceId = targetTurn?.result.trace_id;
@@ -768,8 +797,7 @@ export default function App() {
     );
   };
 
-  const presetMeta =
-    PRESET_OPTIONS.find((p) => p.value === preset) ?? PRESET_OPTIONS[0];
+  const presetMeta = PRESET_OPTIONS.find((p) => p.value === preset) ?? PRESET_OPTIONS[0];
 
   const handleSubmitQuery = async (query: string) => {
     if (!activeSession || isRunning) return;
@@ -845,12 +873,7 @@ export default function App() {
           activeProviderApiKey
         );
       } else {
-        answer = await runQueryBatch(
-          apiUrl,
-          payload,
-          controller.signal,
-          activeProviderApiKey
-        );
+        answer = await runQueryBatch(apiUrl, payload, controller.signal, activeProviderApiKey);
       }
 
       const newTurn: ChatTurn = {
@@ -868,24 +891,15 @@ export default function App() {
           const updatedTurns = [...sess.turns, newTurn];
           nextTurnIdx = updatedTurns.length - 1;
           const updatedTitle =
-            sess.turns.length === 0
-              ? query.length > 44
-                ? `${query.slice(0, 44)}…`
-                : query
-              : sess.title;
-          return {
-            ...sess,
-            title: updatedTitle,
-            updatedAt: Date.now(),
-            turns: updatedTurns,
-          };
+            sess.turns.length === 0 ? (query.length > 48 ? `${query.slice(0, 48)}…` : query) : sess.title;
+          return { ...sess, title: updatedTitle, updatedAt: Date.now(), turns: updatedTurns };
         })
       );
       setSelectedTurnIndex(nextTurnIdx);
       setHighlightedCitationId(null);
     } catch (err) {
       if ((err as Error)?.name === "AbortError") {
-        setStreamError("Pipeline stream cancelled by user.");
+        setStreamError(RUN_STOPPED_MESSAGE);
       } else {
         setStreamError(err instanceof Error ? err.message : String(err));
       }
@@ -896,127 +910,123 @@ export default function App() {
     }
   };
 
-  const viewBreadcrumb =
-    activeView === "workbench"
-      ? "Workbench"
-      : activeView === "compare"
-        ? "Ablation Arena"
-        : "Knowledge Base";
-
+  /* ------------------------------------------------------------------------ */
+  /* Render                                                                    */
+  /* ------------------------------------------------------------------------ */
+  const viewName =
+    activeView === "workbench" ? "Workbench" : activeView === "compare" ? "Arena" : "Knowledge base";
   const viewSubtitle =
     activeView === "workbench"
       ? activeSession.title
       : activeView === "compare"
         ? `${getPresetShortLabel(leftPreset)} vs ${getPresetShortLabel(rightPreset)}`
-        : `${documentsData?.total_documents ?? 0} docs · ${health?.qdrant?.points_count ?? 0} chunks`;
+        : null;
+
+  const showInspectorToggle = activeView === "workbench" || activeView === "compare";
+  const inspectorVisible = showInspectorToggle && inspectorOpen;
+  const budgetCapLabel = enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null;
+
+  const sidebar = (
+    <Sidebar
+      activeView={activeView}
+      onChangeView={handleChangeView}
+      sessions={sessions}
+      activeSessionId={activeSession.id}
+      onSelectSession={handleSelectSession}
+      onNewSession={handleNewSession}
+      onDeleteSession={handleDeleteSession}
+      apiUrl={apiUrl}
+      onApiUrlChange={(url) => setApiUrl(url)}
+      apiKey={apiKey}
+      onApiKeyChange={handleApiKeyChange}
+      health={health}
+      healthError={healthError}
+      healthLoading={healthLoading}
+      onRefreshHealth={() => void refreshAll()}
+      documentCount={documentsData?.total_documents}
+      onCollapse={() => setSidebarOpen(false)}
+      variant={isDesktop ? "docked" : "drawer"}
+    />
+  );
+
+  const inspector =
+    activeView === "compare" ? (
+      <GlassBoxInspector
+        turns={compareInspector.turns}
+        selectedTurnIndex={
+          compareInspector.sideIndexMap[inspectedCompareSide] >= 0
+            ? compareInspector.sideIndexMap[inspectedCompareSide]
+            : 0
+        }
+        onSelectTurnIndex={(idx) => {
+          if (idx === compareInspector.sideIndexMap.left) setInspectedCompareSide("left");
+          else if (idx === compareInspector.sideIndexMap.right) setInspectedCompareSide("right");
+        }}
+        activeTab={inspectorTab}
+        onTabChange={setInspectorTab}
+        highlightedCitationId={highlightedCitationId}
+        highlightToken={highlightToken}
+        onJumpToCitation={handleJumpWithinInspector}
+        onClose={() => setInspectorOpen(false)}
+        selectorLabel="Side to inspect"
+      />
+    ) : (
+      <GlassBoxInspector
+        turns={activeSession.turns}
+        selectedTurnIndex={selectedTurnIndex}
+        onSelectTurnIndex={setSelectedTurnIndex}
+        activeTab={inspectorTab}
+        onTabChange={setInspectorTab}
+        highlightedCitationId={highlightedCitationId}
+        highlightToken={highlightToken}
+        onJumpToCitation={handleJumpWithinInspector}
+        onClose={() => setInspectorOpen(false)}
+      />
+    );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      {/* Left Navigation & Controls Sidebar */}
-      {sidebarOpen && (
-        <Sidebar
-          activeView={activeView}
-          onChangeView={handleChangeView}
-          sessions={sessions}
-          activeSessionId={activeSession.id}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
-          onDeleteSession={handleDeleteSession}
-          apiUrl={apiUrl}
-          onApiUrlChange={(url) => setApiUrl(url)}
-          apiKey={apiKey}
-          onApiKeyChange={handleApiKeyChange}
-          health={health}
-          healthError={healthError}
-          healthLoading={healthLoading}
-          onRefreshHealth={() => void refreshAll()}
-          preset={preset}
-          onPresetChange={setPreset}
-          customAblation={customAblation}
-          onCustomAblationChange={setCustomAblation}
-          useStreaming={useStreaming}
-          onUseStreamingChange={setUseStreaming}
-          enableBudgetCap={enableBudgetCap}
-          onEnableBudgetCapChange={setEnableBudgetCap}
-          maxCostUsd={maxCostUsd}
-          onMaxCostUsdChange={setMaxCostUsd}
-          onCollapse={() => setSidebarOpen(false)}
-        />
-      )}
+    <div className="flex h-dvh w-screen overflow-hidden bg-desk text-ink">
+      {/* Sidebar: docked on desktop, drawer on small screens */}
+      {isDesktop
+        ? sidebarOpen && sidebar
+        : sidebarOpen && (
+            <div className="fixed inset-0 z-40 flex">
+              <div
+                aria-hidden
+                className="absolute inset-0 bg-[#0B0F18]/45 backdrop-blur-[1px]"
+                onClick={() => setSidebarOpen(false)}
+              />
+              <div className="anim-sheet-left relative h-full shadow-[var(--shadow-float)]">{sidebar}</div>
+            </div>
+          )}
 
-      {/* Center + Right Split Container */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* Global Top Header Bar */}
-        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3.5">
-          <div className="flex min-w-0 items-center gap-2">
-            {!sidebarOpen && (
-              <button
-                type="button"
+      {/* Main column */}
+      <div className="flex min-w-0 flex-1 flex-col bg-paper">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line bg-paper px-2.5 sm:px-3.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {(!sidebarOpen || !isDesktop) && (
+              <IconButton
+                icon={isDesktop ? PanelLeftOpen : Menu}
+                label={isDesktop ? "Open sidebar" : "Open menu"}
                 onClick={() => setSidebarOpen(true)}
-                title="Open sidebar"
-                className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-              >
-                <PanelLeftOpen className="h-3.5 w-3.5" />
-              </button>
+              />
             )}
-
-            <nav aria-label="Workspace breadcrumb" className="flex min-w-0 items-center gap-1.5 text-xs">
-              <span className="shrink-0 font-medium text-[var(--text-muted)]">
-                {viewBreadcrumb}
+            <nav aria-label="Location" className="flex min-w-0 items-center gap-2 pl-1 text-ui">
+              <span className={cn("shrink-0", viewSubtitle ? "text-ink-3" : "font-medium text-ink")}>
+                {viewName}
               </span>
-              <span className="shrink-0 text-[var(--text-muted)]/50">/</span>
-              <span className="truncate font-medium text-[var(--text-primary)]">
-                {viewSubtitle}
-              </span>
+              {viewSubtitle && (
+                <>
+                  <span aria-hidden className="hidden shrink-0 text-ink-4 sm:inline">
+                    /
+                  </span>
+                  <span className="hidden truncate font-medium text-ink sm:inline">{viewSubtitle}</span>
+                </>
+              )}
             </nav>
-
-            {activeView === "workbench" && (
-              <>
-                <span className="hidden shrink-0 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--text-secondary)] sm:inline">
-                  {presetMeta.shortLabel}
-                </span>
-                {resolveEffectiveInstructions(activeSession.context) && (
-                  <span className="hidden shrink-0 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:text-emerald-300 md:inline">
-                    style:{getInstructionPresetLabel(activeSession.context)}
-                  </span>
-                )}
-                {(activeSession.context?.scopedDocIds?.length ?? 0) > 0 && (
-                  <span className="hidden shrink-0 rounded border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-sky-700 dark:text-sky-300 md:inline">
-                    {activeSession.context?.scopedDocIds?.length} doc(s)
-                  </span>
-                )}
-              </>
-            )}
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {/* Compact mode switcher shown only when sidebar is collapsed */}
-            {!sidebarOpen && (
-              <div className="mr-1 inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-0.5">
-                {(
-                  [
-                    ["workbench", "Chat", MessageSquare],
-                    ["compare", "Arena", Columns2],
-                    ["knowledge", "KB", Database],
-                  ] as const
-                ).map(([id, lbl, Icon]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => handleChangeView(id)}
-                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition cursor-pointer ${
-                      activeView === id
-                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <Icon className="h-3 w-3" />
-                    <span className="hidden sm:inline">{lbl}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
+          <div className="flex shrink-0 items-center gap-1">
             <ModelSelectorPopover
               catalog={modelsCatalog}
               catalogLoading={modelsCatalogLoading}
@@ -1026,47 +1036,42 @@ export default function App() {
               onOverrideChange={setLlmOverride}
               onProviderApiKeyChange={handleProviderApiKeyChange}
               onRefreshCatalog={() => void refreshModelsCatalog()}
+              useStreaming={useStreaming}
+              onUseStreamingChange={setUseStreaming}
+              enableBudgetCap={enableBudgetCap}
+              onEnableBudgetCapChange={setEnableBudgetCap}
+              maxCostUsd={maxCostUsd}
+              onMaxCostUsdChange={setMaxCostUsd}
             />
-
-            <button
-              type="button"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-              title={theme === "dark" ? "Switch to Light theme" : "Switch to Dark theme"}
-              aria-label="Toggle color theme"
-              className="flex h-7.5 w-7.5 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] cursor-pointer"
-            >
-              {theme === "dark" ? (
-                <Sun className="h-3.5 w-3.5" />
-              ) : (
-                <Moon className="h-3.5 w-3.5" />
-              )}
-            </button>
-
-            {(activeView === "workbench" || activeView === "compare") && (
+            <IconButton
+              icon={theme === "dark" ? Sun : Moon}
+              label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              onClick={toggleTheme}
+            />
+            {showInspectorToggle && (
               <button
                 type="button"
                 onClick={() => setInspectorOpen((o) => !o)}
-                title="Toggle Inspector (⌘I)"
-                className={`inline-flex h-7.5 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition cursor-pointer ${
-                  inspectorOpen
-                    ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                    : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                }`}
+                aria-pressed={inspectorOpen}
+                title="Toggle the inspector (⌘I)"
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 text-ui transition-colors",
+                  inspectorOpen ? "bg-selected text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+                )}
               >
                 {inspectorOpen ? (
-                  <PanelRightClose className="h-3.5 w-3.5" />
+                  <PanelRightClose className="h-4 w-4" aria-hidden />
                 ) : (
-                  <PanelRightOpen className="h-3.5 w-3.5" />
+                  <PanelRightOpen className="h-4 w-4" aria-hidden />
                 )}
                 <span className="hidden md:inline">Inspector</span>
-                <kbd className="ar-kbd hidden md:inline-flex">⌘I</kbd>
+                {isDesktop && <Kbd>⌘I</Kbd>}
               </button>
             )}
           </div>
         </header>
 
-        {/* Workspace Content */}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-h-0 flex-1 overflow-hidden">
           {activeView === "knowledge" ? (
             <KnowledgeBaseView
               apiUrl={apiUrl}
@@ -1076,118 +1081,109 @@ export default function App() {
               documentsError={documentsError}
               onRefreshAll={refreshAll}
             />
+          ) : activeView === "compare" ? (
+            <CompareArena
+              runs={compareRuns}
+              activeRunId={activeCompareRunId}
+              leftPreset={leftPreset}
+              rightPreset={rightPreset}
+              inspectedSide={inspectedCompareSide}
+              isRunning={compareRunning}
+              useStreaming={useStreaming}
+              budgetCapLabel={budgetCapLabel}
+              onLeftPresetChange={setLeftPreset}
+              onRightPresetChange={setRightPreset}
+              onSwapPresets={handleSwapPresets}
+              onSelectRun={(id) => {
+                setActiveCompareRunId(id);
+                setHighlightedCitationId(null);
+              }}
+              onDeleteRun={handleDeleteCompareRun}
+              onNewComparison={() => {
+                setActiveCompareRunId(null);
+                setHighlightedCitationId(null);
+              }}
+              onSubmitCompare={(q) => void handleSubmitCompare(q)}
+              onStopCompare={handleStopCompare}
+              onInspectSide={handleInspectCompareSide}
+              onCitationClick={handleCompareCitationClick}
+              onSubmitSideFeedback={handleSubmitCompareFeedback}
+            />
           ) : (
-            <>
-              {activeView === "compare" ? (
-                <CompareArena
-                  runs={compareRuns}
-                  activeRunId={activeCompareRunId}
-                  leftPreset={leftPreset}
-                  rightPreset={rightPreset}
-                  inspectedSide={inspectedCompareSide}
-                  isRunning={compareRunning}
-                  useStreaming={useStreaming}
-                  budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
-                  onLeftPresetChange={setLeftPreset}
-                  onRightPresetChange={setRightPreset}
-                  onSwapPresets={handleSwapPresets}
-                  onSelectRun={(id) => {
-                    setActiveCompareRunId(id);
-                    setHighlightedCitationId(null);
-                  }}
-                  onDeleteRun={handleDeleteCompareRun}
-                  onNewComparison={() => {
-                    setActiveCompareRunId(null);
-                    setHighlightedCitationId(null);
-                  }}
-                  onSubmitCompare={(q) => void handleSubmitCompare(q)}
-                  onStopCompare={handleStopCompare}
-                  onInspectSide={handleInspectCompareSide}
-                  onCitationClick={handleCompareCitationClick}
-                  onSubmitSideFeedback={handleSubmitCompareFeedback}
-                />
-              ) : (
-                <ChatWorkspace
-                  turns={activeSession.turns}
-                  selectedTurnIndex={selectedTurnIndex}
-                  isRunning={isRunning}
-                  pendingQuery={pendingQuery}
-                  liveSteps={liveSteps}
-                  liveUsage={liveUsage}
-                  streamError={streamError}
-                  presetShortLabel={presetMeta.shortLabel}
-                  useStreaming={useStreaming}
-                  budgetCapLabel={enableBudgetCap ? `$${maxCostUsd.toFixed(2)}` : null}
-                  threadContext={activeSession.context ?? DEFAULT_THREAD_CONTEXT}
-                  availableDocuments={documentsData?.documents ?? []}
-                  onThreadContextChange={handleUpdateActiveThreadContext}
-                  onSubmitQuery={(q) => void handleSubmitQuery(q)}
-                  onStopStream={handleStopStream}
-                  onInspectTurn={handleInspectTurn}
-                  onCitationClick={handleCitationClick}
-                  onSubmitFeedback={handleSubmitFeedback}
-                />
-              )}
-
-              {/* Resizable Inspector */}
-              {inspectorOpen && (
-                <>
-                  <div
-                    role="separator"
-                    aria-orientation="vertical"
-                    onMouseDown={() => {
-                      resizingRef.current = true;
-                      document.body.style.cursor = "col-resize";
-                    }}
-                    className="hidden w-1 shrink-0 cursor-col-resize bg-transparent transition hover:bg-[var(--border-strong)] lg:block"
-                  />
-                  <div
-                    style={{ width: `${inspectorWidth}px` }}
-                    className="hidden h-full shrink-0 lg:block"
-                  >
-                    {activeView === "compare" ? (
-                      <GlassBoxInspector
-                        turns={compareInspector.turns}
-                        selectedTurnIndex={
-                          compareInspector.sideIndexMap[inspectedCompareSide] >= 0
-                            ? compareInspector.sideIndexMap[inspectedCompareSide]
-                            : 0
-                        }
-                        onSelectTurnIndex={(idx) => {
-                          if (idx === compareInspector.sideIndexMap.left) {
-                            setInspectedCompareSide("left");
-                          } else if (idx === compareInspector.sideIndexMap.right) {
-                            setInspectedCompareSide("right");
-                          }
-                        }}
-                        activeTab={inspectorTab}
-                        onTabChange={setInspectorTab}
-                        highlightedCitationId={highlightedCitationId}
-                        highlightToken={highlightToken}
-                        onJumpToCitation={handleJumpWithinInspector}
-                        onClose={() => setInspectorOpen(false)}
-                        selectorLabel="Inspecting Side"
-                      />
-                    ) : (
-                      <GlassBoxInspector
-                        turns={activeSession.turns}
-                        selectedTurnIndex={selectedTurnIndex}
-                        onSelectTurnIndex={setSelectedTurnIndex}
-                        activeTab={inspectorTab}
-                        onTabChange={setInspectorTab}
-                        highlightedCitationId={highlightedCitationId}
-                        highlightToken={highlightToken}
-                        onJumpToCitation={handleJumpWithinInspector}
-                        onClose={() => setInspectorOpen(false)}
-                      />
-                    )}
-                  </div>
-                </>
-              )}
-            </>
+            <ChatWorkspace
+              turns={activeSession.turns}
+              selectedTurnIndex={selectedTurnIndex}
+              isRunning={isRunning}
+              pendingQuery={pendingQuery}
+              liveSteps={liveSteps}
+              liveUsage={liveUsage}
+              streamError={streamError}
+              presetShortLabel={presetMeta.shortLabel}
+              useStreaming={useStreaming}
+              budgetCapLabel={budgetCapLabel}
+              threadContext={activeSession.context ?? DEFAULT_THREAD_CONTEXT}
+              availableDocuments={documentsData?.documents ?? []}
+              onThreadContextChange={handleUpdateActiveThreadContext}
+              onSubmitQuery={(q) => void handleSubmitQuery(q)}
+              onStopStream={handleStopStream}
+              onInspectTurn={handleInspectTurn}
+              onCitationClick={handleCitationClick}
+              onSubmitFeedback={handleSubmitFeedback}
+              preset={preset}
+              onPresetChange={setPreset}
+              customAblation={customAblation}
+              onCustomAblationChange={setCustomAblation}
+              onOpenKnowledgeBase={() => handleChangeView("knowledge")}
+            />
           )}
-        </div>
+        </main>
       </div>
+
+      {/* Inspector: docked and resizable on wide screens, a sheet otherwise */}
+      {inspectorVisible &&
+        (isWide ? (
+          <div className="relative flex h-full shrink-0 border-l border-line" style={{ width: inspectorWidth }}>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize inspector"
+              aria-valuemin={INSPECTOR_MIN}
+              aria-valuemax={INSPECTOR_MAX}
+              aria-valuenow={inspectorWidth}
+              tabIndex={0}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                resizingRef.current = true;
+                document.body.style.cursor = "col-resize";
+                document.body.style.userSelect = "none";
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                  e.preventDefault();
+                  const step = e.shiftKey ? 48 : 16;
+                  setInspectorWidth((w) =>
+                    Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, w + (e.key === "ArrowLeft" ? step : -step)))
+                  );
+                }
+              }}
+              className="group absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize focus-visible:outline-none"
+            >
+              <span className="absolute inset-y-0 left-[2px] w-[2px] bg-transparent transition-colors group-hover:bg-accent group-focus-visible:bg-accent" />
+            </div>
+            <div className="min-w-0 flex-1">{inspector}</div>
+          </div>
+        ) : (
+          <div className="fixed inset-0 z-40 flex justify-end">
+            <div
+              aria-hidden
+              className="absolute inset-0 bg-[#0B0F18]/45 backdrop-blur-[1px]"
+              onClick={() => setInspectorOpen(false)}
+            />
+            <div className="anim-sheet-right relative h-full w-full max-w-[480px] shadow-[var(--shadow-float)]">
+              {inspector}
+            </div>
+          </div>
+        ))}
     </div>
   );
 }

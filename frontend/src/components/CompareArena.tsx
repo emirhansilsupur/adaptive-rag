@@ -1,21 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle,
   ArrowLeftRight,
-  ArrowRight,
-  ArrowUp,
-  Check,
   CheckCircle2,
-  ExternalLink,
-  FileText,
-  Globe,
   PanelRightOpen,
   Plus,
   ShieldAlert,
-  Square,
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Check,
 } from "lucide-react";
 import {
   ARENA_PRESET_OPTIONS,
@@ -28,6 +21,7 @@ import {
   getContextTokens,
   getPresetShortLabel,
 } from "../lib/compare";
+import { formatDuration, formatInt, formatUsd } from "../lib/format";
 import type {
   AblationPreset,
   CompareRun,
@@ -36,8 +30,22 @@ import type {
   InspectorTab,
 } from "../types/api";
 import { AnswerTelemetryBar } from "./AnswerTelemetryBar";
+import { SourcesRow } from "./ChatWorkspace";
+import { Composer } from "./Composer";
 import { LivePipelineTracker } from "./LivePipelineTracker";
 import { MarkdownWithCitations } from "./MarkdownWithCitations";
+import {
+  Button,
+  Callout,
+  cn,
+  IconButton,
+  INPUT_CLASS,
+  SectionHeading,
+  Segmented,
+  SELECT_CLASS,
+  Tag,
+  type Tone,
+} from "./ui/primitives";
 
 interface CompareArenaProps {
   runs: CompareRun[];
@@ -66,48 +74,57 @@ interface CompareArenaProps {
   ) => Promise<void>;
 }
 
-function DeltaLedgerCell({
+const TONE_TEXT: Record<Tone, string> = {
+  neutral: "text-ink-3",
+  ok: "text-ok",
+  warn: "text-warn",
+  bad: "text-bad",
+  accent: "text-accent",
+};
+
+/** A or B lane marker. B is filled so the challenger is always the darker lane. */
+function LaneTile({ lane, className }: { lane: "A" | "B"; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-small font-semibold",
+        lane === "A" ? "border border-line-strong bg-paper text-ink-2" : "bg-ink text-paper",
+        className
+      )}
+    >
+      {lane}
+    </span>
+  );
+}
+
+function DeltaCell({
   label,
   value,
-  deltaBadge,
+  delta,
   tone = "neutral",
 }: {
   label: string;
   value: string;
-  deltaBadge?: string;
-  tone?: "emerald" | "amber" | "rose" | "sky" | "neutral";
+  delta?: string;
+  tone?: Tone;
 }) {
-  const badgeTone =
-    tone === "emerald"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tone === "amber"
-        ? "text-amber-600 dark:text-amber-400"
-        : tone === "rose"
-          ? "text-rose-600 dark:text-rose-400"
-          : tone === "sky"
-            ? "text-sky-600 dark:text-sky-400"
-            : "text-[var(--text-muted)]";
-
   return (
-    <div className="bg-[var(--bg-surface)] px-3 py-2.5">
-      <div className="flex items-center justify-between gap-1.5">
-        <span className="truncate font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          {label}
-        </span>
-        {deltaBadge && (
-          <span
-            className={`shrink-0 whitespace-nowrap font-mono text-[10px] font-semibold tabular-nums ${badgeTone}`}
-          >
-            {deltaBadge}
-          </span>
-        )}
-      </div>
-      <div className="mt-1 font-mono text-xs font-semibold text-[var(--text-primary)] tabular-nums">
-        {value}
-      </div>
+    <div className="min-w-0 bg-paper px-3.5 py-3">
+      <div className="truncate text-caption text-ink-3">{label}</div>
+      <div className="mt-1 truncate text-body font-medium tabular-nums text-ink">{value}</div>
+      {delta && (
+        <div className={cn("mt-0.5 truncate text-small font-medium tabular-nums", TONE_TEXT[tone])}>
+          {delta}
+        </div>
+      )}
     </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/* One side of the comparison                                                 */
+/* -------------------------------------------------------------------------- */
 
 interface ArenaColumnCardProps {
   sideKey: CompareSideKey;
@@ -141,7 +158,7 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
     setFeedbackError(null);
   }, [runId]);
 
-  const isBaseline = sideKey === "left";
+  const lane = sideKey === "left" ? "A" : "B";
   const result = side.result;
   const chunks = result?.evidence_chunks ?? [];
   const ctxTokens = result ? getContextTokens(result) : null;
@@ -164,253 +181,181 @@ const ArenaColumnCard: React.FC<ArenaColumnCardProps> = ({
   return (
     <section
       data-compare-side={sideKey}
+      aria-label={`${lane}: ${side.presetLabel}`}
       onClick={() => result && onInspect()}
-      className={`flex min-w-0 flex-col rounded-lg border p-4 transition-colors ${
+      className={cn(
+        "flex min-w-0 flex-col rounded-xl border bg-paper transition-shadow",
         isInspected && result
-          ? "border-[var(--border-strong)] bg-[var(--bg-surface)]"
-          : "border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 hover:border-[var(--border-strong)]"
-      }`}
+          ? "border-accent/50 shadow-[0_0_0_3px_var(--accent-soft)]"
+          : "border-line"
+      )}
     >
-      {/* Column Header */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border font-mono text-[10px] font-semibold ${
-              isBaseline
-                ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"
-                : "border-[var(--border-strong)] bg-[var(--cta-bg)] text-[var(--cta-fg)]"
-            }`}
-          >
-            {isBaseline ? "A" : "B"}
-          </span>
-          <span className="truncate text-xs font-semibold text-[var(--text-primary)]">
-            {side.presetLabel}
-          </span>
-          <span className="font-mono text-[10px] text-[var(--text-muted)]">
-            {isBaseline ? "baseline" : "challenger"}
-          </span>
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <LaneTile lane={lane} />
+          <div className="min-w-0">
+            <div className="truncate text-ui font-semibold text-ink">{side.presetLabel}</div>
+            <div className="text-caption text-ink-3">{lane === "A" ? "Baseline" : "Challenger"}</div>
+          </div>
         </div>
-
-        <div className="flex shrink-0 items-center gap-1.5">
-          {side.status === "running" && (
-            <span className="inline-flex items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
-              running
-            </span>
-          )}
+        <div className="flex shrink-0 items-center gap-2">
+          {side.status === "running" && <Tag tone="accent">Running</Tag>}
           {result && (
             <>
-              <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)] tabular-nums">
-                k={chunks.length} · {ctxTokens?.toLocaleString("en-US")} tok
+              <span className="hidden text-small tabular-nums text-ink-3 sm:inline">
+                {chunks.length} passages, {formatInt(ctxTokens ?? 0)} tokens
               </span>
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="xs"
+                icon={PanelRightOpen}
                 onClick={(e) => {
                   e.stopPropagation();
                   onInspect("trace");
                 }}
-                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium transition cursor-pointer ${
-                  isInspected
-                    ? "border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                    : "border-transparent text-[var(--text-muted)] hover:border-[var(--border-subtle)] hover:text-[var(--text-primary)]"
-                }`}
+                className={isInspected ? "text-ink" : undefined}
               >
-                <PanelRightOpen className="h-3 w-3" />
-                <span>{isInspected ? "Inspecting" : "Inspect"}</span>
-              </button>
+                {isInspected ? "Inspecting" : "Inspect"}
+              </Button>
             </>
           )}
         </div>
-      </div>
+      </header>
 
-      {/* Running State */}
-      {side.status === "running" && (
-        <div className="space-y-2.5">
+      <div className="flex flex-1 flex-col p-4">
+        {side.status === "running" && (
           <LivePipelineTracker
             mode="streaming"
             steps={side.liveSteps}
             liveUsage={side.liveUsage}
+            runningLabel={
+              useStreaming ? `Running ${side.presetLabel}` : `Running ${side.presetLabel} in batch mode`
+            }
           />
-          <div className="flex items-center gap-2 font-mono text-[11px] text-[var(--text-muted)]">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-primary)]" />
-            <span>
-              {useStreaming
-                ? `Streaming ${side.presetLabel}...`
-                : `Running ${side.presetLabel}...`}
-            </span>
-          </div>
-        </div>
-      )}
+        )}
 
-      {/* Error State */}
-      {side.status === "error" && (
-        <div className="flex items-start gap-2 rounded-lg border border-rose-500/35 bg-rose-500/10 p-3 text-xs text-rose-600 dark:text-rose-300">
-          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <div className="min-w-0">
-            <div className="font-medium">{side.presetLabel} Failed</div>
-            <p className="mt-0.5 break-words opacity-90">{side.error}</p>
-          </div>
-        </div>
-      )}
+        {side.status === "error" && (
+          <Callout live tone="bad" title={`${side.presetLabel} failed`}>
+            {side.error}
+          </Callout>
+        )}
 
-      {/* Completed Result */}
-      {result && (
-        <div className="flex flex-1 flex-col">
-          <div className="mb-3.5 border-b border-[var(--border-subtle)] pb-3">
-            <LivePipelineTracker
-              mode="completed"
-              steps={result.trace || []}
-              totalLatencyMs={result.total_latency_ms}
-              onOpenInspector={() => onInspect("trace")}
-            />
-            <AnswerTelemetryBar
-              result={result}
-              onBadgeClick={(tab) => onInspect(tab)}
-            />
-          </div>
-
-          <div className="flex-1">
-            <MarkdownWithCitations
-              content={result.answer}
-              evidenceChunks={chunks}
-              onCitationClick={(cid) => onCitationClick(cid)}
-            />
-          </div>
-
-          {/* Sources + Feedback Footer */}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {chunks.slice(0, 4).map((ch, cIdx) => {
-                const cid = ch.citation_id || `#${cIdx + 1}`;
-                const isWeb = ch.source_type === "web";
-                return (
-                  <button
-                    key={ch.chunk_id || cIdx}
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCitationClick(cid);
-                    }}
-                    title={`${ch.title || ch.doc_id}${ch.url ? ` (${ch.url})` : ""}`}
-                    className="inline-flex max-w-[160px] items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer"
-                  >
-                    <span
-                      className={`shrink-0 font-mono text-[10px] font-semibold ${
-                        isWeb
-                          ? "text-amber-600 dark:text-amber-300"
-                          : "text-sky-600 dark:text-sky-300"
-                      }`}
-                    >
-                      {cid}
-                    </span>
-                    {isWeb ? (
-                      <Globe className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
-                    ) : (
-                      <FileText className="h-2.5 w-2.5 shrink-0 text-[var(--text-muted)]" />
-                    )}
-                    <span className="truncate">{ch.title || ch.doc_id}</span>
-                    {ch.url && <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-60" />}
-                  </button>
-                );
-              })}
-              {chunks.length > 4 && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onInspect("evidence");
-                  }}
-                  className="font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
-                >
-                  +{chunks.length - 4} more
-                </button>
+        {result && (
+          <>
+            <div className="rounded-lg border border-line bg-sunken px-3 py-2.5">
+              <AnswerTelemetryBar result={result} onBadgeClick={(tab) => onInspect(tab)} />
+              {(result.trace?.length ?? 0) > 0 && (
+                <div className="mt-2">
+                  <LivePipelineTracker
+                    mode="completed"
+                    steps={result.trace || []}
+                    totalLatencyMs={result.total_latency_ms}
+                    onOpenInspector={() => onInspect("trace")}
+                  />
+                </div>
               )}
+            </div>
+
+            <div className="mt-4 flex-1">
+              <MarkdownWithCitations
+                content={result.answer}
+                evidenceChunks={chunks}
+                onCitationClick={(cid) => onCitationClick(cid)}
+                density="compact"
+              />
+            </div>
+
+            <div className="mt-4">
+              <SourcesRow
+                chunks={chunks}
+                limit={4}
+                onCitationClick={onCitationClick}
+                onShowAll={() => onInspect("evidence")}
+              />
               {chunks.length === 0 && (
-                <span className="font-mono text-[10px] text-[var(--text-muted)]">
-                  0 passages
-                </span>
+                <p className="text-small text-ink-3">No passages were used for this answer.</p>
               )}
             </div>
 
             {onSubmitFeedback && result.trace_id && (
               <div
-                className="inline-flex items-center gap-1"
+                className="mt-3 flex flex-wrap items-center gap-1"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-0.5">
-                  <button
-                    type="button"
-                    aria-label={`Mark ${side.presetLabel} answer helpful`}
-                    disabled={savingFeedback}
-                    onClick={() => void submitSideRating(1)}
-                    className={`rounded p-1 transition cursor-pointer disabled:opacity-50 ${
-                      side.feedback?.score === 1
-                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                        : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <ThumbsUp className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Mark ${side.presetLabel} answer unhelpful`}
-                    disabled={savingFeedback}
-                    onClick={() => {
-                      setCommentOpen((prev) => !prev);
-                      setCommentDraft(side.feedback?.comment ?? "");
-                    }}
-                    className={`rounded p-1 transition cursor-pointer disabled:opacity-50 ${
-                      side.feedback?.score === 0 || commentOpen
-                        ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
-                        : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    <ThumbsDown className="h-3 w-3" />
-                  </button>
-                </div>
+                <IconButton
+                  icon={ThumbsUp}
+                  label={`Mark ${side.presetLabel} answer helpful`}
+                  title="Helpful"
+                  disabled={savingFeedback}
+                  pressed={side.feedback?.score === 1}
+                  onClick={() => void submitSideRating(1)}
+                  className={side.feedback?.score === 1 ? "!text-ok" : undefined}
+                />
+                <IconButton
+                  icon={ThumbsDown}
+                  label={`Mark ${side.presetLabel} answer unhelpful`}
+                  title="Needs work: add an optional note"
+                  disabled={savingFeedback}
+                  pressed={side.feedback?.score === 0 || commentOpen}
+                  onClick={() => {
+                    setCommentOpen((prev) => !prev);
+                    setCommentDraft(side.feedback?.comment ?? "");
+                  }}
+                  className={side.feedback?.score === 0 || commentOpen ? "!text-bad" : undefined}
+                />
                 {side.feedback && (
-                  <span className="inline-flex items-center gap-0.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 px-1.5 py-0.5 font-mono text-[9.5px] text-[var(--text-muted)]">
-                    <Check className="h-2.5 w-2.5 text-emerald-500" />
-                    {side.feedback.persistedToLangfuse ? "lf" : "ok"}
+                  <span className="ml-1 inline-flex items-center gap-1 text-small text-ink-3">
+                    <Check className="h-3.5 w-3.5 text-ok" aria-hidden />
+                    {side.feedback.persistedToLangfuse ? "Saved to Langfuse" : "Feedback saved"}
                   </span>
                 )}
               </div>
             )}
-          </div>
 
-          {commentOpen && (
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="mt-2 flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)]/60 p-2"
-            >
-              <input
-                type="text"
-                value={commentDraft}
-                onChange={(e) => setCommentDraft(e.target.value)}
-                placeholder="Optional note for this preset..."
-                className="min-w-[140px] flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--text-muted)] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingFeedback}
-                onClick={() =>
-                  void submitSideRating(0, commentDraft.trim() || undefined)
-                }
-                className="rounded bg-[var(--cta-bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--cta-fg)] hover:bg-[var(--cta-hover)] disabled:opacity-50 cursor-pointer"
+            {commentOpen && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sunken p-2"
               >
-                Save
-              </button>
-            </div>
-          )}
+                <input
+                  type="text"
+                  value={commentDraft}
+                  autoFocus
+                  onChange={(e) => setCommentDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitSideRating(0, commentDraft.trim() || undefined);
+                    }
+                    if (e.key === "Escape") setCommentOpen(false);
+                  }}
+                  placeholder="Optional note about this preset's answer"
+                  className={cn(INPUT_CLASS, "h-8 min-w-[160px] flex-1 px-2.5")}
+                />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  loading={savingFeedback}
+                  onClick={() => void submitSideRating(0, commentDraft.trim() || undefined)}
+                >
+                  Send feedback
+                </Button>
+              </div>
+            )}
 
-          {feedbackError && (
-            <p className="mt-1.5 text-[10.5px] text-rose-500">{feedbackError}</p>
-          )}
-        </div>
-      )}
+            {feedbackError && (
+              <p className="mt-1.5 text-small text-bad">Feedback wasn't saved: {feedbackError}</p>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 };
+
+/* -------------------------------------------------------------------------- */
+/* Arena                                                                      */
+/* -------------------------------------------------------------------------- */
 
 export const CompareArena: React.FC<CompareArenaProps> = ({
   runs,
@@ -434,10 +379,9 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
   onSubmitSideFeedback,
 }) => {
   const [input, setInput] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const activeRun = useMemo(
-    () => (activeRunId ? runs.find((r) => r.id === activeRunId) ?? null : null),
+    () => (activeRunId ? (runs.find((r) => r.id === activeRunId) ?? null) : null),
     [runs, activeRunId]
   );
 
@@ -446,13 +390,6 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
     return computeCompareSummary(activeRun.left.result, activeRun.right.result);
   }, [activeRun]);
 
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-  }, [input]);
-
   const handleSend = () => {
     const cleaned = input.trim();
     if (!cleaned || isRunning) return;
@@ -460,33 +397,27 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
     onSubmitCompare(cleaned);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   const leftShort = getPresetShortLabel(leftPreset);
   const rightShort = getPresetShortLabel(rightPreset);
+  const leftMeta = ARENA_PRESET_OPTIONS.find((o) => o.value === leftPreset);
+  const rightMeta = ARENA_PRESET_OPTIONS.find((o) => o.value === rightPreset);
+  const activePair =
+    COMPARE_PAIR_PRESETS.find((p) => p.left === leftPreset && p.right === rightPreset)?.id ?? "";
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-[var(--bg-canvas)]">
-      {/* Arena Configuration Toolbar */}
-      <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)] px-4 py-2 sm:px-6">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
-          {/* A vs B Selectors */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div className="flex items-center gap-1.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--border-strong)] bg-[var(--bg-surface)] font-mono text-[10px] font-semibold text-[var(--text-secondary)]">
-                A
-              </span>
+    <div className="flex min-w-0 flex-1 flex-col bg-paper">
+      {/* Toolbar */}
+      <div className="shrink-0 border-b border-line px-4 py-2.5 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
+              <LaneTile lane="A" />
               <select
-                aria-label="Baseline preset (Left)"
+                aria-label="Baseline preset (A)"
                 value={leftPreset}
                 disabled={isRunning}
                 onChange={(e) => onLeftPresetChange(e.target.value as AblationPreset)}
-                className="ar-select h-7.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                className={cn(SELECT_CLASS, "w-auto max-w-[220px] font-medium")}
               >
                 {ARENA_PRESET_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -496,27 +427,21 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
               </select>
             </div>
 
-            <button
-              type="button"
+            <IconButton
+              icon={ArrowLeftRight}
+              label="Swap A and B presets"
               onClick={onSwapPresets}
               disabled={isRunning}
-              title="Swap A and B presets"
-              aria-label="Swap A and B presets"
-              className="flex h-7.5 w-7.5 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
-            >
-              <ArrowLeftRight className="h-3 w-3" />
-            </button>
+            />
 
-            <div className="flex items-center gap-1.5">
-              <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-[var(--border-strong)] bg-[var(--cta-bg)] font-mono text-[10px] font-semibold text-[var(--cta-fg)]">
-                B
-              </span>
+            <div className="flex items-center gap-2">
+              <LaneTile lane="B" />
               <select
-                aria-label="Challenger preset (Right)"
+                aria-label="Challenger preset (B)"
                 value={rightPreset}
                 disabled={isRunning}
                 onChange={(e) => onRightPresetChange(e.target.value as AblationPreset)}
-                className="ar-select h-7.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] focus:border-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                className={cn(SELECT_CLASS, "w-auto max-w-[220px] font-medium")}
               >
                 {ARENA_PRESET_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -527,359 +452,294 @@ export const CompareArena: React.FC<CompareArenaProps> = ({
             </div>
           </div>
 
-          {/* Quick Pairs + Past Comparisons */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div className="hidden items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-0.5 xl:inline-flex">
-              {COMPARE_PAIR_PRESETS.map((pair) => {
-                const active = leftPreset === pair.left && rightPreset === pair.right;
-                return (
-                  <button
-                    key={pair.id}
-                    type="button"
-                    disabled={isRunning}
-                    onClick={() => {
-                      onLeftPresetChange(pair.left);
-                      onRightPresetChange(pair.right);
-                    }}
-                    className={`rounded px-2 py-0.5 text-[10.5px] font-medium transition cursor-pointer disabled:opacity-40 ${
-                      active
-                        ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    }`}
-                  >
-                    {pair.label}
-                  </button>
-                );
-              })}
-            </div>
-
+          <div className="flex flex-wrap items-center gap-2">
             {runs.length > 0 && (
               <div className="flex items-center gap-1">
                 <select
-                  aria-label="Past Arena Comparisons"
+                  aria-label="Past comparisons"
                   value={activeRun?.id ?? ""}
                   onChange={(e) => {
                     if (e.target.value) onSelectRun(e.target.value);
                   }}
-                  className="ar-select h-7.5 max-w-[180px] truncate rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-[11px] text-[var(--text-primary)] focus:outline-none"
+                  className={cn(SELECT_CLASS, "h-7 w-auto max-w-[200px] text-small")}
                 >
                   <option value="" disabled>
                     History ({runs.length})
                   </option>
                   {runs.map((r, idx) => (
                     <option key={r.id} value={r.id}>
-                      #{runs.length - idx} · {r.query.slice(0, 34)}
+                      {runs.length - idx}. {r.query.slice(0, 40)}
                     </option>
                   ))}
                 </select>
                 {activeRun && !isRunning && (
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={Trash2}
+                    tone="bad"
+                    label="Delete this comparison"
                     onClick={() => onDeleteRun(activeRun.id)}
-                    title="Delete comparison"
-                    className="rounded-md p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-rose-500 cursor-pointer"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  />
                 )}
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  icon={Plus}
                   onClick={onNewComparison}
                   disabled={isRunning}
-                  title="New comparison"
-                  className="inline-flex h-7.5 items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 text-[11px] font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-40 cursor-pointer"
+                  title="Start a new comparison"
                 >
-                  <Plus className="h-3 w-3" />
-                  <span className="hidden sm:inline">New</span>
-                </button>
+                  New
+                </Button>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Main Scrollable Arena Body */}
-      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-        <div className="mx-auto max-w-6xl space-y-4">
-          {!activeRun ? (
-            /* Empty Arena Console */
-            <div className="mx-auto max-w-3xl py-6 sm:py-12">
-              <div className="font-mono text-[10.5px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
-                Parallel SSE Ablation Arena
-              </div>
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto">
+        {!activeRun ? (
+          <div className="mx-auto max-w-[46rem] px-4 pt-[8vh] pb-12 sm:px-8">
+            <h1 className="text-display font-semibold tracking-[-0.015em] text-ink">
+              Compare {leftShort} vs. {rightShort}
+            </h1>
+            <p className="mt-3 max-w-[36rem] text-body text-ink-2">
+              Both presets answer the same question at the same time, against the same index. The
+              scorecard then shows what changed: context tokens, passages kept, confidence, citation
+              audit, time and cost.
+            </p>
 
-              <h1 className="mt-2.5 text-xl font-semibold tracking-tight text-[var(--text-primary)] sm:text-2xl">
-                Compare {leftShort} vs. {rightShort} on identical queries.
-              </h1>
-              <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-[var(--text-secondary)]">
-                Execute baseline and challenger pipelines concurrently against the same
-                Qdrant index to measure context token deltas, Dynamic Top-K selection,
-                CRAG confidence, and citation entailment side by side.
-              </p>
+            <div className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span className="text-small text-ink-3">Common pairs</span>
+              <Segmented<string>
+                ariaLabel="Common pairs"
+                value={activePair}
+                onChange={(id) => {
+                  const pair = COMPARE_PAIR_PRESETS.find((p) => p.id === id);
+                  if (!pair || isRunning) return;
+                  onLeftPresetChange(pair.left);
+                  onRightPresetChange(pair.right);
+                }}
+                options={COMPARE_PAIR_PRESETS.map((pair) => ({
+                  value: pair.id,
+                  label: pair.label,
+                  disabled: isRunning,
+                }))}
+              />
+            </div>
 
-              <div className="mt-8">
-                <div className="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                  Controlled Ablation Prompts
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {(
+                [
+                  ["A", leftMeta, "Baseline"],
+                  ["B", rightMeta, "Challenger"],
+                ] as const
+              ).map(([lane, meta, role]) => (
+                <div key={lane} className="rounded-lg border border-line p-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <LaneTile lane={lane} />
+                    <div className="min-w-0">
+                      <div className="truncate text-ui font-semibold text-ink">{meta?.label}</div>
+                      <div className="text-caption text-ink-3">{role}</div>
+                    </div>
+                  </div>
+                  <p className="mt-2.5 text-small text-ink-2">{meta?.description}</p>
                 </div>
-                <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
-                  {COMPARE_DEMO_QUERIES.map((demo) => (
+              ))}
+            </div>
+
+            <section className="mt-10" aria-labelledby="arena-samples-heading">
+              <SectionHeading>
+                <span id="arena-samples-heading">Questions that show the difference</span>
+              </SectionHeading>
+              <ul className="mt-2.5 divide-y divide-line rounded-lg border border-line">
+                {COMPARE_DEMO_QUERIES.map((demo) => (
+                  <li key={demo.id}>
                     <button
-                      key={demo.id}
                       type="button"
                       onClick={() => onSubmitCompare(demo.query)}
-                      className="group flex w-full items-start justify-between gap-4 px-4 py-3 text-left transition hover:bg-[var(--bg-elevated)]/65 cursor-pointer"
+                      className="w-full cursor-pointer px-3.5 py-3 text-left transition-colors hover:bg-hover"
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-[var(--text-primary)]">
-                            {demo.title}
-                          </span>
-                          <span className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.2 font-mono text-[9.5px] text-[var(--text-secondary)]">
-                            {demo.highlight}
-                          </span>
-                          <span className="font-mono text-[9.5px] text-[var(--text-muted)]">
-                            {demo.lang}
-                          </span>
-                        </div>
-                        <p className="mt-1 line-clamp-1 text-xs text-[var(--text-secondary)]">
-                          {demo.query}
-                        </p>
-                      </div>
-                      <ArrowRight className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:translate-x-0.5 group-hover:text-[var(--text-primary)] group-hover:opacity-100" />
+                      <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                        <span className="text-ui font-medium text-ink">{demo.title}</span>
+                        <Tag>{demo.highlight}</Tag>
+                        <span className="ml-auto text-caption text-ink-3">{demo.lang}</span>
+                      </span>
+                      <span className="mt-0.5 line-clamp-1 text-small text-ink-2">
+                        {demo.query}
+                      </span>
                     </button>
-                  ))}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
+        ) : (
+          <div className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
+            <section>
+              <div className="text-caption text-ink-3">Question</div>
+              <p className="mt-1 text-title font-semibold text-balance text-ink">{activeRun.query}</p>
+            </section>
+
+            {delta && (
+              <section
+                data-testid="compare-delta-scorecard"
+                className="overflow-hidden rounded-xl border border-line"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-sunken px-3.5 py-2.5">
+                  <h2 className="flex items-center gap-2 text-ui font-semibold text-ink">
+                    <LaneTile lane="A" className="h-5 w-5 text-caption" />
+                    <span className="text-ink-3">to</span>
+                    <LaneTile lane="B" className="h-5 w-5 text-caption" />
+                    <span>What changed</span>
+                  </h2>
+                  {delta.highlights.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {delta.highlights.map((hl) => (
+                        <Tag
+                          key={hl.label}
+                          tone={hl.tone === "emerald" ? "ok" : hl.tone === "rose" ? "bad" : hl.tone === "amber" ? "warn" : "accent"}
+                          icon={hl.tone === "emerald" ? CheckCircle2 : ShieldAlert}
+                        >
+                          {hl.label}
+                        </Tag>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
+                <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-3 lg:grid-cols-6">
+                  <DeltaCell
+                    label="Context tokens"
+                    value={`${formatInt(delta.leftContextTokens)} → ${formatInt(delta.rightContextTokens)}`}
+                    delta={formatSignedPct(delta.contextTokensPct)}
+                    tone={
+                      delta.contextTokensDelta < 0 ? "ok" : delta.contextTokensDelta > 0 ? "warn" : "neutral"
+                    }
+                  />
+                  <DeltaCell
+                    label="Passages kept"
+                    value={`${delta.leftK} → ${delta.rightK}`}
+                    delta={delta.kDelta === 0 ? "Same" : `${delta.kDelta > 0 ? "+" : ""}${delta.kDelta}`}
+                    tone={delta.kDelta < 0 ? "ok" : "neutral"}
+                  />
+                  <DeltaCell
+                    label="Confidence"
+                    value={`${delta.leftConfidence !== null ? delta.leftConfidence.toFixed(2) : "Off"} → ${delta.rightConfidence !== null ? delta.rightConfidence.toFixed(2) : "Off"}`}
+                    delta={
+                      delta.rightConfidenceLevel
+                        ? `B: ${delta.rightConfidenceLevel} confidence`
+                        : "Not scored"
+                    }
+                    tone={
+                      delta.rightConfidenceLevel === "high"
+                        ? "ok"
+                        : delta.rightConfidenceLevel === "medium"
+                          ? "warn"
+                          : delta.rightConfidenceLevel === "low"
+                            ? "bad"
+                            : "neutral"
+                    }
+                  />
+                  <DeltaCell
+                    label="Citation audit"
+                    value={`${delta.leftClaimSupport !== null ? `${Math.round(delta.leftClaimSupport * 100)}%` : "Off"} → ${delta.rightClaimSupport !== null ? `${Math.round(delta.rightClaimSupport * 100)}%` : "Off"}`}
+                    delta={
+                      delta.rightAuditPassed === true
+                        ? "B: passed"
+                        : delta.rightAuditPassed === false
+                          ? "B: flagged"
+                          : "Not run"
+                    }
+                    tone={
+                      delta.rightAuditPassed === true
+                        ? "ok"
+                        : delta.rightAuditPassed === false
+                          ? "bad"
+                          : "neutral"
+                    }
+                  />
+                  <DeltaCell
+                    label="Time"
+                    value={`${formatDuration(delta.leftLatencyMs)} → ${formatDuration(delta.rightLatencyMs)}`}
+                    delta={`${delta.latencyDeltaMs > 0 ? "+" : delta.latencyDeltaMs < 0 ? "-" : ""}${formatDuration(Math.abs(delta.latencyDeltaMs))}`}
+                    tone={delta.latencyDeltaMs > 0 ? "warn" : delta.latencyDeltaMs < 0 ? "ok" : "neutral"}
+                  />
+                  <DeltaCell
+                    label="Cost"
+                    value={`${formatUsd(delta.leftCostUsd)} → ${formatUsd(delta.rightCostUsd)}`}
+                    delta={`${delta.costDeltaUsd > 0 ? "+" : ""}${formatUsd(delta.costDeltaUsd)}`}
+                    tone={delta.costDeltaUsd < 0 ? "ok" : "neutral"}
+                  />
+                </div>
+              </section>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <ArenaColumnCard
+                sideKey="left"
+                runId={activeRun.id}
+                side={activeRun.left}
+                isInspected={inspectedSide === "left"}
+                useStreaming={useStreaming}
+                onInspect={(tab) => onInspectSide("left", tab)}
+                onCitationClick={(cid) => onCitationClick("left", cid)}
+                onSubmitFeedback={
+                  onSubmitSideFeedback
+                    ? (score, comment) => onSubmitSideFeedback(activeRun.id, "left", score, comment)
+                    : undefined
+                }
+              />
+              <ArenaColumnCard
+                sideKey="right"
+                runId={activeRun.id}
+                side={activeRun.right}
+                isInspected={inspectedSide === "right"}
+                useStreaming={useStreaming}
+                onInspect={(tab) => onInspectSide("right", tab)}
+                onCitationClick={(cid) => onCitationClick("right", cid)}
+                onSubmitFeedback={
+                  onSubmitSideFeedback
+                    ? (score, comment) => onSubmitSideFeedback(activeRun.id, "right", score, comment)
+                    : undefined
+                }
+              />
             </div>
-          ) : (
-            <>
-              {/* Evaluated Query Header */}
-              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3">
-                <div className="flex items-center gap-2 font-mono text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-                  <span>Query Under Evaluation</span>
-                  <span>·</span>
-                  <span className="text-[var(--text-secondary)]">
-                    {activeRun.left.presetLabel} vs {activeRun.right.presetLabel}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm font-medium leading-snug text-[var(--text-primary)]">
-                  {activeRun.query}
-                </p>
-              </div>
-
-              {/* Hairline Ledger Delta Scorecard */}
-              {delta && (
-                <div
-                  data-testid="compare-delta-scorecard"
-                  className="overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-3.5 py-2">
-                    <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                      A → B Ablation Delta
-                    </span>
-
-                    {delta.highlights.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {delta.highlights.map((hl) => {
-                          const cls =
-                            hl.tone === "emerald"
-                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                              : hl.tone === "amber"
-                                ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                                : hl.tone === "rose"
-                                  ? "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
-                                  : "border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]";
-                          return (
-                            <span
-                              key={hl.label}
-                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium ${cls}`}
-                            >
-                              {hl.tone === "emerald" ? (
-                                <CheckCircle2 className="h-2.5 w-2.5" />
-                              ) : (
-                                <ShieldAlert className="h-2.5 w-2.5" />
-                              )}
-                              {hl.label}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-px bg-[var(--border-subtle)] sm:grid-cols-3 lg:grid-cols-5">
-                    <DeltaLedgerCell
-                      label="Context Tokens"
-                      value={`${delta.leftContextTokens.toLocaleString("en-US")} → ${delta.rightContextTokens.toLocaleString("en-US")}`}
-                      deltaBadge={formatSignedPct(delta.contextTokensPct)}
-                      tone={
-                        delta.contextTokensDelta < 0
-                          ? "emerald"
-                          : delta.contextTokensDelta > 0
-                            ? "amber"
-                            : "neutral"
-                      }
-                    />
-                    <DeltaLedgerCell
-                      label="Selected (k)"
-                      value={`${delta.leftK} → ${delta.rightK}`}
-                      deltaBadge={
-                        delta.kDelta === 0
-                          ? "same"
-                          : `${delta.kDelta > 0 ? "+" : ""}${delta.kDelta} k`
-                      }
-                      tone={
-                        delta.kDelta < 0
-                          ? "emerald"
-                          : delta.kDelta > 0
-                            ? "sky"
-                            : "neutral"
-                      }
-                    />
-                    <DeltaLedgerCell
-                      label="CRAG Confidence"
-                      value={`${delta.leftConfidence !== null ? delta.leftConfidence.toFixed(2) : "Off"} → ${delta.rightConfidence !== null ? delta.rightConfidence.toFixed(2) : "Off"}`}
-                      deltaBadge={
-                        delta.rightConfidenceLevel
-                          ? delta.rightConfidenceLevel.toUpperCase()
-                          : "N/A"
-                      }
-                      tone={
-                        delta.rightConfidenceLevel === "high"
-                          ? "emerald"
-                          : delta.rightConfidenceLevel === "medium"
-                            ? "amber"
-                            : delta.rightConfidenceLevel === "low"
-                              ? "rose"
-                              : "neutral"
-                      }
-                    />
-                    <DeltaLedgerCell
-                      label="Citation Audit"
-                      value={`${delta.leftClaimSupport !== null ? `${Math.round(delta.leftClaimSupport * 100)}%` : "Off"} → ${delta.rightClaimSupport !== null ? `${Math.round(delta.rightClaimSupport * 100)}%` : "Off"}`}
-                      deltaBadge={
-                        delta.rightAuditPassed === true
-                          ? "PASS"
-                          : delta.rightAuditPassed === false
-                            ? "FLAG"
-                            : "N/A"
-                      }
-                      tone={
-                        delta.rightAuditPassed === true
-                          ? "emerald"
-                          : delta.rightAuditPassed === false
-                            ? "rose"
-                            : "neutral"
-                      }
-                    />
-                    <DeltaLedgerCell
-                      label="Latency / Cost"
-                      value={`${(delta.leftLatencyMs / 1000).toFixed(1)}s → ${(delta.rightLatencyMs / 1000).toFixed(1)}s`}
-                      deltaBadge={`${delta.costDeltaUsd >= 0 ? "+" : "-"}$${Math.abs(delta.costDeltaUsd).toFixed(5)}`}
-                      tone={delta.costDeltaUsd <= 0 ? "emerald" : "neutral"}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Side-by-Side Pipeline Columns */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <ArenaColumnCard
-                  sideKey="left"
-                  runId={activeRun.id}
-                  side={activeRun.left}
-                  isInspected={inspectedSide === "left"}
-                  useStreaming={useStreaming}
-                  onInspect={(tab) => onInspectSide("left", tab)}
-                  onCitationClick={(cid) => onCitationClick("left", cid)}
-                  onSubmitFeedback={
-                    onSubmitSideFeedback
-                      ? (score, comment) =>
-                          onSubmitSideFeedback(activeRun.id, "left", score, comment)
-                      : undefined
-                  }
-                />
-                <ArenaColumnCard
-                  sideKey="right"
-                  runId={activeRun.id}
-                  side={activeRun.right}
-                  isInspected={inspectedSide === "right"}
-                  useStreaming={useStreaming}
-                  onInspect={(tab) => onInspectSide("right", tab)}
-                  onCitationClick={(cid) => onCitationClick("right", cid)}
-                  onSubmitFeedback={
-                    onSubmitSideFeedback
-                      ? (score, comment) =>
-                          onSubmitSideFeedback(activeRun.id, "right", score, comment)
-                      : undefined
-                  }
-                />
-              </div>
-            </>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Bottom Sticky Arena Composer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-4 py-3 backdrop-blur sm:px-6">
-        <div className="mx-auto max-w-4xl">
-          <div className="relative flex items-end gap-2 rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 transition focus-within:border-[var(--text-muted)]">
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isRunning}
-              placeholder={`Run ${leftShort} vs ${rightShort} on an EN/TR query...`}
-              className={`max-h-36 flex-1 resize-none bg-transparent py-1 text-[13.5px] leading-5 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-60 ${
-                input.includes("\n") || input.length > 90
-                  ? "overflow-y-auto"
-                  : "overflow-hidden"
-              }`}
-            />
-            {isRunning ? (
-              <button
-                type="button"
-                onClick={onStopCompare}
-                title="Stop both streams"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-600 text-white transition hover:bg-rose-500 cursor-pointer"
-              >
-                <Square className="h-3 w-3 fill-current" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!input.trim()}
-                title="Run side-by-side comparison"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--cta-bg)] text-[var(--cta-fg)] transition hover:bg-[var(--cta-hover)] disabled:opacity-25 cursor-pointer"
-              >
-                <ArrowUp className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-
-          <div className="mt-1.5 flex items-center justify-between px-0.5 font-mono text-[10px] text-[var(--text-muted)]">
-            <div className="flex items-center gap-2">
-              <span>
-                arena:{leftShort.toLowerCase().replace(/\s+/g, "-")} vs{" "}
-                {rightShort.toLowerCase().replace(/\s+/g, "-")}
+      {/* Composer */}
+      <div className="relative shrink-0 bg-paper px-4 pb-4 sm:px-6">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-b from-transparent to-paper"
+        />
+        <div className="mx-auto w-full max-w-[52rem]">
+          <Composer
+            value={input}
+            onChange={setInput}
+            onSubmit={handleSend}
+            onStop={onStopCompare}
+            isRunning={isRunning}
+            placeholder={`Ask a question to run ${leftShort} and ${rightShort} side by side`}
+            submitLabel="Run comparison"
+            stopLabel="Stop both runs"
+            maxHeight={150}
+            toolbar={
+              <span className="flex items-center gap-1.5 px-1.5 text-small text-ink-3">
+                <LaneTile lane="A" className="h-5 w-5 text-caption" />
+                <span className="max-w-[9rem] truncate">{leftShort}</span>
+                <span>and</span>
+                <LaneTile lane="B" className="h-5 w-5 text-caption" />
+                <span className="max-w-[9rem] truncate">{rightShort}</span>
               </span>
-              <span>·</span>
-              <span>parallel-{useStreaming ? "sse" : "batch"}</span>
-              {budgetCapLabel && (
-                <>
-                  <span>·</span>
-                  <span>cap:{budgetCapLabel}/side</span>
-                </>
-              )}
-            </div>
-            <div className="hidden items-center gap-1.5 sm:flex">
-              <span>Run parallel</span>
-              <kbd className="ar-kbd">↵</kbd>
-            </div>
-          </div>
+            }
+            footer={
+              <>
+                <span>{useStreaming ? "Both runs stream in parallel" : "Both runs in batch mode"}</span>
+                {budgetCapLabel && <span>Spend cap {budgetCapLabel} per side</span>}
+              </>
+            }
+          />
         </div>
       </div>
     </div>
