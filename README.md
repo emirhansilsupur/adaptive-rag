@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-250%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-256%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `250` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `256` `$0` CI tests</sub> |
 
 ---
 
@@ -326,7 +326,7 @@ make eval-langfuse  # Publish golden_set.jsonl + 4-way offline IR ablation to Ex
 | Endpoint | Method | Purpose |
 | :--- | :---: | :--- |
 | `/v1/health` | `GET` | Non-crashing Qdrant, Firecrawl Local, Langfuse, PDF/OCR (`liteparse` / `ocria-nano`), security/guardrail, and model readiness telemetry, including the embedding models the collection was indexed with (`embedding_mismatch` after a model swap) |
-| `/v1/documents` | `GET` | Metadata-projected Qdrant document inventory (`local`/`web`, `flat`/`parent_child`, chunks, tokens, URLs) |
+| `/v1/documents` | `GET` | Every indexed document (`local`/`web`, `flat`/`parent_child`, chunks, tokens, URLs), read from one point per document instead of every chunk |
 | `/v1/documents/{doc_id}` | `DELETE` | Remove all Qdrant points for `doc_id` and return updated collection count |
 | `/v1/ingest` | `POST` | Zero-gap idempotent indexing of sandboxed `corpus_dir`, inline `documents`, `urls`, or `crawl_url` (`parent_child` & `ocr_mode` optional). `recreate_collection` builds a new collection behind a Qdrant alias and switches to it only once indexing succeeds, so a failure leaves the current one untouched |
 | `/v1/ingest/upload` | `POST` | Multipart `.md` / `.txt` / `.pdf` upload with Adaptive 2-Tier OCR (`ocr_mode`), off-thread chunking, and crash-safe Qdrant upsert (same safe `recreate_collection` swap) |
@@ -386,11 +386,11 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `250` automated tests (`213` backend pytest + `37` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `256` automated tests (`219` backend pytest + `37` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
-make test       # 213 offline Python unit & in-memory Qdrant integration tests ($0)
+make test       # 219 offline Python unit & in-memory Qdrant integration tests ($0)
 make ui-test    # Frontend TypeScript check + 37 Vitest tests
 make lint       # ruff check + ruff format --check
 make typecheck  # mypy strict check across src/ and eval/

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,6 +36,14 @@ RRF_K_CONSTANT = 60
 # the record themselves.
 DENSE_MODEL_PAYLOAD_KEY = "dense_model"
 SPARSE_MODEL_PAYLOAD_KEY = "sparse_model"
+
+# The first chunk of each document also carries the document's token total, so listing
+# documents reads one point per document instead of every chunk.
+DOC_TOKENS_PAYLOAD_KEY = "doc_token_count"
+# Payload fields describing a document; every chunk of it holds the same values.
+_DOCUMENT_FIELDS = ["doc_id", "title", "language", "metadata", "parent_id"]
+# Older documents are added up from their chunks, filtered by this many doc_ids at a time.
+_SCAN_DOC_IDS_PER_FILTER = 500
 
 
 class EmbeddingModelMismatchError(RuntimeError):
@@ -87,6 +95,71 @@ def _build_filter(
             )
         )
     return models.Filter(must=conditions) if conditions else None
+
+
+def _document_tokens(parts: Iterable[tuple[int, str | None, int | None]]) -> int:
+    """Tokens a document holds, from (token_count, parent_id, parent_token_count) per chunk.
+
+    Children of one parent section overlap, so a parent-child document counts each parent
+    once instead of adding up its children.
+    """
+    seen_parents: set[str] = set()
+    total = 0
+    for token_count, parent_id, parent_token_count in parts:
+        if not parent_id:
+            total += token_count
+        elif parent_id not in seen_parents:
+            seen_parents.add(parent_id)
+            total += parent_token_count or token_count
+    return total
+
+
+def _document_heads(chunks: Sequence[DocumentChunk]) -> dict[str, int]:
+    """Map the first chunk of each document in ``chunks`` to the document's token total."""
+    by_doc: dict[str, list[DocumentChunk]] = {}
+    for chunk in chunks:
+        by_doc.setdefault(chunk.doc_id, []).append(chunk)
+    return {
+        min(doc_chunks, key=lambda c: c.chunk_index).chunk_id: _document_tokens(
+            (c.token_count, c.parent_id, c.parent_token_count) for c in doc_chunks
+        )
+        for doc_chunks in by_doc.values()
+    }
+
+
+def _document_summary(
+    payload: dict[str, Any],
+    *,
+    chunk_count: int,
+    total_tokens: int,
+    parent_child: bool,
+) -> dict[str, Any]:
+    """One ``list_documents`` row from a chunk's payload and the document's totals."""
+    doc_id = str(payload.get("doc_id") or "").strip()
+    raw_meta = payload.get("metadata")
+    meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    source_url = meta.get("source_url") or meta.get("url")
+    source_path = meta.get("source_path")
+    file_name = meta.get("file_name")
+    return {
+        "doc_id": doc_id,
+        "title": str(payload.get("title") or doc_id),
+        "source_origin": (
+            "web" if source_url or meta.get("source") == "firecrawl_local" else "local"
+        ),
+        "doc_type": str(meta.get("doc_type") or "markdown"),
+        "language": str(payload.get("language") or meta.get("language") or "en"),
+        "chunk_strategy": (
+            "parent_child"
+            if parent_child or meta.get("chunk_strategy") == "parent_child"
+            else "flat"
+        ),
+        "chunk_count": chunk_count,
+        "total_tokens": total_tokens,
+        "source_url": str(source_url) if source_url else None,
+        "source_path": str(source_path) if source_path else None,
+        "file_name": str(file_name) if file_name else None,
+    }
 
 
 def _point_to_evidence(
@@ -359,7 +432,8 @@ class QdrantHybridStore:
             },
         )
 
-        # Keyword payload indexes accelerate Filterable HNSW on server Qdrant.
+        # Keyword payload indexes accelerate Filterable HNSW on server Qdrant; the doc_id one
+        # also counts chunks per document for list_documents.
         if not self._is_local_mode:
             for field_name in ("doc_id", "language", "parent_id"):
                 await self._client.create_payload_index(
@@ -367,6 +441,12 @@ class QdrantHybridStore:
                     field_name=field_name,
                     field_schema=models.PayloadSchemaType.KEYWORD,
                 )
+            # Lets list_documents find each document's first chunk without a full scan.
+            await self._client.create_payload_index(
+                collection_name=name,
+                field_name=DOC_TOKENS_PAYLOAD_KEY,
+                field_schema=models.PayloadSchemaType.INTEGER,
+            )
 
         logger.info(
             "qdrant_collection_created",
@@ -542,6 +622,11 @@ class QdrantHybridStore:
         batch_size: int,
         replace_existing_docs: bool,
     ) -> int:
+        """Store ``chunks``, which hold every chunk of each document they belong to.
+
+        Each document is stored as exactly these chunks, and its first chunk records the
+        document's token total for ``list_documents``.
+        """
         if not chunks:
             return 0
 
@@ -550,6 +635,7 @@ class QdrantHybridStore:
             doc_ids = [c.doc_id for c in chunks]
             existing_ids = await self._list_point_ids_by_doc_ids(collection_name, doc_ids)
 
+        document_tokens_by_head = _document_heads(chunks)
         total_upserted = 0
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
@@ -582,6 +668,8 @@ class QdrantHybridStore:
                     payload["parent_token_count"] = chunk.parent_token_count
                     payload["child_index"] = chunk.child_index
                     payload["child_count"] = chunk.child_count
+                if chunk.chunk_id in document_tokens_by_head:
+                    payload[DOC_TOKENS_PAYLOAD_KEY] = document_tokens_by_head[chunk.chunk_id]
                 points.append(
                     models.PointStruct(
                         id=chunk.chunk_id,
@@ -872,98 +960,125 @@ class QdrantHybridStore:
         )
         return existing_count, remaining
 
-    async def list_documents(self, *, limit: int = 1000) -> list[dict[str, Any]]:
-        """Aggregate indexed chunks by doc_id using a metadata-only payload projection."""
+    async def list_documents(self) -> list[dict[str, Any]]:
+        """Every indexed document with its chunk and token counts, in display order.
+
+        Reads one point per document: Qdrant counts the chunks per doc_id from its index,
+        and each document's first chunk holds the rest. Documents stored before first chunks
+        recorded a token total are added up from their chunks, and so is every document when
+        the collection has no doc_id index to count with.
+        """
         if not await self._client.collection_exists(self._collection_name):
             return []
-
-        docs_by_id: dict[str, dict[str, Any]] = {}
-        seen_parents_by_doc: dict[str, set[str]] = {}
-        offset: Any = None
-        metadata_fields = [
-            "doc_id",
-            "title",
-            "token_count",
-            "language",
-            "metadata",
-            "parent_id",
-            "parent_token_count",
-        ]
-
-        while True:
-            records, next_offset = await self._client.scroll(
-                collection_name=self._collection_name,
-                limit=256,
-                offset=offset,
-                # Project only lightweight metadata fields — never transfer `text` or `parent_text`.
-                with_payload=metadata_fields,
-                with_vectors=False,
+        try:
+            chunk_counts = await self._chunk_counts_by_doc_id()
+        except Exception as exc:
+            logger.warning(
+                "qdrant_document_counts_unavailable",
+                collection=self._collection_name,
+                error=str(exc),
+                detail="Listing documents by reading every chunk instead.",
             )
-            for rec in records:
-                payload: dict[str, Any] = dict(rec.payload or {})
-                doc_id = str(payload.get("doc_id") or "").strip()
-                if not doc_id:
-                    continue
+            docs = await self._documents_by_scan()
+        else:
+            docs = await self._documents_from_heads(chunk_counts)
+            older = [doc_id for doc_id in chunk_counts if doc_id not in docs]
+            if len(older) == len(chunk_counts):
+                docs = await self._documents_by_scan()
+            else:
+                for start in range(0, len(older), _SCAN_DOC_IDS_PER_FILTER):
+                    batch = older[start : start + _SCAN_DOC_IDS_PER_FILTER]
+                    docs.update(await self._documents_by_scan(batch))
 
-                raw_meta = payload.get("metadata")
-                meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
-                token_count = int(payload.get("token_count") or 0)
-                raw_parent_id = payload.get("parent_id")
-                parent_id = str(raw_parent_id).strip() if raw_parent_id else None
-                parent_tokens = int(payload.get("parent_token_count") or token_count)
-
-                # Avoid double-counting overlapping child tokens when parent_id is present.
-                if parent_id:
-                    seen_parents = seen_parents_by_doc.setdefault(doc_id, set())
-                    if parent_id in seen_parents:
-                        effective_tokens = 0
-                    else:
-                        seen_parents.add(parent_id)
-                        effective_tokens = parent_tokens
-                else:
-                    effective_tokens = token_count
-
-                entry = docs_by_id.get(doc_id)
-                if entry is None:
-                    source_url = meta.get("source_url") or meta.get("url")
-                    source_path = meta.get("source_path")
-                    file_name = meta.get("file_name")
-                    source_origin = (
-                        "web" if source_url or meta.get("source") == "firecrawl_local" else "local"
-                    )
-                    chunk_strategy = (
-                        "parent_child"
-                        if parent_id or meta.get("chunk_strategy") == "parent_child"
-                        else "flat"
-                    )
-                    docs_by_id[doc_id] = {
-                        "doc_id": doc_id,
-                        "title": str(payload.get("title") or doc_id),
-                        "source_origin": source_origin,
-                        "doc_type": str(meta.get("doc_type") or "markdown"),
-                        "language": str(payload.get("language") or meta.get("language") or "en"),
-                        "chunk_strategy": chunk_strategy,
-                        "chunk_count": 1,
-                        "total_tokens": effective_tokens,
-                        "source_url": str(source_url) if source_url else None,
-                        "source_path": str(source_path) if source_path else None,
-                        "file_name": str(file_name) if file_name else None,
-                    }
-                else:
-                    entry["chunk_count"] = int(entry["chunk_count"]) + 1
-                    entry["total_tokens"] = int(entry["total_tokens"]) + effective_tokens
-                    if parent_id:
-                        entry["chunk_strategy"] = "parent_child"
-
-            if next_offset is None or not records:
-                break
-            offset = next_offset
-
-        ordered = sorted(
-            docs_by_id.values(),
+        return sorted(
+            docs.values(),
             key=lambda d: (str(d["source_origin"]), str(d["title"]).lower(), str(d["doc_id"])),
         )
-        return ordered[: max(1, limit)]
+
+    async def _chunk_counts_by_doc_id(self) -> dict[str, int]:
+        """Chunks per document, counted by Qdrant from the doc_id payload index."""
+        points = await self._client.count(collection_name=self._collection_name, exact=True)
+        if points.count == 0:
+            return {}
+        facet = await self._client.facet(
+            collection_name=self._collection_name,
+            key="doc_id",
+            limit=points.count,  # every document has at least one chunk
+            exact=True,
+        )
+        return {str(hit.value): int(hit.count) for hit in facet.hits if str(hit.value).strip()}
+
+    async def _documents_from_heads(
+        self, chunk_counts: dict[str, int]
+    ) -> dict[str, dict[str, Any]]:
+        """Summaries of the documents whose first chunk records their token total."""
+        heads = models.Filter(
+            must=[models.FieldCondition(key=DOC_TOKENS_PAYLOAD_KEY, range=models.Range(gte=0))]
+        )
+        docs: dict[str, dict[str, Any]] = {}
+        async for payload in self._scroll_payloads(
+            heads, [*_DOCUMENT_FIELDS, DOC_TOKENS_PAYLOAD_KEY]
+        ):
+            doc_id = str(payload.get("doc_id") or "")
+            if doc_id in chunk_counts and doc_id not in docs:
+                docs[doc_id] = _document_summary(
+                    payload,
+                    chunk_count=chunk_counts[doc_id],
+                    total_tokens=int(payload[DOC_TOKENS_PAYLOAD_KEY]),
+                    parent_child=bool(payload.get("parent_id")),
+                )
+        return docs
+
+    async def _documents_by_scan(
+        self, doc_ids: Sequence[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Summaries added up from every chunk of ``doc_ids`` (all documents when None)."""
+        first_payloads: dict[str, dict[str, Any]] = {}
+        parts: dict[str, list[tuple[int, str | None, int | None]]] = {}
+        fields = [*_DOCUMENT_FIELDS, "token_count", "parent_token_count"]
+        async for payload in self._scroll_payloads(_build_filter(doc_ids=doc_ids), fields):
+            doc_id = str(payload.get("doc_id") or "")
+            if not doc_id.strip():
+                continue
+            first_payloads.setdefault(doc_id, payload)
+            raw_parent_id = payload.get("parent_id")
+            raw_parent_tokens = payload.get("parent_token_count")
+            parts.setdefault(doc_id, []).append(
+                (
+                    int(payload.get("token_count") or 0),
+                    str(raw_parent_id).strip() if raw_parent_id else None,
+                    int(raw_parent_tokens) if raw_parent_tokens is not None else None,
+                )
+            )
+        return {
+            doc_id: _document_summary(
+                first_payloads[doc_id],
+                chunk_count=len(doc_parts),
+                total_tokens=_document_tokens(doc_parts),
+                parent_child=any(parent_id for _, parent_id, _ in doc_parts),
+            )
+            for doc_id, doc_parts in parts.items()
+        }
+
+    async def _scroll_payloads(
+        self, scroll_filter: models.Filter | None, fields: list[str]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield the payload ``fields`` of every point matching ``scroll_filter``."""
+        offset: Any = None
+        while True:
+            records, offset = await self._client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=scroll_filter,
+                limit=256,
+                offset=offset,
+                # Only the fields asked for; never `text` or `parent_text`.
+                with_payload=fields,
+                with_vectors=False,
+            )
+            for record in records:
+                yield dict(record.payload or {})
+            if offset is None or not records:
+                return
 
     async def health_check(self) -> dict[str, Any]:
         """Return collection health, including the models its passages were indexed with."""
