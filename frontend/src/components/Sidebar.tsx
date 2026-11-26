@@ -201,7 +201,9 @@ function ConnectionPanel({
                 value={
                   health.qdrant?.status === "ok"
                     ? `${formatInt(health.qdrant?.points_count ?? 0)} passages`
-                    : "Unavailable"
+                    : health.qdrant?.status === "embedding_mismatch"
+                      ? "Needs re-indexing"
+                      : "Unavailable"
                 }
               />
               <ServiceRow

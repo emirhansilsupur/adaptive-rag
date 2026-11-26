@@ -17,6 +17,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
+from qdrant_client import models
 
 from adaptiverag.api.dependencies import AppContainer
 from adaptiverag.api.main import create_app
@@ -413,6 +414,98 @@ async def test_health_degraded_and_query_503_when_unconfigured() -> None:
         query_resp = await client.post("/v1/query", json={"query": "What is RRF?"})
         assert query_resp.status_code == 503
         assert "OPENROUTER_API_KEY" in query_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_collection_indexed_with_another_model_is_refused_until_replaced(
+    tmp_path: Path,
+) -> None:
+    container = await _build_test_container(tmp_path)
+    # As if a server configured with another dense model had indexed these passages.
+    await container.store.client.set_payload(
+        collection_name=container.store.collection_name,
+        payload={"dense_model": "old/dense-model"},
+        points=models.FilterSelector(filter=models.Filter()),
+    )
+    fast_llm = container.workflow.runtime.models.fast_model  # type: ignore[union-attr]
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            health = (await client.get("/v1/health")).json()
+            assert health["status"] == "degraded"
+            assert health["qdrant"]["status"] == "embedding_mismatch"
+            assert health["qdrant"]["indexed_dense_model"] == "old/dense-model"
+            assert health["qdrant"]["dense_model"] == "stub-dense-10d"
+            assert "old/dense-model" in health["qdrant"]["embedding_mismatch"]
+
+            question = {"query": "How does Qdrant hybrid search combine dense and BM25?"}
+            for path in ("/v1/query", "/v1/query/stream"):
+                resp = await client.post(path, json=question)
+                assert resp.status_code == 409
+                assert "old/dense-model" in resp.json()["detail"]
+            assert fast_llm.cursor == 0  # refused before any LLM call
+
+            doc = {"doc_id": "notes", "title": "Notes", "content": "Qdrant hybrid search notes."}
+            add_resp = await client.post("/v1/ingest", json={"documents": [doc]})
+            assert add_resp.status_code == 409
+            upload_resp = await client.post(
+                "/v1/ingest/upload",
+                files={
+                    "files": (
+                        "notes.md",
+                        b"# Notes\n\nQdrant hybrid search notes.",
+                        "text/markdown",
+                    )
+                },
+            )
+            assert upload_resp.status_code == 409
+            assert "old/dense-model" in upload_resp.json()["detail"]
+            assert (await client.get("/v1/health")).json()["qdrant"]["points_count"] == 2
+
+            replace_resp = await client.post(
+                "/v1/ingest", json={"documents": [doc], "recreate_collection": True}
+            )
+            assert replace_resp.status_code == 200
+            health = (await client.get("/v1/health")).json()
+            assert health["status"] == "ok"
+            assert health["qdrant"]["indexed_dense_model"] == "stub-dense-10d"
+            assert health["qdrant"]["points_count"] == replace_resp.json()["points_upserted"]
+    finally:
+        await container.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_qdrant_outage_still_reaches_the_stream_as_an_error_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The up-front model check steps aside on other errors, so the run reports them as before."""
+    container = await _build_test_container(tmp_path)
+
+    async def _refuse_connection(*args: Any, **kwargs: Any) -> bool:
+        raise ConnectionError("Qdrant connection refused on localhost:6333")
+
+    monkeypatch.setattr(container.store.client, "collection_exists", _refuse_connection)
+    app = create_app(container=container)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+        ) as client:
+            resp = await client.post(
+                "/v1/query/stream",
+                json={"query": "How does Qdrant hybrid search combine dense and BM25?"},
+            )
+            assert resp.status_code == 200
+            event, data = _parse_sse_text(resp.text)[-1]
+            assert event == "error"
+            assert "connection refused" in data["message"]
+    finally:
+        await container.aclose()
 
 
 @pytest.mark.asyncio

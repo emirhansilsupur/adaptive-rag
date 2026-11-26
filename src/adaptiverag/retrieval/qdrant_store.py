@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -28,6 +30,28 @@ logger = structlog.get_logger(__name__)
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 RRF_K_CONSTANT = 60
+
+# Payload keys on every point naming the models that embedded it. The Qdrant server this
+# project pins (v1.13) accepts collection metadata but doesn't keep it, so the points carry
+# the record themselves.
+DENSE_MODEL_PAYLOAD_KEY = "dense_model"
+SPARSE_MODEL_PAYLOAD_KEY = "sparse_model"
+
+
+class EmbeddingModelMismatchError(RuntimeError):
+    """The collection was indexed with other embedding models than this store embeds with."""
+
+
+@dataclass(frozen=True)
+class IndexedEmbeddings:
+    """What a collection was indexed with, as far as it records it."""
+
+    # Size of the stored dense vectors, from the collection's own vector config.
+    dense_dimension: int | None
+    # Models recorded on the stored passages; None when no passage records them, either
+    # because the collection is empty or because it was indexed before they were recorded.
+    dense_model: str | None
+    sparse_model: str | None
 
 
 class RetrievalMode(StrEnum):
@@ -129,6 +153,8 @@ class QdrantHybridStore:
         # that a running rebuild is about to replace. A second process (the CLI indexer
         # running next to the API) isn't covered.
         self._write_lock = asyncio.Lock()
+        # When check_embedding_models last passed (time.monotonic()), so searches can reuse it.
+        self._models_checked_at: float | None = None
 
     @classmethod
     def from_settings(
@@ -358,6 +384,89 @@ class QdrantHybridStore:
         except Exception as exc:
             logger.warning("qdrant_collection_drop_failed", backing_collection=name, error=str(exc))
 
+    async def indexed_embeddings(self) -> IndexedEmbeddings | None:
+        """Read what the collection was indexed with; None if the collection doesn't exist."""
+        if not await self._client.collection_exists(self._collection_name):
+            return None
+        info = await self._client.get_collection(self._collection_name)
+        vectors = info.config.params.vectors
+        dense_params = vectors.get(DENSE_VECTOR_NAME) if isinstance(vectors, dict) else None
+        # One passage that records its models is enough: every write is checked against
+        # them first, so the passages that record models all record the same ones.
+        records, _ = await self._client.scroll(
+            collection_name=self._collection_name,
+            scroll_filter=models.Filter(
+                must_not=[
+                    models.IsEmptyCondition(
+                        is_empty=models.PayloadField(key=DENSE_MODEL_PAYLOAD_KEY)
+                    )
+                ]
+            ),
+            limit=1,
+            with_payload=[DENSE_MODEL_PAYLOAD_KEY, SPARSE_MODEL_PAYLOAD_KEY],
+            with_vectors=False,
+        )
+        recorded: dict[str, Any] = dict(records[0].payload or {}) if records else {}
+        dense_model = recorded.get(DENSE_MODEL_PAYLOAD_KEY)
+        sparse_model = recorded.get(SPARSE_MODEL_PAYLOAD_KEY)
+        return IndexedEmbeddings(
+            dense_dimension=dense_params.size if dense_params is not None else None,
+            dense_model=str(dense_model) if dense_model else None,
+            sparse_model=str(sparse_model) if sparse_model else None,
+        )
+
+    async def check_embedding_models(self, *, max_age_seconds: float = 30.0) -> None:
+        """Raise EmbeddingModelMismatchError if the collection was indexed with other models.
+
+        Vectors from different models aren't comparable, so searching such a collection
+        returns unrelated passages, and writing to it mixes two kinds of vectors. A check that
+        passed less than ``max_age_seconds`` ago is reused, so searches don't each pay for
+        one; writes pass 0 to always look. A failed check is never reused.
+        """
+        checked_at = self._models_checked_at
+        if checked_at is not None and time.monotonic() - checked_at < max_age_seconds:
+            return
+        self._models_checked_at = None
+        indexed = await self.indexed_embeddings()
+        problem = self._embedding_mismatch(indexed) if indexed is not None else None
+        if problem is not None:
+            logger.warning(
+                "qdrant_embedding_models_mismatch",
+                collection=self._collection_name,
+                detail=problem,
+            )
+            raise EmbeddingModelMismatchError(problem)
+        self._models_checked_at = time.monotonic()
+
+    def _embedding_mismatch(self, indexed: IndexedEmbeddings) -> str | None:
+        """Explain how the collection's embeddings differ from this store's; None if they don't."""
+        was: list[str] = []
+        now: list[str] = []
+        if indexed.dense_model is not None:
+            if indexed.dense_model != self._dense.model_name:
+                was.append(f"dense model '{indexed.dense_model}'")
+                now.append(f"DENSE_EMBEDDING_MODEL is '{self._dense.model_name}'")
+        elif (
+            indexed.dense_dimension is not None and indexed.dense_dimension != self._dense.dimension
+        ):
+            # Passages from before models were recorded: only the vector size can tell.
+            was.append(f"{indexed.dense_dimension}-dimension dense vectors")
+            now.append(
+                f"DENSE_EMBEDDING_MODEL '{self._dense.model_name}' makes "
+                f"{self._dense.dimension}-dimension ones"
+            )
+        if indexed.sparse_model is not None and indexed.sparse_model != self._sparse.model_name:
+            was.append(f"sparse model '{indexed.sparse_model}'")
+            now.append(f"SPARSE_EMBEDDING_MODEL is '{self._sparse.model_name}'")
+        if not was:
+            return None
+        return (
+            f"Collection '{self._collection_name}' was indexed with {' and '.join(was)}, but "
+            f"{' and '.join(now)}. Searching it with other embedding models returns unrelated "
+            "passages. Re-index it by replacing everything in the collection, or switch back "
+            "to the models it was indexed with."
+        )
+
     async def delete_by_doc_ids(self, doc_ids: Sequence[str]) -> None:
         """Delete existing chunks belonging to specified doc_ids before clean re-upsert."""
         async with self._write_lock:
@@ -410,8 +519,14 @@ class QdrantHybridStore:
         batch_size: int = 64,
         replace_existing_docs: bool = True,
     ) -> int:
-        """Embed and batch-upsert DocumentChunks into Qdrant (crash-safe & zero-gap re-indexing)."""
+        """Embed and batch-upsert DocumentChunks into Qdrant (crash-safe & zero-gap re-indexing).
+
+        Raises EmbeddingModelMismatchError, before embedding anything, if the collection was
+        indexed with other models. Replacing the whole collection is the way to switch models.
+        """
         async with self._write_lock:
+            if chunks:
+                await self.check_embedding_models(max_age_seconds=0)
             return await self._upsert_into(
                 self._collection_name,
                 chunks,
@@ -457,6 +572,8 @@ class QdrantHybridStore:
                     "token_count": chunk.token_count,
                     "language": chunk.metadata.get("language", "en"),
                     "metadata": chunk.metadata,
+                    DENSE_MODEL_PAYLOAD_KEY: self._dense.model_name,
+                    SPARSE_MODEL_PAYLOAD_KEY: self._sparse.model_name,
                 }
                 if chunk.parent_id is not None:
                     payload["parent_id"] = chunk.parent_id
@@ -515,7 +632,32 @@ class QdrantHybridStore:
         doc_ids: Sequence[str] | None = None,
         language: str | None = None,
     ) -> list[EvidenceChunk]:
-        """Execute a single-query retrieval in HYBRID, DENSE_ONLY, or SPARSE_ONLY mode."""
+        """Execute a single-query retrieval in HYBRID, DENSE_ONLY, or SPARSE_ONLY mode.
+
+        Raises EmbeddingModelMismatchError if the collection was indexed with other models.
+        """
+        await self.check_embedding_models()
+        return await self._search_single(
+            query,
+            mode=mode,
+            dense_limit=dense_limit,
+            sparse_limit=sparse_limit,
+            fusion_limit=fusion_limit,
+            doc_ids=doc_ids,
+            language=language,
+        )
+
+    async def _search_single(
+        self,
+        query: str,
+        *,
+        mode: RetrievalMode,
+        dense_limit: int,
+        sparse_limit: int,
+        fusion_limit: int,
+        doc_ids: Sequence[str] | None,
+        language: str | None,
+    ) -> list[EvidenceChunk]:
         cleaned = query.strip()
         if not cleaned or fusion_limit <= 0:
             return []
@@ -612,13 +754,18 @@ class QdrantHybridStore:
         doc_ids: Sequence[str] | None = None,
         language: str | None = None,
     ) -> list[EvidenceChunk]:
-        """Fan out multiple sub-queries concurrently and merge via cross-query RRF deduplication."""
+        """Fan out multiple sub-queries concurrently and merge via cross-query RRF deduplication.
+
+        Raises EmbeddingModelMismatchError if the collection was indexed with other models.
+        """
         unique_queries = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
         if not unique_queries:
             return []
+        # Checked once here rather than in each concurrent sub-query.
+        await self.check_embedding_models()
 
         if len(unique_queries) == 1:
-            results = await self.search_single(
+            results = await self._search_single(
                 unique_queries[0],
                 mode=mode,
                 dense_limit=dense_limit,
@@ -631,7 +778,7 @@ class QdrantHybridStore:
 
         per_query_lists = await asyncio.gather(
             *(
-                self.search_single(
+                self._search_single(
                     q,
                     mode=mode,
                     dense_limit=dense_limit,
@@ -819,16 +966,28 @@ class QdrantHybridStore:
         return ordered[: max(1, limit)]
 
     async def health_check(self) -> dict[str, Any]:
-        """Return lightweight Qdrant collection health metadata."""
-        exists = await self._client.collection_exists(self._collection_name)
-        points_count = await self.count_points() if exists else 0
+        """Return collection health, including the models its passages were indexed with."""
+        indexed = await self.indexed_embeddings()
+        mismatch = self._embedding_mismatch(indexed) if indexed is not None else None
+        if indexed is None:
+            status = "collection_missing"
+        elif mismatch is not None:
+            status = "embedding_mismatch"
+        else:
+            status = "ok"
         return {
-            "status": "ok" if exists else "collection_missing",
+            "status": status,
             "collection": self._collection_name,
-            "collection_exists": exists,
-            "points_count": points_count,
+            "collection_exists": indexed is not None,
+            "points_count": await self.count_points() if indexed is not None else 0,
+            # The models questions and new passages are embedded with.
             "dense_model": self._dense.model_name,
             "sparse_model": self._sparse.model_name,
+            # The models the stored passages were embedded with (None if none record them).
+            "indexed_dense_model": indexed.dense_model if indexed else None,
+            "indexed_sparse_model": indexed.sparse_model if indexed else None,
+            "indexed_dense_dimension": indexed.dense_dimension if indexed else None,
+            "embedding_mismatch": mismatch,
         }
 
 

@@ -279,8 +279,15 @@ export interface QdrantHealthInfo {
   collection?: string;
   collection_exists?: boolean;
   points_count?: number;
+  /** Models that questions and new passages are embedded with. */
   dense_model?: string;
   sparse_model?: string;
+  /** Models the stored passages were embedded with; null when no passage records them. */
+  indexed_dense_model?: string | null;
+  indexed_sparse_model?: string | null;
+  indexed_dense_dimension?: number | null;
+  /** Why the collection can't be used with the configured models, when it can't. */
+  embedding_mismatch?: string | null;
   error?: string;
 }
 

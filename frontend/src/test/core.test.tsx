@@ -437,6 +437,52 @@ describe("KnowledgeBaseView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Web" }));
     expect(screen.queryByText("Qdrant Hybrid Guide")).not.toBeInTheDocument();
     expect(screen.getByText("Firecrawl Local Quickstart")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("warns that the collection needs re-indexing when it was indexed with another model", () => {
+    const mismatch =
+      "Collection 'adaptiverag_docs' was indexed with dense model 'old/dense', but " +
+      "DENSE_EMBEDDING_MODEL is 'new/dense'.";
+    render(
+      <KnowledgeBaseView
+        apiUrl="http://localhost:8000"
+        health={{
+          status: "degraded",
+          version: "0.1.0",
+          qdrant: {
+            status: "embedding_mismatch",
+            collection: "adaptiverag_docs",
+            points_count: 15,
+            dense_model: "new/dense",
+            indexed_dense_model: "old/dense",
+            embedding_mismatch: mismatch,
+          },
+          firecrawl: { status: "ok", base_url: "http://localhost:3002" },
+          llm_configured: true,
+          llm_error: null,
+          llm_provider: "openrouter",
+          fast_model: "openai/gpt-4o-mini",
+          generation_model: "openai/gpt-4o-mini",
+          dense_embedding_model: "new/dense",
+          sparse_embedding_model: "Qdrant/bm25",
+          reranker_model: "bge-reranker-v2-m3",
+          web_fallback_enabled: false,
+          web_fallback_providers: [],
+          langfuse_enabled: false,
+          llm_cache_enabled: true,
+          default_max_run_cost_usd: 0.25,
+        }}
+        documentsData={null}
+        documentsLoading={false}
+        documentsError={null}
+        onRefreshAll={vi.fn(async () => {})}
+      />
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("This collection was indexed with a different model");
+    expect(alert).toHaveTextContent(mismatch);
   });
 
   it("sends selected PDF OCR mode when re-indexing local corpus and displays OCR telemetry", async () => {

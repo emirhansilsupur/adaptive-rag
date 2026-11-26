@@ -18,7 +18,7 @@ from adaptiverag.ingestion.pdf_parser import PdfOcrMode, VisionOcrFn
 from adaptiverag.ingestion.web_loader import FirecrawlClient
 from adaptiverag.llm.cost import CostTracker
 from adaptiverag.observability.tracing import configure_logging
-from adaptiverag.retrieval.qdrant_store import QdrantHybridStore
+from adaptiverag.retrieval.qdrant_store import EmbeddingModelMismatchError, QdrantHybridStore
 
 logger = structlog.get_logger(__name__)
 
@@ -399,7 +399,10 @@ async def _run_cli(args: argparse.Namespace) -> IndexingReport:
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point: ``python -m adaptiverag.ingestion.indexer``."""
     args = _parse_args(argv)
-    report = asyncio.run(_run_cli(args))
+    try:
+        report = asyncio.run(_run_cli(args))
+    except EmbeddingModelMismatchError as exc:
+        raise SystemExit(f"error: {exc} To replace everything from here, add --recreate.") from None
     print(
         f"Indexed {report.documents_loaded} documents -> {report.chunks_created} chunks "
         f"into Qdrant collection '{report.collection_name}' "

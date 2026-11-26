@@ -162,6 +162,7 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
   const crawlerReady = fcStatus === "ok";
   const passages = health?.qdrant?.points_count ?? documentsData?.total_chunks ?? 0;
   const collection = health?.qdrant?.collection || documentsData?.collection || "adaptiverag_docs";
+  const embeddingMismatch = health?.qdrant?.embedding_mismatch;
   const parentSizes = health?.parent_child_retrieval;
   const ocrHint = OCR_MODES.find((m) => m.value === pdfOcrMode)?.hint;
 
@@ -318,6 +319,13 @@ export const KnowledgeBaseView: React.FC<KnowledgeBaseViewProps> = ({
             Refresh
           </Button>
         </div>
+
+        {embeddingMismatch && (
+          <Callout live tone="bad" className="mt-6" title="This collection was indexed with a different model">
+            {embeddingMismatch} Questions are refused until then, and so are uploads that don't
+            replace everything.
+          </Callout>
+        )}
 
         {/* Collection summary */}
         <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line lg:grid-cols-4">

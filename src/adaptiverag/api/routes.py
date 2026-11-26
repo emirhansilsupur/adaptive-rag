@@ -67,6 +67,7 @@ from adaptiverag.llm.factory import (
     check_provider_configured,
     check_provider_sdk_installed,
 )
+from adaptiverag.retrieval.qdrant_store import EmbeddingModelMismatchError
 from adaptiverag.schemas.response import FinalAnswer
 from adaptiverag.verification.guardrails import (
     GuardrailDecision,
@@ -99,6 +100,21 @@ def _resolve_workflow_or_503(
             detail += " API clients can send their own key in the X-Provider-API-Key header."
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
     return workflow
+
+
+async def _refuse_if_embedding_models_changed(container: AppContainer) -> None:
+    """Refuse a request before it spends anything if the collection was indexed with other models.
+
+    Each request reads the collection afresh; a run's own searches then reuse that check.
+    The mismatch propagates and the app answers it with 409. Any other failure here, such as
+    Qdrant being down, is left for the request itself to hit and report as it always has.
+    """
+    try:
+        await container.store.check_embedding_models(max_age_seconds=0)
+    except EmbeddingModelMismatchError:
+        raise
+    except Exception as exc:
+        logger.warning("embedding_model_check_skipped", error=str(exc))
 
 
 def _resolve_llm_override_or_400(
@@ -186,8 +202,10 @@ async def health_check(
         }
 
     llm_ok, llm_error = container.check_llm_configured()
+    # A collection indexed with other embedding models can't be searched until it's re-indexed.
+    collection_usable = qdrant_reachable and qdrant_info.get("status") != "embedding_mismatch"
     overall_status: Literal["ok", "degraded"] = (
-        "ok" if (qdrant_reachable and llm_ok) else "degraded"
+        "ok" if (collection_usable and llm_ok) else "degraded"
     )
 
     fallback_providers = list(getattr(container.fallback_retriever, "provider_names", []))
@@ -368,6 +386,7 @@ async def run_query(
         provider_api_key=provider_api_key,
     )
     workflow = _resolve_workflow_or_503(container, models_override=models_override)
+    await _refuse_if_embedding_models_changed(container)
     ablation = payload.resolve_ablation()
     effective_max_cost = (
         payload.max_cost_usd
@@ -417,6 +436,7 @@ async def stream_query(
         provider_api_key=provider_api_key,
     )
     workflow = _resolve_workflow_or_503(container, models_override=models_override)
+    await _refuse_if_embedding_models_changed(container)
     ablation = payload.resolve_ablation()
     effective_max_cost = (
         payload.max_cost_usd
@@ -554,6 +574,9 @@ async def ingest_documents(
     container: AppContainer = Depends(get_container),  # noqa: B008
 ) -> IngestResponse:
     """Chunk, embed (Dense + BM25), and upsert local files, inline docs, or Firecrawl web pages."""
+    if not payload.recreate_collection:
+        # Before any crawling or OCR is spent on passages the collection would refuse.
+        await _refuse_if_embedding_models_changed(container)
     chunk_cfg = _build_chunking_config(
         container,
         max_tokens=payload.max_tokens,
@@ -730,6 +753,9 @@ async def upload_and_ingest_files(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"overlap_tokens ({overlap_tokens}) must be < max_tokens ({max_tokens}).",
         )
+    if not recreate_collection:
+        # Before any OCR is spent on passages the collection would refuse.
+        await _refuse_if_embedding_models_changed(container)
 
     started = time.perf_counter()
     upload_tracker = CostTracker(max_cost_usd=container.settings.max_run_cost_usd)

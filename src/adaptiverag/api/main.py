@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from adaptiverag.api.dependencies import AppContainer, create_app_container
 from adaptiverag.api.routes import router as v1_router
@@ -25,6 +25,7 @@ from adaptiverag.api.security import (
 )
 from adaptiverag.config import Settings, get_settings
 from adaptiverag.observability.tracing import configure_logging
+from adaptiverag.retrieval.qdrant_store import EmbeddingModelMismatchError
 
 logger = structlog.get_logger(__name__)
 
@@ -199,6 +200,13 @@ def create_app(
     )
 
     application.include_router(v1_router)
+
+    @application.exception_handler(EmbeddingModelMismatchError)
+    async def embedding_models_changed(
+        _request: Request, exc: EmbeddingModelMismatchError
+    ) -> JSONResponse:
+        # Searching or adding to the collection needs a re-index first; the message says how.
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
     @application.get("/api/meta", tags=["Meta"], summary="API service metadata")
     async def api_meta() -> dict[str, Any]:

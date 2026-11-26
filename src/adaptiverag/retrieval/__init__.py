@@ -20,6 +20,8 @@ from adaptiverag.retrieval.parent_child import expand_to_parent_chunks
 from adaptiverag.retrieval.qdrant_store import (
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
+    EmbeddingModelMismatchError,
+    IndexedEmbeddings,
     QdrantHybridStore,
     RetrievalMode,
 )
@@ -35,10 +37,12 @@ __all__ = [
     "SPARSE_VECTOR_NAME",
     "DenseEmbedder",
     "DuckDuckGoSearchProvider",
+    "EmbeddingModelMismatchError",
     "FallbackRetriever",
     "FastEmbedCrossEncoderReranker",
     "FastEmbedDenseEmbedder",
     "FastEmbedSparseEmbedder",
+    "IndexedEmbeddings",
     "QdrantHybridStore",
     "Reranker",
     "RetrievalMode",

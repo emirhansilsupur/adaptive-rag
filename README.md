@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-218%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-227%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `218` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `227` `$0` CI tests</sub> |
 
 ---
 
@@ -63,7 +63,7 @@ Static, single-path RAG pipelines fail in production along three predictable axe
 | Pillar | Mechanism | Production Payoff |
 | :--- | :--- | :--- |
 | **1. Query Routing & Strategy Matrix** | Structured `QueryPlan` routes to `conversational`, `factual` (`k=2..5`), or `analytical` (`2–4` sub-queries, `k=4..10`) via [`configs/strategies.yaml`](configs/strategies.yaml). | Zero retrieval tax on chat turns; multi-hop decomposition only when needed. |
-| **2. Native Qdrant Hybrid Search** | Single collection with Named Vectors: multilingual dense (`768d`) + `Qdrant/bm25` (`Modifier.IDF`), parallel `Prefetch`, and server-side RRF fusion. | Captures both multilingual/cross-lingual paraphrases and exact symbols. |
+| **2. Native Qdrant Hybrid Search** | Single collection with Named Vectors: multilingual dense (`768d`) + `Qdrant/bm25` (`Modifier.IDF`), parallel `Prefetch`, and server-side RRF fusion. Every point records the models that embedded it, so after a model swap the collection is refused (`HTTP 409`) until it's re-indexed. | Captures both multilingual/cross-lingual paraphrases and exact symbols; a model swap can't silently return unrelated passages. |
 | **3. Local ONNX Cross-Encoder** | Quantized `BAAI/bge-reranker-v2-m3-int8` (100+ languages) with sigmoid calibration `σ(z) ∈ [0, 1]`, offloaded via `asyncio.to_thread`. | `$0` API reranking without blocking the FastAPI async event loop. |
 | **4. Dynamic Top-K & Parent-Child** | 3-stage cutoff (`τ_min` floor, relative drop & elbow gap, token budget) + opt-in **Small-to-Big** (`≤256`-tok children → deduplicated `≤1000`-tok parents). | `-68.3%` context tokens on flat chunks; `+9.7 pp` analytical fact coverage with Parent-Child. |
 | **5. Multi-Signal CRAG Gate** | Deterministic composite score auto-passes `HIGH (≥ 0.72)` and auto-routes `LOW (< 0.38)` at `$0`; calls CRAG LLM grader *only* inside `[0.38, 0.72)`. | Eliminates redundant grader calls on clear hits and obvious misses. |
@@ -325,7 +325,7 @@ make eval-langfuse  # Publish golden_set.jsonl + 4-way offline IR ablation to Ex
 
 | Endpoint | Method | Purpose |
 | :--- | :---: | :--- |
-| `/v1/health` | `GET` | Non-crashing Qdrant, Firecrawl Local, Langfuse, PDF/OCR (`liteparse` / `ocria-nano`), security/guardrail, and model readiness telemetry |
+| `/v1/health` | `GET` | Non-crashing Qdrant, Firecrawl Local, Langfuse, PDF/OCR (`liteparse` / `ocria-nano`), security/guardrail, and model readiness telemetry, including the embedding models the collection was indexed with (`embedding_mismatch` after a model swap) |
 | `/v1/documents` | `GET` | Metadata-projected Qdrant document inventory (`local`/`web`, `flat`/`parent_child`, chunks, tokens, URLs) |
 | `/v1/documents/{doc_id}` | `DELETE` | Remove all Qdrant points for `doc_id` and return updated collection count |
 | `/v1/ingest` | `POST` | Zero-gap idempotent indexing of sandboxed `corpus_dir`, inline `documents`, `urls`, or `crawl_url` (`parent_child` & `ocr_mode` optional). `recreate_collection` builds a new collection behind a Qdrant alias and switches to it only once indexing succeeds, so a failure leaves the current one untouched |
@@ -386,7 +386,7 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `218` automated tests (`194` backend pytest + `24` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `227` automated tests (`202` backend pytest + `25` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
