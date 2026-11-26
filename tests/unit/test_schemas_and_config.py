@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from adaptiverag.config import ConfidenceConfig, Settings, load_strategies
+from adaptiverag.config import ConfidenceConfig, Settings, get_settings, load_strategies
 from adaptiverag.schemas import (
     QueryType,
     StrategyProfile,
@@ -71,3 +71,35 @@ def test_settings_defaults_to_openrouter_multilingual() -> None:
     assert "multilingual" in settings.dense_embedding_model
     assert "m3" in settings.reranker_model or "multilingual" in settings.reranker_model
     assert settings.sparse_embedding_model == "Qdrant/bm25"
+
+
+_DEVELOPER_ENV = "API_AUTH_KEY=from-a-developer-env\nLANGFUSE_ENABLED=true\n"
+
+
+def test_tests_never_read_the_developers_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tests/conftest.py keeps a .env in the working directory out of every test."""
+    (tmp_path / ".env").write_text(_DEVELOPER_ENV)
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings()
+
+    assert settings.api_auth_key is None
+    assert settings.langfuse_enabled is False
+    assert get_settings().api_auth_key is None
+
+
+def test_a_test_can_still_read_an_env_file_it_names(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(_DEVELOPER_ENV)
+
+    settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
+
+    assert settings.api_auth_key is not None
+    assert settings.api_auth_key.get_secret_value() == "from-a-developer-env"
+    assert settings.langfuse_enabled is True
+
+
+def test_each_test_gets_its_own_llm_cache_file(tmp_path: Path) -> None:
+    assert Settings().llm_cache_path == tmp_path / "llm_cache.sqlite"
