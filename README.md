@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-227%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-232%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `227` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `232` `$0` CI tests</sub> |
 
 ---
 
@@ -106,7 +106,7 @@ The React 19 + TypeScript + Tailwind CSS v4 workbench (`make ui` on `:5173`, or 
   - **`Confidence`:** Calibrated score on a gate scale with the `0.38` / `0.72` zones, grader verdict, and weighted signal breakdown.
   - **`Evidence`:** Documents/Web filter, parent-section lineage, source URLs, and a highlighter sweep on the passage a citation points to.
   - **`Audit`:** Tier-1 valid/phantom IDs, uncited sentence alerts, and Tier-2 claim entailment verdicts, with an `Unverified` warning when the judge fails to run.
-- **Knowledge base & ingestion:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` re-index, **Firecrawl Local** page import and whole-site crawling, opt-in **`Parent-Child`** indexing (`256 → 1000` tok), and a searchable document inventory (`Small→Big` badges) with 2-step deletion.
+- **Knowledge base & ingestion:** Drag-and-drop `.md`/`.txt`/`.pdf` uploads with **Adaptive 2-Tier PDF OCR** (`Auto`, `OCRia-nano`, `Vision LLM`, `Off`), 1-click `data/raw` re-index, **Firecrawl Local** page import and whole-site crawling, opt-in per-upload **`Parent-Child`** indexing (`256 → 1000` tok, always answered from the parent sections), and a searchable document inventory (`Small→Big` badges) with 2-step deletion.
 - **Side-by-Side Ablation Arena:** Executes any two presets concurrently over SSE (`Promise.allSettled`), computing a live **`A → B` "What changed" scorecard** across context tokens, passages kept, CRAG confidence, citation audit (`Fail → Pass`), time, and cost.
 
 <p align="center">
@@ -386,7 +386,7 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `227` automated tests (`202` backend pytest + `25` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `232` automated tests (`207` backend pytest + `25` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)

@@ -42,8 +42,9 @@ class AblationConfig(BaseModel):
     enable_parent_child: bool | None = Field(
         default=None,
         description=(
-            "Override runtime small-to-big parent expansion (None defers to "
-            "Settings.enable_parent_child_retrieval)."
+            "Small-to-big expansion of passages indexed parent-child. None or True answers "
+            "from their parent sections; False keeps only the matched child chunks, for "
+            "ablation. Flat passages are never changed."
         ),
     )
     doc_ids: list[str] | None = None

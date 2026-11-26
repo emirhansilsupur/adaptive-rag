@@ -169,25 +169,19 @@ export const PresetPicker: React.FC<PresetPickerProps> = ({
               </select>
             </Field>
 
-            <Field label="Parent sections" htmlFor="preset-parent-child">
+            <Field
+              label="Parent sections"
+              htmlFor="preset-parent-child"
+              hint="Applies to documents indexed with parent-child chunking."
+            >
               <select
                 id="preset-parent-child"
-                value={
-                  customAblation.enable_parent_child === true
-                    ? "enabled"
-                    : customAblation.enable_parent_child === false
-                      ? "disabled"
-                      : "default"
-                }
+                value={customAblation.enable_parent_child === false ? "disabled" : "enabled"}
                 onChange={(e) =>
-                  update(
-                    "enable_parent_child",
-                    e.target.value === "enabled" ? true : e.target.value === "disabled" ? false : null
-                  )
+                  update("enable_parent_child", e.target.value === "disabled" ? false : null)
                 }
                 className={SELECT_CLASS}
               >
-                <option value="default">Server default</option>
                 <option value="enabled">Expand matches to parent sections</option>
                 <option value="disabled">Child chunks only</option>
               </select>

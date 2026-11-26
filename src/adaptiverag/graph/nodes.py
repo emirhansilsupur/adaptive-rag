@@ -541,12 +541,11 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
                 dropped_chunk_ids=[c.chunk_id for c in ranked[k:]],
             )
 
-        use_parent_child = (
-            ablation.enable_parent_child
-            if ablation.enable_parent_child is not None
-            else runtime.settings.enable_parent_child_retrieval
-        )
-        if use_parent_child and selected:
+        # Passages indexed parent-child are answered from their parent sections. That was
+        # chosen per upload, so the server's default chunking doesn't decide it here; only the
+        # request's ablation can turn it off. Flat passages pass through unchanged.
+        expand_parents = ablation.enable_parent_child is not False
+        if expand_parents and selected:
             selected, expanded_decision = expand_to_parent_chunks(
                 selected,
                 max_context_tokens=plan.strategy.max_context_tokens,
@@ -572,7 +571,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             metadata={
                 "rerank_enabled": ablation.enable_rerank,
                 "dynamic_k_enabled": ablation.enable_dynamic_k,
-                "parent_child_enabled": use_parent_child,
+                "parent_child_enabled": expand_parents,
                 "parent_expansion_applied": decision.parent_expansion_applied,
                 "collapsed_child_count": decision.collapsed_child_count,
                 "expanded_parent_count": decision.expanded_parent_count,

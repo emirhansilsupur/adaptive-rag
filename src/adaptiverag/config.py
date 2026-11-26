@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     qdrant_collection: str = "adaptiverag_docs"
 
     # --- Hierarchical Parent-Child (Small-to-Big) Chunking & Retrieval ---
+    # How new documents are chunked when an upload doesn't say. Retrieval expands passages
+    # indexed parent-child to their parent sections whatever this is set to.
     enable_parent_child_retrieval: bool = False
     parent_max_tokens: int = Field(default=1000, ge=128, le=8192)
     child_max_tokens: int = Field(default=256, ge=64, le=2048)

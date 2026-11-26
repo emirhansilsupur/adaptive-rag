@@ -560,11 +560,14 @@ async def run_live_ablation_benchmark(
     with_ragas: bool = False,
     ragas_dense_embedder: DenseEmbedder | None = None,
     dataset_source: str = "data/eval/golden_set.jsonl",
+    enable_parent_child: bool | None = None,
 ) -> BenchmarkReport:
     """Run the full 4-way Agentic ablation benchmark through AdaptiveRAGWorkflow.arun.
 
     Protected by a hard FinOps ``CostTracker(max_cost_usd=...)`` guardrail; if the budget
     cap is hit mid-run, completed records are preserved and summarized gracefully.
+    ``enable_parent_child`` sets small-to-big expansion for every config; None leaves the
+    workflow default, which expands passages indexed parent-child.
     """
     active_configs = list(configs) if configs else list(LIVE_CONFIG_NAMES)
     shared_tracker = CostTracker(max_cost_usd=max_cost_usd)
@@ -576,6 +579,8 @@ async def run_live_ablation_benchmark(
         if budget_exceeded:
             break
         ablation = resolve_live_ablation(config_name, fixed_top_k=fixed_top_k)
+        if enable_parent_child is not None:
+            ablation = ablation.model_copy(update={"enable_parent_child": enable_parent_child})
         logger.info(
             "benchmark_live_config_start",
             config=config_name,
@@ -1000,13 +1005,8 @@ async def _run_cli(args: argparse.Namespace) -> int:
                     dataset_source=dataset_source,
                 )
             else:
-                live_settings = (
-                    settings.model_copy(update={"enable_parent_child_retrieval": True})
-                    if use_pc
-                    else settings
-                )
                 workflow = AdaptiveRAGWorkflow.from_settings(
-                    live_settings,
+                    settings,
                     strategies=strategies,
                     store=store,
                 )
@@ -1018,6 +1018,9 @@ async def _run_cli(args: argparse.Namespace) -> int:
                     max_cost_usd=args.max_cost_usd,
                     with_ragas=args.with_ragas,
                     dataset_source=dataset_source,
+                    # On an existing collection the strategy only says whether to expand, as
+                    # before: 'flat' keeps child chunks even where the passages have parents.
+                    enable_parent_child=use_pc,
                 )
         finally:
             await store.close()

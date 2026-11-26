@@ -16,7 +16,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from adaptiverag.config import Settings, load_strategies
-from adaptiverag.graph import AdaptiveRAGWorkflow, GraphRuntime
+from adaptiverag.graph import AblationConfig, AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.ingestion.chunker import chunk_documents
 from adaptiverag.ingestion.loader import load_directory
 from adaptiverag.llm import CostTracker, ModelBundle, SQLiteLLMCache
@@ -811,3 +811,31 @@ async def test_live_4way_ablation_and_budget_guardrail(tmp_path: Path) -> None:
         assert capped_report.budget_exceeded is True
     finally:
         await store.close()
+
+
+class _AblationRecordingWorkflow:
+    """Stands in for the workflow and only records the ablation each run gets."""
+
+    def __init__(self) -> None:
+        self.ablations: list[AblationConfig] = []
+
+    async def arun(self, query: str, *, ablation: AblationConfig, **kwargs: Any) -> FinalAnswer:
+        self.ablations.append(ablation)
+        raise RuntimeError("not answering in this test")
+
+
+@pytest.mark.parametrize("expand", [True, False, None])
+async def test_live_benchmark_applies_its_parent_expansion_choice_to_every_config(
+    expand: bool | None,
+) -> None:
+    workflow = _AblationRecordingWorkflow()
+    query = load_golden_jsonl(Path("data/eval/golden_set.jsonl"))[0]
+
+    await run_live_ablation_benchmark(
+        [query],
+        workflow=workflow,  # type: ignore[arg-type]
+        enable_parent_child=expand,
+    )
+
+    assert len(workflow.ablations) == len(LIVE_CONFIG_NAMES)
+    assert all(ablation.enable_parent_child is expand for ablation in workflow.ablations)

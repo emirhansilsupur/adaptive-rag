@@ -563,8 +563,7 @@ def test_expand_to_parent_noop_for_legacy_flat_chunks_and_respects_budget_fallba
 # ---------------------------------------------------------------------------
 
 
-async def test_qdrant_and_workflow_parent_child_end_to_end() -> None:
-    md = """# Qdrant Quantization
+_QUANTIZATION_MD = """# Qdrant Quantization
 
 ## Vector Quantization & Memory Optimization
 
@@ -578,10 +577,17 @@ Scalar quantization gives 4x compression with oversampling 1.5 to 2.0.
 
 Binary quantization gives 32x compression with oversampling 3.0 to 4.0.
 """
+_QUANTIZATION_QUESTION = "Compare Scalar Quantization and Binary Quantization compression"
+
+
+async def _quantization_workflow(
+    *, parent_child: bool
+) -> tuple[AdaptiveRAGWorkflow, QdrantHybridStore]:
+    """A workflow over one quantization guide, on a server whose default chunking is flat."""
     doc = LoadedDocument(
         doc_id="01_qdrant_quant",
         title="Qdrant Quantization",
-        content=md,
+        content=_QUANTIZATION_MD,
         source_path="01_qdrant_quant.md",
         doc_type="markdown",
         language="en",
@@ -589,7 +595,7 @@ Binary quantization gives 32x compression with oversampling 3.0 to 4.0.
     chunks = chunk_document(
         doc,
         ChunkingConfig(
-            parent_child_enabled=True,
+            parent_child_enabled=parent_child,
             parent_max_tokens=1000,
             child_max_tokens=100,
             child_overlap_tokens=16,
@@ -608,31 +614,23 @@ Binary quantization gives 32x compression with oversampling 3.0 to 4.0.
     await store.ensure_collection(recreate=True)
     await store.upsert_chunks(chunks)
 
-    # Verify Qdrant payload rehydration
-    hits = await store.search_single("Scalar Quantization compression", fusion_limit=5)
-    assert len(hits) >= 2
-    assert all(h.parent_id and h.parent_text for h in hits)
-
     router_json = json.dumps(
         {
             "query_type": "factual",
             "needs_retrieval": True,
-            "standalone_query": "Compare Scalar Quantization and Binary Quantization compression",
+            "standalone_query": _QUANTIZATION_QUESTION,
             "language": "en",
             "requires_fresh_web_info": False,
             "reasoning": "Factual quantization lookup.",
         }
     )
     answer_text = "Scalar Quantization achieves 4x compression while Binary Quantization achieves 32x compression [C1]."
-
-    fast_llm = _ScriptedLLM(responses=[router_json])
-    gen_llm = _ScriptedLLM(responses=[answer_text])
     runtime = GraphRuntime(
         settings=settings,
         strategies=load_strategies(),
         models=ModelBundle(
-            fast_model=fast_llm,
-            generation_model=gen_llm,
+            fast_model=_ScriptedLLM(responses=[router_json]),
+            generation_model=_ScriptedLLM(responses=[answer_text]),
             fast_model_name="stub-fast",
             generation_model_name="stub-gen",
         ),
@@ -641,16 +639,26 @@ Binary quantization gives 32x compression with oversampling 3.0 to 4.0.
         fallback_retriever=_NoopFallback(),
         cost_tracker=CostTracker(max_cost_usd=1.0),
     )
-    workflow = AdaptiveRAGWorkflow(runtime)
+    return AdaptiveRAGWorkflow(runtime), store
+
+
+def _ablation(**switches: Any) -> AblationConfig:
+    return AblationConfig(
+        enable_confidence_gating=False, enable_citation_validation=False, **switches
+    )
+
+
+async def test_qdrant_and_workflow_parent_child_end_to_end() -> None:
+    workflow, store = await _quantization_workflow(parent_child=True)
+
+    # Verify Qdrant payload rehydration
+    hits = await store.search_single("Scalar Quantization compression", fusion_limit=5)
+    assert len(hits) >= 2
+    assert all(h.parent_id and h.parent_text for h in hits)
 
     # Run WITH parent-child expansion enabled via ablation override
     ans_pc = await workflow.arun(
-        "Compare Scalar Quantization and Binary Quantization compression",
-        ablation=AblationConfig(
-            enable_parent_child=True,
-            enable_confidence_gating=False,
-            enable_citation_validation=False,
-        ),
+        _QUANTIZATION_QUESTION, ablation=_ablation(enable_parent_child=True)
     )
     assert ans_pc.dynamic_k_decision is not None
     assert ans_pc.dynamic_k_decision.parent_expansion_applied is True
@@ -661,27 +669,46 @@ Binary quantization gives 32x compression with oversampling 3.0 to 4.0.
     assert "32x compression" in ans_pc.evidence_chunks[0].text
 
     # Run WITH parent-child expansion explicitly disabled -> stays unexpanded child chunks
-    fast_llm_off = _ScriptedLLM(responses=[router_json])
-    gen_llm_off = _ScriptedLLM(responses=[answer_text])
-    runtime.models = ModelBundle(
-        fast_model=fast_llm_off,
-        generation_model=gen_llm_off,
-        fast_model_name="stub-fast",
-        generation_model_name="stub-gen",
-    )
     ans_flat = await workflow.arun(
-        "Compare Scalar Quantization and Binary Quantization compression",
-        ablation=AblationConfig(
-            enable_parent_child=False,
-            enable_confidence_gating=False,
-            enable_citation_validation=False,
-        ),
+        _QUANTIZATION_QUESTION, ablation=_ablation(enable_parent_child=False)
     )
     assert ans_flat.dynamic_k_decision is not None
     assert ans_flat.dynamic_k_decision.parent_expansion_applied is False
     assert all(not c.expanded_to_parent for c in ans_flat.evidence_chunks)
 
     await store.close()
+
+
+async def test_passages_indexed_parent_child_are_expanded_when_new_uploads_default_to_flat() -> (
+    None
+):
+    """The upload chose parent-child, but expansion used to wait for a server flag (backlog #6)."""
+    workflow, store = await _quantization_workflow(parent_child=True)
+    try:
+        assert workflow.runtime.settings.enable_parent_child_retrieval is False
+
+        answer = await workflow.arun(_QUANTIZATION_QUESTION, ablation=_ablation())
+
+        assert answer.dynamic_k_decision is not None
+        assert answer.dynamic_k_decision.parent_expansion_applied is True
+        assert answer.evidence_chunks[0].expanded_to_parent is True
+        assert "4x compression" in answer.evidence_chunks[0].text
+        assert "32x compression" in answer.evidence_chunks[0].text
+    finally:
+        await store.close()
+
+
+async def test_flat_passages_are_answered_as_they_are() -> None:
+    workflow, store = await _quantization_workflow(parent_child=False)
+    try:
+        answer = await workflow.arun(_QUANTIZATION_QUESTION, ablation=_ablation())
+
+        assert answer.dynamic_k_decision is not None
+        assert answer.dynamic_k_decision.parent_expansion_applied is False
+        assert answer.evidence_chunks
+        assert all(c.parent_id is None and not c.expanded_to_parent for c in answer.evidence_chunks)
+    finally:
+        await store.close()
 
 
 async def test_api_ingest_and_health_expose_parent_child_controls() -> None:

@@ -266,7 +266,7 @@ function ConnectionPanel({
                 <dd className="truncate text-right text-ink">
                   {health.web_fallback_providers.join(", ") || "None"}
                 </dd>
-                <dt className="text-ink-3">Chunking</dt>
+                <dt className="text-ink-3">New uploads</dt>
                 <dd className="truncate text-right text-ink">
                   {parentChild?.enabled
                     ? `${parentChild.child_max_tokens} → ${formatInt(parentChild.parent_max_tokens ?? 1000)} tokens`
