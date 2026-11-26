@@ -88,4 +88,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # 0.0.0.0 is the container's own interface and is needed for port publishing; docker-compose
 # publishes it on 127.0.0.1. Without API_AUTH_KEY the app answers only localhost requests.
-CMD ["/app/.venv/bin/uvicorn", "adaptiverag.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One API process: the rate limiter counts requests in memory, so every extra worker would
+# allow the full limit again (and load its own copy of the models). `--workers 1` also stops
+# a WEB_CONCURRENCY variable, which uvicorn reads, from starting more workers.
+CMD ["/app/.venv/bin/uvicorn", "adaptiverag.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

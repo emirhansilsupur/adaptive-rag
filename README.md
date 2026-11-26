@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-256%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-260%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `256` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `260` `$0` CI tests</sub> |
 
 ---
 
@@ -268,12 +268,14 @@ make up-prod
 make docker-build
 ```
 
+The image runs one API process (`--workers 1`), because the rate limiter and model caches live in memory. Writes to a collection take turns through a lock file (`~/.cache/adaptiverag/locks/<collection>.lock`): an upload, a delete or `make ingest` started by the same user on the same machine waits while another process replaces the collection, instead of writing into the copy about to be dropped.
+
 | Security Layer | Key Environment Variables | Enforcement Behavior |
 | :--- | :--- | :--- |
 | **Local-Only Mode** | `CORS_ALLOW_ORIGINS`, `ALLOWED_HOSTS_WITHOUT_AUTH` | Active while `API_AUTH_KEY` is unset: only loopback `Host` headers (stops LAN clients and DNS rebinding) and allowed browser `Origin`s (stops cross-site multipart/form POSTs, which skip the CORS preflight) get through; others get `HTTP 403`. CORS never defaults to `*`, and Compose publishes every port on `127.0.0.1`. |
 | **Session-Only Provider Keys** | `ALLOW_CLIENT_PROVIDER_KEYS` | A key sent in `X-Provider-API-Key` runs only that request: it never enters `Settings`, is cached under a SHA-256 fingerprint, and never becomes the server's default model. Without a server key, key-less queries get `HTTP 503` instead of someone else's key. |
 | **API Authentication** | `API_AUTH_KEY` | Constant-time (`hmac.compare_digest`) `X-API-Key` / `Bearer` check on `/v1/*`; keeps `/v1/health` and SPA public; built-in Studio key prompt. |
-| **Sliding-Window Rate Limit** | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_TRUST_PROXY_HEADERS` | Thread-safe per-IP ASGI limiter returning `X-RateLimit-*` headers and `HTTP 429` (`Retry-After`) with zero SSE stream buffering. |
+| **Sliding-Window Rate Limit** | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_TRUST_PROXY_HEADERS` | Thread-safe per-IP ASGI limiter returning `X-RateLimit-*` headers and `HTTP 429` (`Retry-After`) with zero SSE stream buffering. Counts live in the API process, so the image runs one (`--workers 1`, which also overrides `WEB_CONCURRENCY`); behind several replicas, rate-limit at the proxy. |
 | **Prompt-Injection Defense** | `GUARDRAILS_ENABLED`, `GUARDRAILS_BLOCK_PROMPT_INJECTION` | `$0` NFKC/zero-width-normalized EN+TR override/jailbreak/exfiltration blocking (`HTTP 400`) + `sanitize_untrusted_passage` & `<evidence>` XML isolation. |
 | **PII & Secret Protection** | `GUARDRAILS_PII_MODE=redact\|block\|off` | Checksum-aware redaction/blocking for API keys, emails, phone numbers, Luhn cards, and Turkish TCKN (`X-Guardrail-PII-Redacted`). |
 | **Corpus & SSRF Sandbox** | `ALLOWED_CORPUS_ROOT`, `FIRECRAWL_ALLOW_PRIVATE_URLS` | Confines local `/v1/ingest` paths to `ALLOWED_CORPUS_ROOT` (`HTTP 403`) and enforces fail-closed async DNS + post-redirect SSRF validation (`HTTP 422`). |
@@ -386,11 +388,11 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `256` automated tests (`219` backend pytest + `37` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
+All `260` automated tests (`223` backend pytest + `37` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
-make test       # 219 offline Python unit & in-memory Qdrant integration tests ($0)
+make test       # 223 offline Python unit & in-memory Qdrant integration tests ($0)
 make ui-test    # Frontend TypeScript check + 37 Vitest tests
 make lint       # ruff check + ruff format --check
 make typecheck  # mypy strict check across src/ and eval/

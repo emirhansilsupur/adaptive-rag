@@ -118,7 +118,11 @@ class RateLimitDecision:
 
 
 class SlidingWindowRateLimiter:
-    """Thread-safe in-memory sliding-window rate limiter keyed by client IP."""
+    """Thread-safe in-memory sliding-window rate limiter keyed by client IP.
+
+    The counts live in this process, so every extra API worker or replica allows the full
+    limit again. The Docker image runs one process; in front of several, limit at the proxy.
+    """
 
     def __init__(
         self,

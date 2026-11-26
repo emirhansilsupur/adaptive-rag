@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -23,6 +24,7 @@ from adaptiverag.retrieval.embeddings import (
     SparseEmbedder,
     SparseVectorData,
 )
+from adaptiverag.retrieval.write_lock import CollectionWriteLock, default_write_lock_path
 from adaptiverag.schemas.retrieval import EvidenceChunk, SourceType
 
 logger = structlog.get_logger(__name__)
@@ -216,16 +218,17 @@ class QdrantHybridStore:
         dense_embedder: DenseEmbedder,
         sparse_embedder: SparseEmbedder,
         is_local_mode: bool = False,
+        write_lock_path: Path | None = None,
     ) -> None:
         self._client = client
         self._collection_name = collection_name
         self._dense = dense_embedder
         self._sparse = sparse_embedder
         self._is_local_mode = is_local_mode
-        # Writes run one at a time in this process, so an upload can't land in a collection
-        # that a running rebuild is about to replace. A second process (the CLI indexer
-        # running next to the API) isn't covered.
-        self._write_lock = asyncio.Lock()
+        # Writes run one at a time, so an upload can't land in a collection that a running
+        # rebuild is about to replace. With a lock file, that holds for every process that
+        # uses the same file, such as a second API worker or the CLI indexer next to the API.
+        self._write_lock = CollectionWriteLock(write_lock_path)
         # When check_embedding_models last passed (time.monotonic()), so searches can reuse it.
         self._models_checked_at: float | None = None
 
@@ -239,7 +242,12 @@ class QdrantHybridStore:
         sparse_embedder: SparseEmbedder | None = None,
         in_memory: bool = False,
     ) -> QdrantHybridStore:
-        """Build a configured QdrantHybridStore from application Settings."""
+        """Build a configured QdrantHybridStore from application Settings.
+
+        A store on a Qdrant server takes the collection's lock file for every write, so the
+        processes this user runs on this machine write to the collection one at a time.
+        """
+        name = collection_name or settings.qdrant_collection
         if in_memory:
             client = AsyncQdrantClient(location=":memory:")
             is_local = True
@@ -254,12 +262,13 @@ class QdrantHybridStore:
 
         return cls(
             client=client,
-            collection_name=collection_name or settings.qdrant_collection,
+            collection_name=name,
             dense_embedder=dense_embedder
             or FastEmbedDenseEmbedder(model_name=settings.dense_embedding_model),
             sparse_embedder=sparse_embedder
             or FastEmbedSparseEmbedder(model_name=settings.sparse_embedding_model),
             is_local_mode=is_local,
+            write_lock_path=None if in_memory else default_write_lock_path(name),
         )
 
     @property
