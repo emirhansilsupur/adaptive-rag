@@ -3,14 +3,18 @@
 # Publish on another interface only behind a firewall or an authenticating proxy.
 services:
   qdrant:
-    image: qdrant/qdrant:v1.13.4
+    # Keep qdrant-client in pyproject.toml within one minor version of this image, and upgrade
+    # one minor version at a time: Qdrant only migrates storage from the previous minor version.
+    image: qdrant/qdrant:v1.20.2
     container_name: adaptiverag-qdrant
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     volumes:
-      - qdrant_data:/qdrant/storage
+      # Data written by the v1.13 image of earlier versions stays in the old `qdrant_data`
+      # volume; see "Upgrading from Qdrant v1.13" in the README.
+      - qdrant_storage:/qdrant/storage
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
       interval: 10s
@@ -199,7 +203,7 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: adaptiverag123
 
 volumes:
-  qdrant_data:
+  qdrant_storage:
   adaptiverag_cache:
   langfuse_pgdata:
   langfuse_clickhouse_data:

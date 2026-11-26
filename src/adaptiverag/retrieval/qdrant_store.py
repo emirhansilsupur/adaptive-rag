@@ -33,9 +33,9 @@ DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 RRF_K_CONSTANT = 60
 
-# Payload keys on every point naming the models that embedded it. The Qdrant server this
-# project pins (v1.13) accepts collection metadata but doesn't keep it, so the points carry
-# the record themselves.
+# Payload keys on every point naming the models that embedded it. The v1.13 server this project
+# used to pin accepted collection metadata but didn't keep it, so the points carry the record
+# themselves, which works the same on every server version.
 DENSE_MODEL_PAYLOAD_KEY = "dense_model"
 SPARSE_MODEL_PAYLOAD_KEY = "sparse_model"
 

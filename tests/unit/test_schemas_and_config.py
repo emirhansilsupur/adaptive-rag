@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from adaptiverag.config import ConfidenceConfig, Settings, get_settings, load_strategies
@@ -103,3 +106,15 @@ def test_a_test_can_still_read_an_env_file_it_names(tmp_path: Path) -> None:
 
 def test_each_test_gets_its_own_llm_cache_file(tmp_path: Path) -> None:
     assert Settings().llm_cache_path == tmp_path / "llm_cache.sqlite"
+
+
+def test_the_qdrant_image_is_within_one_minor_version_of_qdrant_client() -> None:
+    """Further apart, the client warns on every connection and Qdrant doesn't test the pair."""
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text())
+    image = compose["services"]["qdrant"]["image"]
+    server = re.fullmatch(r"qdrant/qdrant:v(\d+)\.(\d+)\.\d+", image)
+    client_major, client_minor = (int(part) for part in version("qdrant-client").split(".")[:2])
+
+    assert server is not None, f"expected a pinned qdrant/qdrant:vX.Y.Z image, got {image}"
+    assert int(server[1]) == client_major
+    assert abs(int(server[2]) - client_minor) <= 1

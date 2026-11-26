@@ -55,13 +55,20 @@ class SQLiteLLMCache:
     @staticmethod
     def build_key(
         *,
+        provider: str | None,
         model_name: str,
         temperature: float,
         schema_name: str,
         messages: list[dict[str, Any]],
     ) -> str:
+        """Hash everything that shapes a reply.
+
+        The provider is part of it because one model name can name different models at
+        different providers, e.g. a local and a hosted ``llama3.1``.
+        """
         payload = json.dumps(
             {
+                "provider": provider,
                 "model_name": model_name,
                 "temperature": round(temperature, 4),
                 "schema_name": schema_name,

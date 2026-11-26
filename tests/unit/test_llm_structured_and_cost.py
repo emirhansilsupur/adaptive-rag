@@ -213,6 +213,46 @@ async def test_cache_stops_serving_a_stored_blank_text_reply(tmp_path: Path) -> 
     assert model.call_count == 2
 
 
+async def test_cache_keeps_text_replies_from_different_providers_apart(tmp_path: Path) -> None:
+    """One model name can mean different models at different providers."""
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    local = ScriptedChatModel(responses=["Reply from the local llama3.1."])
+    hosted = ScriptedChatModel(responses=["Reply from the hosted llama3.1."])
+
+    await invoke_text(local, _NOTES_PROMPT, model_name="llama3.1", provider="ollama", cache=cache)
+    from_hosted = await invoke_text(
+        hosted, _NOTES_PROMPT, model_name="llama3.1", provider="openrouter", cache=cache
+    )
+    from_local = await invoke_text(
+        local, _NOTES_PROMPT, model_name="llama3.1", provider="ollama", cache=cache
+    )
+
+    assert from_hosted.from_cache is False
+    assert from_hosted.text == "Reply from the hosted llama3.1."
+    assert from_local.from_cache is True
+    assert from_local.text == "Reply from the local llama3.1."
+    assert (local.call_count, hosted.call_count) == (1, 1)
+
+
+async def test_cache_keeps_structured_replies_from_different_providers_apart(
+    tmp_path: Path,
+) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    local = ScriptedChatModel(responses=['{"steps": ["local"]}'])
+    hosted = ScriptedChatModel(responses=['{"steps": ["hosted"]}'])
+
+    await invoke_structured(
+        local, _Steps, _STEPS_PROMPT, model_name="llama3.1", provider="ollama", cache=cache
+    )
+    from_hosted = await invoke_structured(
+        hosted, _Steps, _STEPS_PROMPT, model_name="llama3.1", provider="openrouter", cache=cache
+    )
+
+    assert from_hosted.from_cache is False
+    assert from_hosted.parsed.steps == ["hosted"]
+    assert hosted.call_count == 1
+
+
 async def test_cost_tracker_enforces_hard_budget_cap() -> None:
     tracker = CostTracker(max_cost_usd=0.0001)
     model = ScriptedChatModel(

@@ -12,7 +12,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 ![Langfuse](https://img.shields.io/badge/Observability-Langfuse%20v5%20OTEL-6366F1)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI%20%2B%20SSE-009688?logo=fastapi&logoColor=white)
 ![React Studio](https://img.shields.io/badge/UI-React%2019%20Studio-18181B?logo=react&logoColor=61DAFB)
-![Tests](https://img.shields.io/badge/Tests-274%20Offline%20(%240)-10B981)
+![Tests](https://img.shields.io/badge/Tests-277%20Offline%20(%240)-10B981)
 [![License: MIT](https://img.shields.io/badge/License-MIT-71717A)](LICENSE)
 
 [**Architecture**](#architecture) · [**Studio & Arena**](#glass-box-studio--ablation-arena) · [**Benchmarks**](#empirical-benchmarks) · [**Quickstart**](#quickstart) · [**Security & Deploy**](#production-deployment--guardrails) · [**Observability**](#observability--prompt-management) · [**API & Structure**](#api--project-structure)
@@ -33,7 +33,7 @@ Native Qdrant Hybrid Search (Dense + BM25 RRF), local ONNX Cross-Encoder reranki
 
 | Retrieval Quality (`$0` ONNX) | Context Efficiency | Grounded Synthesis (RAGAS) | Safety & Unit Economics |
 | :---: | :---: | :---: | :---: |
-| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `274` `$0` CI tests</sub> |
+| **`0.989` MRR · `97.1%` Recall**<br><sub>Hybrid RRF + `bge-reranker-v2-m3` (`66` TR/EN queries)</sub> | **`-68.3%` Context Tokens**<br><sub>`1,093 → 347` tok via Dynamic Top-K (`1.000` factual MRR)</sub> | **`0.994` Faithfulness**<br><sub>`0.993` Ctx Precision · `100%` Tier-2 claim support</sub> | **`100%` Out-of-Corpus Gated**<br><sub>`$0.0005–$0.0008`/query · `277` `$0` CI tests</sub> |
 
 ---
 
@@ -254,6 +254,21 @@ make ui
 - **OpenAPI Docs:** `http://localhost:8000/docs`
 - **Local-only by default:** everything binds to `127.0.0.1`, and without `API_AUTH_KEY` the API answers only requests addressed to `localhost` from the Studio origin or non-browser tools. Set `API_AUTH_KEY` before running `make api API_HOST=0.0.0.0`.
 
+<details>
+<summary><strong>Upgrading from Qdrant v1.13</strong> (checkouts from before Qdrant v1.20)</summary>
+
+Qdrant migrates storage only from the previous minor version, so the v1.20 image doesn't reuse the volume the v1.13 image wrote. `make up` starts Qdrant on a new, empty `qdrant_storage` volume and leaves the old `adaptiverag_qdrant_data` volume as it was:
+
+```bash
+make up       # Qdrant v1.20.2 on the new volume
+make ingest   # re-index data/raw; re-upload documents you added in Studio
+docker volume rm adaptiverag_qdrant_data   # once you no longer need the old data
+```
+
+To keep the old data instead, start the old volume on each intermediate release in turn (`v1.13.6`, `v1.14.1`, `v1.15.5`, `v1.16.3`, `v1.17.1`, `v1.18.3`, `v1.19.2`, then `v1.20.2`), as [Qdrant's upgrade guide](https://qdrant.tech/documentation/upgrades/) describes.
+
+</details>
+
 ---
 
 ## Production Deployment & Guardrails
@@ -388,11 +403,11 @@ adaptiverag/
 
 ## Testing & Quality Gates
 
-All `274` automated tests (`235` backend pytest + `39` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients. Pytest ignores your `.env` and any settings exported in your shell ([`tests/conftest.py`](tests/conftest.py)), so your keys, Langfuse project and LLM cache stay out of test runs:
+All `277` automated tests (`238` backend pytest + `39` frontend Vitest) run **100% offline at `$0` API cost** using deterministic ONNX/LLM stubs, `httpx.MockTransport`, in-memory Qdrant, and fake Langfuse clients. Pytest ignores your `.env` and any settings exported in your shell ([`tests/conftest.py`](tests/conftest.py)), so your keys, Langfuse project and LLM cache stay out of test runs:
 
 ```bash
 make ci         # Full CI gate: ruff + mypy + frontend typecheck/vitest/build + offline pytest (84% cov)
-make test       # 235 offline Python unit & in-memory Qdrant integration tests ($0)
+make test       # 238 offline Python unit & in-memory Qdrant integration tests ($0)
 make ui-test    # Frontend TypeScript check + 39 Vitest tests
 make lint       # ruff check + ruff format --check
 make typecheck  # mypy strict check across src/ and eval/

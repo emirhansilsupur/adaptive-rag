@@ -212,6 +212,7 @@ async def invoke_text(
     cache_key: str | None = None
     if cache is not None:
         cache_key = SQLiteLLMCache.build_key(
+            provider=provider,
             model_name=model_name,
             temperature=temperature,
             schema_name="text",
@@ -293,6 +294,7 @@ async def invoke_structured[T: BaseModel](
     cache_key: str | None = None
     if cache is not None:
         cache_key = SQLiteLLMCache.build_key(
+            provider=provider,
             model_name=model_name,
             temperature=temperature,
             schema_name=schema.__name__,

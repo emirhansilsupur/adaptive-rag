@@ -92,7 +92,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=5.3.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "qdrant-client", specifier = ">=1.13.0" },
+    { name = "qdrant-client", specifier = ">=1.19,<1.22" },
     { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.2.10" },
     { name = "scikit-learn", marker = "extra == 'eval'", specifier = ">=1.6.0" },
     { name = "sse-starlette", specifier = ">=2.2.0" },
