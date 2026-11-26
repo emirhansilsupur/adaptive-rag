@@ -19,6 +19,7 @@ from adaptiverag.graph.edges import (
     route_after_web_fallback,
 )
 from adaptiverag.graph.nodes import GraphRuntime, create_nodes
+from adaptiverag.graph.prompts import build_empty_answer_message
 from adaptiverag.graph.state import AblationConfig, AgentState, merge_token_usage
 from adaptiverag.llm.cache import SQLiteLLMCache
 from adaptiverag.llm.cost import CostTracker
@@ -122,10 +123,15 @@ def _state_to_final_answer(
     plan = state.get("query_plan")
     query_type = plan.query_type if plan is not None else QueryType.FACTUAL
     language = plan.language if plan is not None else "en"
+    regeneration_attempts = int(state.get("regeneration_attempts", 0))
+    answer = str(state.get("draft_answer", ""))
+    if not answer.strip():
+        # The model returned no text, also on the strict retry when one ran.
+        answer = build_empty_answer_message(language=language, retried=regeneration_attempts > 0)
 
     return FinalAnswer(
         query=str(state.get("query", "")),
-        answer=str(state.get("draft_answer", "")),
+        answer=answer,
         query_type=query_type,
         language=language,
         query_plan=plan,
@@ -136,7 +142,7 @@ def _state_to_final_answer(
         fallback_used=bool(state.get("fallback_used", False)),
         abstained=bool(state.get("abstained", False)),
         rewrite_attempts=int(state.get("rewrite_attempts", 0)),
-        regeneration_attempts=int(state.get("regeneration_attempts", 0)),
+        regeneration_attempts=regeneration_attempts,
         total_latency_ms=round(total_latency_ms, 2),
         usage=state.get("usage") or TokenUsage(),
         trace=list(state.get("trace") or []),

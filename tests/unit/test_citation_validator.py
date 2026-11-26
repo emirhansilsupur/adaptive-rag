@@ -443,6 +443,26 @@ async def test_tier2_completed_judge_catches_the_wrong_number() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_empty_answer_fails_without_asking_the_judge() -> None:
+    judge = _ScriptedAuditModel(responses=[json.dumps({"verifications": []})])
+
+    report, usage = await validate_citations(
+        answer="  \n",
+        evidence_chunks=_make_chunks(),
+        config=CitationValidationConfig(),
+        fast_model=judge,
+        fast_model_name="local-judge",
+    )
+
+    assert report.empty_answer is True
+    assert report.passed is False
+    assert report.structural_passed is False
+    assert report.semantic_audit == SemanticAuditStatus.SKIPPED
+    assert judge.call_count == 0
+    assert usage.total_tokens == 0
+
+
+@pytest.mark.asyncio
 async def test_tier2_verdicts_are_reused_from_the_cache(tmp_path: Path) -> None:
     cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
     judge = _ScriptedAuditModel(

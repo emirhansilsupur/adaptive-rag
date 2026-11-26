@@ -834,6 +834,15 @@ function CitationAuditTab({
     );
   }
 
+  if (report.empty_answer) {
+    const retried = result.regeneration_attempts > 0 ? ", and the retry came back empty too" : "";
+    return (
+      <Callout tone="bad" title="The model returned no answer">
+        {`There was no text to audit${retried}. Ask again, or pick another generation model under Runtime.`}
+      </Callout>
+    );
+  }
+
   const state = getAuditState(report);
   const callout = AUDIT_CALLOUT[state];
   const claimCheckFailed = semanticAuditOf(report) === "failed";

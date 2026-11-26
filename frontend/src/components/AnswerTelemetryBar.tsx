@@ -159,12 +159,17 @@ export const AnswerTelemetryBar: React.FC<AnswerTelemetryBarProps> = ({
           title={
             auditState === "unverified"
               ? "The claim check didn't run. Open the audit"
-              : "Open the audit"
+              : cite?.empty_answer
+                ? "The model returned no answer. Open the audit"
+                : "Open the audit"
           }
         >
           {cite && auditState === "unverified" ? (
             // The percentage would only count cited sentences, so it is left out here.
             <span className="text-warn">{AUDIT_LABEL.unverified}</span>
+          ) : cite?.empty_answer ? (
+            // There was no answer to measure, so no percentage either.
+            <span className="text-bad">{AUDIT_LABEL.flagged}</span>
           ) : cite && auditState ? (
             <>
               <span>{Math.round(cite.claim_support_rate * 100)}%</span>

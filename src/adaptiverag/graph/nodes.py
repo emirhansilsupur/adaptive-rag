@@ -939,6 +939,7 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
             "audited_claims": len(report.claim_verifications),
             "regeneration_attempts": regen_attempts,
             "validation_enabled": ablation.enable_citation_validation,
+            "empty_answer": report.empty_answer,
         }
         if entail_prompts:
             cite_meta["prompt"] = entail_prompts[-1].telemetry_metadata()
@@ -958,6 +959,8 @@ def create_nodes(runtime: GraphRuntime) -> dict[str, NodeFn]:
         )
         if judge_failed:
             summary += f"; claim check failed: {report.semantic_audit_error}"
+        if report.empty_answer:
+            summary += "; the answer was empty"
         event = NodeTraceEvent(
             node="validate_citations",
             latency_ms=_elapsed_ms(started),

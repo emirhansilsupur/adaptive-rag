@@ -197,10 +197,12 @@ export interface CitationReport {
   /** Fails closed: false when the claim check was required but failed. */
   passed: boolean;
   regeneration_triggered: boolean;
-  /** The three fields below are missing on answers saved before the API reported them. */
+  /** The fields below are missing on answers saved before the API reported them. */
   structural_passed?: boolean;
   semantic_audit?: SemanticAuditStatus;
   semantic_audit_error?: string | null;
+  /** True when the model returned no text, so there was nothing to audit. */
+  empty_answer?: boolean;
 }
 
 export interface TokenUsage {

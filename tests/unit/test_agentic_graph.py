@@ -19,6 +19,7 @@ from pydantic import Field
 from adaptiverag.config import Settings, load_strategies
 from adaptiverag.graph import AblationConfig, AdaptiveRAGWorkflow, GraphRuntime
 from adaptiverag.graph.edges import route_after_citation_validation
+from adaptiverag.graph.prompts import build_empty_answer_message
 from adaptiverag.ingestion.chunker import DocumentChunk
 from adaptiverag.llm import ModelBundle, SQLiteLLMCache
 from adaptiverag.retrieval.embeddings import SparseVectorData
@@ -866,6 +867,99 @@ async def test_graph_asks_the_judge_again_after_it_returned_no_verdicts(tmp_path
         # Only the judge ran again; the route and the answer came from the cache.
         assert fast_model.call_count == 3
         assert gen_model.call_count == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_retries_an_empty_answer_once() -> None:
+    """An empty reply used to pass the audit as "Cited" and reach the user as a blank answer."""
+    store = await _build_in_memory_store()
+    try:
+        question = "How does Qdrant perform hybrid search?"
+        answer = "Qdrant merges dense and BM25 sparse vectors natively via Prefetch and RRF [C1]."
+        workflow, _, gen_model, _, _ = _make_workflow(
+            store=store,
+            fast_responses=[
+                json.dumps(
+                    {
+                        "query_type": "factual",
+                        "needs_retrieval": True,
+                        "language": "en",
+                        "standalone_query": question,
+                        "requires_fresh_web_info": False,
+                        "reasoning": "Direct factual lookup.",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "verifications": [
+                            {
+                                "claim": "Qdrant merges dense and BM25 sparse vectors via RRF.",
+                                "cited_ids": ["C1"],
+                                "verdict": "supported",
+                                "explanation": "Stated in C1.",
+                            }
+                        ]
+                    }
+                ),
+            ],
+            gen_responses=["", answer],
+            reranker_scores=[0.91],
+        )
+
+        result = await workflow.arun(question)
+
+        assert result.answer == answer
+        assert result.regeneration_attempts == 1
+        assert gen_model.call_count == 2
+        assert result.citation_report is not None
+        assert result.citation_report.passed is True
+        assert result.citation_report.empty_answer is False
+        audits = [t for t in result.trace if t.node == "validate_citations"]
+        assert audits[0].summary.endswith("; the answer was empty")
+        assert audits[0].metadata["empty_answer"] is True
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_says_so_when_the_answer_stays_empty(tmp_path: Path) -> None:
+    store = await _build_in_memory_store()
+    try:
+        question = "How does Qdrant perform hybrid search?"
+        workflow, _, gen_model, _, _ = _make_workflow(
+            store=store,
+            fast_responses=[
+                json.dumps(
+                    {
+                        "query_type": "factual",
+                        "needs_retrieval": True,
+                        "language": "en",
+                        "standalone_query": question,
+                        "requires_fresh_web_info": False,
+                        "reasoning": "Direct factual lookup.",
+                    }
+                )
+            ],
+            gen_responses=["  "],
+            reranker_scores=[0.91],
+            cache_path=tmp_path / "llm_cache.sqlite",
+        )
+
+        first = await workflow.arun(question)
+        again = await workflow.arun(question)
+
+        assert first.answer == build_empty_answer_message(language="en", retried=True)
+        assert first.regeneration_attempts == 1
+        report = first.citation_report
+        assert report is not None
+        assert report.empty_answer is True
+        assert report.passed is False
+        assert report.structural_passed is False
+        # The blank replies weren't cached, so asking again reached the model again.
+        assert again.answer == first.answer
+        assert gen_model.call_count == 4
     finally:
         await store.close()
 

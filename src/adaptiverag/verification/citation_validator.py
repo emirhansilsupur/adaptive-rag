@@ -141,6 +141,15 @@ def validate_citations_structural(
     config: CitationValidationConfig | None = None,
 ) -> CitationReport:
     """Tier-1 zero-LLM deterministic verification of citation IDs and uncited statements."""
+    if not answer.strip():
+        # A reply with no text answers nothing. Failing it lets strict regeneration retry it.
+        return CitationReport(
+            citation_precision=0.0,
+            claim_support_rate=0.0,
+            passed=False,
+            structural_passed=False,
+            empty_answer=True,
+        )
     policy = config or CitationValidationConfig()
     valid_id_set = {
         chunk.citation_id.strip().upper()

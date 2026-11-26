@@ -74,6 +74,9 @@ def build_ragas_samples(
             continue
         if not final_answer.evidence_chunks or not final_answer.answer.strip():
             continue
+        report = final_answer.citation_report
+        if report is not None and report.empty_answer:
+            continue  # the answer is the notice that the model returned nothing
 
         contexts = [chunk.text for chunk in final_answer.evidence_chunks if chunk.text.strip()]
         if not contexts:

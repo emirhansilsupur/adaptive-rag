@@ -135,6 +135,66 @@ describe("Unverified citation audit", () => {
     expect(screen.getByLabelText("unverified")).toBeInTheDocument();
   });
 
+  it("says the model returned no answer instead of listing citation problems", () => {
+    const emptyReport = makeReport({
+      total_citations_found: 0,
+      valid_citation_ids: [],
+      citation_precision: 0,
+      claim_support_rate: 0,
+      passed: false,
+      structural_passed: false,
+      empty_answer: true,
+    });
+    render(
+      <GlassBoxInspector
+        turns={[
+          {
+            id: "turn_1",
+            query: "What is the default ef_construct?",
+            createdAt: Date.now(),
+            presetLabel: "Full Agentic",
+            result: {
+              ...makeAnswer(emptyReport),
+              answer: "The model returned an empty answer to this question.",
+              regeneration_attempts: 1,
+            },
+          },
+        ]}
+        selectedTurnIndex={0}
+        onSelectTurnIndex={vi.fn()}
+        activeTab="citations"
+        onTabChange={vi.fn()}
+        highlightedCitationId={null}
+        highlightToken={0}
+        onJumpToCitation={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("The model returned no answer")).toBeInTheDocument();
+    expect(screen.getByText(/the retry came back empty too/)).toBeInTheDocument();
+    expect(screen.queryByText("Citation audit flagged problems")).not.toBeInTheDocument();
+    expect(screen.queryByText("Citation precision")).not.toBeInTheDocument();
+    expect(getAuditState(emptyReport)).toBe("flagged");
+  });
+
+  it("marks an empty answer as flagged on the receipt without a support percentage", () => {
+    const emptyReport = makeReport({
+      total_citations_found: 0,
+      valid_citation_ids: [],
+      citation_precision: 0,
+      claim_support_rate: 0,
+      passed: false,
+      structural_passed: false,
+      empty_answer: true,
+    });
+    render(<AnswerTelemetryBar result={makeAnswer(emptyReport)} />);
+
+    expect(screen.getByText("Flagged")).toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+    expect(screen.getByTitle("The model returned no answer. Open the audit")).toBeInTheDocument();
+  });
+
   it("does not count an unverified answer as a failed or an upgraded audit in the arena", () => {
     const flagged = makeAnswer(
       makeReport({ passed: false, structural_passed: false, invalid_citation_ids: ["C9"] })

@@ -206,6 +206,8 @@ async def invoke_text(
     """Invoke a chat model for plain text with optional SQLite caching and budget tracking.
 
     ``provider`` prices the tokens: a local provider's are free whatever the model is called.
+    A reply with no text is neither cached nor served from the cache, so asking the same
+    thing again reaches the model instead of replaying the empty reply.
     """
     cache_key: str | None = None
     if cache is not None:
@@ -216,7 +218,7 @@ async def invoke_text(
             messages=_serialize_messages(messages),
         )
         cached = await cache.aget(cache_key)
-        if cached is not None:
+        if cached is not None and cached.response_text.strip():
             usage = TokenUsage(cache_hits=1)
             if cost_tracker is not None:
                 cost_tracker.record(usage)
@@ -238,7 +240,7 @@ async def invoke_text(
     if cost_tracker is not None:
         cost_tracker.record(usage)
 
-    if cache is not None and cache_key is not None:
+    if cache is not None and cache_key is not None and text.strip():
         await cache.aset(
             cache_key=cache_key,
             model_name=model_name,

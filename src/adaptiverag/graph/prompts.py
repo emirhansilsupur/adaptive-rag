@@ -358,6 +358,11 @@ def resolve_strict_regeneration_prompt(
 ) -> tuple[list[BaseMessage], ResolvedPrompt]:
     """Resolve strict regeneration prompt and build messages with citation violation feedback."""
     issues: list[str] = []
+    if report.empty_answer:
+        issues.append(
+            "- The previous draft was empty. Answer the question from the evidence passages "
+            "and cite them."
+        )
     if report.invalid_citation_ids:
         issues.append(
             f"- Hallucinated/invalid citation IDs removed: {', '.join(report.invalid_citation_ids)}"
@@ -399,7 +404,7 @@ def resolve_strict_regeneration_prompt(
     user_prompt = (
         f"User Question: {query.strip()}\n"
         f"Resolved Question: {standalone_query.strip()}\n\n"
-        f"Previous Draft (FAILED VERIFICATION):\n{previous_draft.strip()}\n\n"
+        f"Previous Draft (FAILED VERIFICATION):\n{previous_draft.strip() or '(empty)'}\n\n"
         f"Verification Violations to Fix:\n{feedback_block}\n\n"
         f"Evidence Passages:\n{format_evidence_context(chunks)}"
     )
@@ -472,6 +477,21 @@ def build_conversational_messages(
         prompt_manager=prompt_manager,
     )
     return messages
+
+
+def build_empty_answer_message(*, language: str, retried: bool) -> str:
+    """The answer to show when the model returned no text, in the question's language."""
+    if language == "tr":
+        again = " Yeniden denendiğinde de boş döndü." if retried else ""
+        return (
+            f"Model bu soruya boş bir yanıt döndürdü.{again} "
+            "Soruyu yeniden sorun ya da başka bir model seçin."
+        )
+    again = " A second try came back empty too." if retried else ""
+    return (
+        f"The model returned an empty answer to this question.{again} "
+        "Ask again, or switch to another model."
+    )
 
 
 def build_abstention_message(

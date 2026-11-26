@@ -52,6 +52,7 @@ class CitationReport(BaseModel):
     keeps the Tier-1 verdict on its own, so callers can tell a broken answer from a broken judge.
     ``claim_support_rate`` is the entailment support rate only when ``semantic_audit`` is
     ``COMPLETED``; otherwise it is the share of substantive sentences that carry a citation.
+    ``empty_answer`` marks an answer with no text: there was nothing to audit, so it never passes.
     """
 
     total_citations_found: int = Field(default=0, ge=0)
@@ -66,3 +67,4 @@ class CitationReport(BaseModel):
     structural_passed: bool = True
     semantic_audit: SemanticAuditStatus = SemanticAuditStatus.SKIPPED
     semantic_audit_error: str | None = None
+    empty_answer: bool = False

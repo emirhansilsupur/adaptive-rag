@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +176,41 @@ async def test_cache_stops_serving_a_stored_reply_the_caller_turns_down(tmp_path
     assert reused.from_cache is True  # the accepted reply replaced the empty one
     assert reused.parsed.steps == ["embed"]
     assert model.call_count == 1
+
+
+_NOTES_PROMPT = [HumanMessage(content="Summarize the release notes.")]
+_NOTES_SUMMARY = "Qdrant 1.13 added sparse index quantization."
+
+
+async def test_cache_skips_a_blank_text_reply(tmp_path: Path) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    await invoke_text(
+        ScriptedChatModel(responses=[" \n"]), _NOTES_PROMPT, model_name="m", cache=cache
+    )
+
+    model = ScriptedChatModel(responses=[_NOTES_SUMMARY])
+    answered = await invoke_text(model, _NOTES_PROMPT, model_name="m", cache=cache)
+    reused = await invoke_text(model, _NOTES_PROMPT, model_name="m", cache=cache)
+
+    assert answered.from_cache is False  # nothing was stored for the blank reply
+    assert reused.from_cache is True
+    assert reused.text == _NOTES_SUMMARY
+    assert model.call_count == 1
+
+
+async def test_cache_stops_serving_a_stored_blank_text_reply(tmp_path: Path) -> None:
+    cache = SQLiteLLMCache(tmp_path / "cache.sqlite")
+    model = ScriptedChatModel(responses=["First summary.", _NOTES_SUMMARY])
+    await invoke_text(model, _NOTES_PROMPT, model_name="m", cache=cache)
+    # Blank the stored reply, as earlier versions stored a model's empty answer.
+    with sqlite3.connect(tmp_path / "cache.sqlite") as conn:
+        conn.execute("UPDATE llm_cache SET response_text = ''")
+
+    result = await invoke_text(model, _NOTES_PROMPT, model_name="m", cache=cache)
+
+    assert result.from_cache is False
+    assert result.text == _NOTES_SUMMARY
+    assert model.call_count == 2
 
 
 async def test_cost_tracker_enforces_hard_budget_cap() -> None:
